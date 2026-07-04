@@ -1,0 +1,41 @@
+# ---- Build output ----
+/bin/
+/obj/
+/FuegoReversed/          # MSBuild intermediate dir (Release/*.obj)
+[Dd]ebug/
+[Rr]elease/
+x64/
+Win32/
+
+# ---- Visual Studio ----
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.aps
+*.ncb
+
+# ---- Compiler / linker intermediates ----
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.exp
+*.res
+
+# ---- Build output binaries ----
+*.asi
+
+# ---- Vendored imgui demo apps + prebuilt libs (the build only uses imgui core + the
+#      dx9/win32 backends, not the examples) ----
+vendor/imgui/examples/
+
+# ---- OS cruft ----
+Thumbs.db
+Desktop.ini
+.DS_Store

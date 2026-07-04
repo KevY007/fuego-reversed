@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{7F2E9A10-4C3B-4D8E-9A21-6B5C7D8E9F01}</ProjectGuid>
+    <RootNamespace>FuegoReversed</RootNamespace>
+    <ProjectName>FuegoReversed</ProjectName>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="gta_reversed.props" />
+  <Import Project="gta_link.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <TargetName>FuegoReversed</TargetName>
+    <TargetExt>.asi</TargetExt>
+    <LinkIncremental>false</LinkIncremental>
+    <GenerateManifest>false</GenerateManifest>
+    <OutDir>$(SolutionDir)bin\</OutDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <AdditionalIncludeDirectories>vendor\imgui;vendor\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalLibraryDirectories>$(GtaLinkDirs);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>d3d9.lib;$(GtaLinkDeps);%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- FORCE:MULTIPLE folds the identical PoolOf<>/Compress* template defs shared
+           by gtahost.obj and the lib's PCH. FORCE:UNRESOLVED lets the imgui-docking
+           UI symbols (gta-reversed's debug menu, which fuego never renders) stay
+           unbound. Both are in never-executed paths for our coexist model. -->
+      <AdditionalOptions>/FORCE:MULTIPLE /IGNORE:4006,4088 %(AdditionalOptions)</AdditionalOptions>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <TargetMachine>MachineX86</TargetMachine>
+      <RandomizedBaseAddress>false</RandomizedBaseAddress>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\core\main.cpp" />
+    <ClCompile Include="src\core\logger.cpp" />
+    <ClCompile Include="src\core\crashlog.cpp" />
+    <ClCompile Include="src\core\config.cpp" />
+    <ClCompile Include="src\core\trace.cpp" />
+    <ClCompile Include="src\samp\samp.cpp" />
+    <ClCompile Include="src\samp\pools.cpp" />
+    <ClCompile Include="src\net\BitStream.cpp" />
+    <ClCompile Include="src\net\RakClient.cpp" />
+    <ClCompile Include="src\net\HookedRakClient.cpp" />
+    <ClCompile Include="src\net\net.cpp" />
+    <ClCompile Include="src\net\rpc.cpp" />
+    <ClCompile Include="src\hook\ADE32.cpp" />
+    <ClCompile Include="src\hook\CDetour.cpp" />
+    <ClCompile Include="src\compat\compat.cpp" />
+    <ClCompile Include="src\commands\commands.cpp" />
+    <ClCompile Include="src\core\settings.cpp" />
+    <ClCompile Include="src\render\render.cpp" />
+    <ClCompile Include="src\menu\menu.cpp" />
+    <ClCompile Include="src\cheats\cheats.cpp" />
+    <ClCompile Include="src\cheats\visuals.cpp" />
+    <ClCompile Include="src\cheats\friends.cpp" />
+    <ClCompile Include="src\cheats\trolls.cpp" />
+    <ClCompile Include="src\cheats\status.cpp" />
+    <ClCompile Include="src\cheats\veh.cpp" />
+    <ClCompile Include="src\cheats\server.cpp" />
+    <!-- chams needs D3DXAssembleShader from the legacy DirectX SDK (June 2010). The
+         SDK's include path is scoped to THIS file only so its older d3d9.h doesn't
+         shadow the Windows SDK headers in every other TU. -->
+    <ClCompile Include="src\cheats\chams.cpp">
+      <AdditionalIncludeDirectories>$(DXSDK_DIR)Include;C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <!-- gta-reversed bridge. Compiles cleanly (proves the integration), but the
+         class tree pulls out-of-line vtable/ctor symbols that need gta-reversed's
+         game_sa .cpp linked. Staged out of the shipping ASI until that game_sa
+         static lib is built + load-safety verified in-game (see MIGRATION notes). -->
+    <ClCompile Include="src\gta\gtastubs.cpp" />
+    <ClCompile Include="src\gta\gtahost.cpp">
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalOptions>/Zc:preprocessor %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(GtaReversedIncludes);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>$(GtaReversedDefines);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="vendor\imgui\imgui.cpp" />
+    <ClCompile Include="vendor\imgui\imgui_draw.cpp" />
+    <ClCompile Include="vendor\imgui\imgui_tables.cpp" />
+    <ClCompile Include="vendor\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="vendor\imgui\backends\imgui_impl_dx9.cpp" />
+    <ClCompile Include="vendor\imgui\backends\imgui_impl_win32.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\core\memory.h" />
+    <ClInclude Include="src\core\logger.h" />
+    <ClInclude Include="src\core\trace.h" />
+    <ClInclude Include="src\samp\samp.h" />
+    <ClInclude Include="src\samp\addresses.h" />
+    <ClInclude Include="src\samp\structs.h" />
+    <ClInclude Include="src\samp\pools.h" />
+    <ClInclude Include="src\samp\samp_sdk.h" />
+    <ClInclude Include="src\net\BitStream.h" />
+    <ClInclude Include="src\net\RakClient.h" />
+    <ClInclude Include="src\net\HookedRakClient.h" />
+    <ClInclude Include="src\net\net.h" />
+    <ClInclude Include="src\hook\ADE32.h" />
+    <ClInclude Include="src\hook\CDetour.h" />
+    <ClInclude Include="src\compat\compat.h" />
+    <ClInclude Include="src\commands\commands.h" />
+    <ClInclude Include="src\core\settings.h" />
+    <ClInclude Include="src\render\render.h" />
+    <ClInclude Include="src\menu\menu.h" />
+    <ClInclude Include="src\cheats\cheats.h" />
+    <ClInclude Include="src\gta\gtahost.h" />
+    <ClInclude Include="src\gta\gta_reversed.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

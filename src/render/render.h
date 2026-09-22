@@ -30,4 +30,10 @@ bool installed();
 IDirect3DDevice9 *device(); // captured on the first frame; null before that
 HWND              window(); // game window; null before the first frame
 
+	// Overlay visibility. F8 is SA:MP's screenshot key: pressing it hides our overlays
+	// (menu, ESP, watermark, chams) for a short window so the screenshot comes out clean,
+	// then they return automatically. Cheat logic keeps running -- this affects drawing only.
+	void hide_overlay_for( unsigned ms );
+	bool overlay_hidden();
+
 } // namespace render

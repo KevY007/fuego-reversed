@@ -19,6 +19,8 @@
 #include "TaskSimpleCarSetPedInAsDriver.h"
 #include "TaskSimpleCarSetPedInAsPassenger.h"
 #include "ColPoint.h"          // CWorld::ProcessLineOfSight out-param (vehicle picker)
+#include "ModelInfo.h"         // CModelInfo::GetModelInfo -> the game's own model-info table
+#include "VehicleModelInfo.h"  // CVehicleModelInfo::m_szGameName (GXT key -> display name)
 
 #include <cmath>
 
@@ -205,7 +207,23 @@ bool position_visible( const float pos[3] ) {
 	// Call the REAL game's CWorld::GetIsLineOfSightClear @0x56A490 (we never install
 	// gta-reversed's hook, so the original body is live). Clear only if no building/
 	// object blocks the ray -- ignore peds/vehicles so a body between isn't a "wall".
-	return mem::ccall<bool>( 0x56A490, cam, &tgt, true, false, false, true, false, false, false );
+	// Flags mirror Fuego's IsLineOfSightClear(...,true,false,false,true,true,false,false):
+	// check buildings + objects + DUMMIES, ignore vehicles/peds (a body between isn't a wall).
+	return mem::ccall<bool>( 0x56A490, cam, &tgt, true, false, false, true, true, false, false );
+}
+
+// True if a remote player's ped is currently playing the named animation. Fuego 1:1
+// (CEntity::IsPlayingAnimation): the real cdecl RpAnimBlendClumpGetAssociation @0x4D6870
+// takes (ped RwClump, animName) and returns the association if it's active. Used by the
+// silent-aim Alive Filter to skip downed/KO'd players (LSRP) whose health isn't zeroed but
+// who are playing an injured/dead anim.
+bool player_playing_anim( int sampId, const char *animName ) {
+	traceLastFunc( "game::player_playing_anim" );
+	CPed *ped = player_ped( sampId );
+	if ( !ped ) return false;
+	void *clump = ped->GetRwObject(); // ped's RwObject IS its RpClump
+	if ( !clump || IsBadReadPtr( clump, 4 ) ) return false;
+	return mem::ccall<void *>( 0x4D6870, clump, animName ) != nullptr;
 }
 
 bool launch_vehicle( int sampVehId, const float pos[3], const float speed[3] ) {
@@ -279,6 +297,26 @@ bool vehicle_dims_model( int sampVid, float out[3], int &modelIdx ) {
 	out[0] = sz.x; out[1] = sz.y; out[2] = sz.z;
 	modelIdx = v->m_nModelIndex;
 	return true;
+}
+
+// Display name for a streamed SA:MP vehicle (picker hover/confirm label). No hardcoded
+// name table -- reads the game's OWN model info: CModelInfo::GetModelInfo(modelIdx) uses
+// the real ms_modelInfoPtrs @0xA9B0C8, CVehicleModelInfo::m_szGameName is the GXT key
+// ("INFERN"), and the real CText::Get @0xC1B340/0x6A0050 resolves it to "Infernus"
+// (GxtChar is 8-bit, so the result is a plain char*). Null if not a real vehicle / no name.
+const char *vehicle_model_name( int sampVid ) {
+	traceLastFunc( "game::vehicle_model_name" );
+	CVehicle *v = samp_vehicle( sampVid );
+	if ( !v ) return nullptr;
+	int model = v->m_nModelIndex;
+	if ( model < 400 || model >= 612 ) return nullptr;        // GTA vehicle model-id range
+	CBaseModelInfo *bmi = CModelInfo::GetModelInfo( model );  // real ms_modelInfoPtrs[model]
+	if ( !bmi || IsBadReadPtr( bmi, 4 ) ) return nullptr;
+	const char *key = bmi->AsVehicleModelInfoPtr()->m_szGameName; // inline char[8] GXT key
+	if ( !key[0] ) return nullptr;
+	const char *name = mem::thiscall<const char *>( 0x6A0050, reinterpret_cast<void *>( 0xC1B340 ), key );
+	if ( !name || IsBadReadPtr( name, 1 ) || !name[0] ) return nullptr;
+	return name;
 }
 
 // Forward vector + bounding-box width + position (njkill side-offset).

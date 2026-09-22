@@ -1,6 +1,7 @@
 #include "samp.h"
 #include "addresses.h"
 #include "structs.h"
+#include "samp_sdk.h"   // stInputInfo (iInputEnabled) for the cursor guard
 #include "../core/memory.h"
 #include "../core/logger.h"
 
@@ -92,6 +93,11 @@ bool is_in_game() { return chat_ptr() != nullptr; }
 void toggle_cursor( bool show ) {
 	const uint32_t b = base();
 	if ( !b ) return;
+	// Fuego 1:1 (toggleSAMPCursor): never toggle while SA:MP's own chat input box is
+	// open, or closing our overlay would fire UnlockActorCam and stomp the game's
+	// camera/cursor mid-chat. input_ptr() is the same CInput we register commands on.
+	stInputInfo *ii = static_cast<stInputInfo *>( input_ptr() );
+	if ( ii && ii->iInputEnabled ) return;
 	void *misc = mem::read<void *>( b + addr::MISC_INFO );
 	if ( !misc ) return;
 	// CGame::SetCursorMode(this, mode, unlockCam): mode 3 shows the dialog cursor

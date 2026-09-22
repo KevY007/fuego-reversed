@@ -2,6 +2,7 @@
 #include "RakClient.h"
 #include "BitStream.h"
 #include "../samp/samp.h"
+#include "../samp/pools.h"      // samp::local_player() -- the 'this' for CInput::Say (chat)
 #include "../samp/addresses.h"
 #include "../core/memory.h"
 #include "../core/trace.h"
@@ -18,7 +19,7 @@ const float fWeaponDamage[55] = {
 	330.0f, 82.5f, 1.0f, 1.0f, 165.0f                             // 50-54
 };
 
-void give_damage( int targetId, int weapon, int bodypart ) {
+void give_damage( int targetId, int weapon, int bodypart, bool ordered ) {
 	traceLastFunc( "rpc::give_damage" );
 	if ( !g_RakClient ) return;
 	if ( weapon < 0 || weapon >= 55 ) weapon = 0;
@@ -28,7 +29,14 @@ void give_damage( int targetId, int weapon, int bodypart ) {
 	bs.Write( fWeaponDamage[weapon] );
 	bs.Write<uint32_t>( (uint32_t) weapon );
 	bs.Write<uint32_t>( (uint32_t) bodypart );
-	g_RakClient->RPC( RPC_GiveTakeDamage, &bs, HIGH_PRIORITY, RELIABLE_SEQUENCED, 0, false );
+	// Fuego 1:1: silent-aim sends RELIABLE_SEQUENCED (cheat_samp.cpp:1900) so only the
+	// freshest shot survives reorder; the auto-killer sends default RELIABLE_ORDERED
+	// (cheat_samp.cpp:5583) so every rapid multi-hit RPC lands. ordered=true picks the
+	// killer path -- SEQUENCED would let RakNet DROP the killer's out-of-order hits.
+	if ( ordered )
+		g_RakClient->RPC( RPC_GiveTakeDamage, &bs );   // default HIGH/RELIABLE_ORDERED/0
+	else
+		g_RakClient->RPC( RPC_GiveTakeDamage, &bs, HIGH_PRIORITY, RELIABLE_SEQUENCED, 0, false );
 }
 
 void give_damage_amount( int targetId, float dmg, int weapon, int bodypart ) {
@@ -112,10 +120,20 @@ void say( const char *text ) {
 	traceLastFunc( "rpc::say" );
 	const uint32_t b = samp::base();
 	if ( !b || !text || !text[0] ) return;
-	// SA:MP CInput::Say(this, text) sends the line through the normal chat path.
-	void *input = samp::input_ptr();
-	if ( !input ) return;
-	mem::thiscall<void>( b + samp::addr::FUNC_SAY, input, text );
+	// Fuego 1:1 (addSayToChatWindow): a leading '/' is a SERVER COMMAND -- it must go
+	// through CInput::SendCommand (this = the input object) so the server RUNS it
+	// (RPC_ServerCommand id 50). Anything else is chat -- CInput::Say (this = the LOCAL
+	// PLAYER object). Routing "/uns ..." through the chat path only posts it as text and
+	// the command never fires; the leading-slash branch is required.
+	if ( text[0] == '/' ) {
+		void *input = samp::input_ptr();
+		if ( !input ) return;
+		mem::thiscall<void>( b + samp::addr::FUNC_SEND_CMD, input, text );
+	} else {
+		samp::stLocalPlayer *lp = samp::local_player();
+		if ( !lp ) return;
+		mem::thiscall<void>( b + samp::addr::FUNC_SAY, lp, text );
+	}
 }
 
 } // namespace rpc

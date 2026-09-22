@@ -231,7 +231,7 @@ void on_frame( IDirect3DDevice9 *dev ) {
 
 	// Show SA:MP's cursor while the menu is open OR a vehicle pick is in progress (frees
 	// the OS cursor for ImGui, suspends the game camera); hide it otherwise. Edge-triggered.
-	bool wantCursor = g_open || veh::is_picking();
+	bool wantCursor = !render::overlay_hidden() && ( g_open || veh::is_picking() );
 	static bool prevCursor = false;
 	if ( wantCursor != prevCursor ) {
 		samp::toggle_cursor( wantCursor );
@@ -258,7 +258,7 @@ void on_frame( IDirect3DDevice9 *dev ) {
 	// Use SA:MP's cursor (shown by toggle_cursor) as the single visible cursor;
 	// don't also draw ImGui's software one.
 	ImGui::GetIO().MouseDrawCursor = false;
-	if ( g_open )
+	if ( g_open && !render::overlay_hidden() )
 		draw_ui();
 
 	ImGui::EndFrame();
@@ -285,6 +285,10 @@ bool on_wndproc( HWND h, UINT m, WPARAM w, LPARAM l ) {
 			Log( "[menu] F2 -> %s.", g_open ? "OPEN" : "closed" );
 			return true; // consume
 		}
+		// F8 is SA:MP's screenshot key: briefly hide our overlays so the shot is clean,
+		// but DON'T consume it -- SA:MP still needs the key to take the screenshot.
+		if ( w == VK_F8 )
+			render::hide_overlay_for( 2000 );
 	}
 
 	// Feed ImGui the input, but NEVER block the game: SA:MP's cursor mode already

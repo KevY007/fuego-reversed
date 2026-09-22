@@ -6,6 +6,7 @@
 #include "../samp/pools.h"
 #include "../samp/samp_sdk.h"   // server_presets (native-nametag through-wall)
 #include "../gta/gtahost.h"
+#include "../render/render.h"   // overlay_hidden (F8 screenshot hide)
 #include "friends.h"
 #include "status.h"
 #include "cheats.h"
@@ -211,8 +212,18 @@ void update_aim_target( int me ) {
 			continue; // don't aim teammates
 		if ( set.silent_aim_friend_filter && friends::is_friend( samp::player_name( id ) ) )
 			continue; // don't aim friends
-		if ( set.silent_aim_alive_filter && game::player_gta_health( id ) < 0.9f )
-			continue; // Alive Filter: skip dead/downed players
+		if ( set.silent_aim_alive_filter ) {
+			// Fuego 1:1: dead if SA:MP synced fActorHealth < 0.9, OR the ped is playing an
+			// injured/KO/dead anim (LSRP downs players without zeroing health). -1 = unknown
+			// health (shouldn't happen past the streamed check) -> don't treat as dead.
+			float h = samp::player_synced_health( id );
+			if ( ( h >= 0.0f && h < 0.9f )
+			     || game::player_playing_anim( id, "SWEET_INJUREDLOOP" )
+			     || game::player_playing_anim( id, "CS_DEAD_GUY" )
+			     || game::player_playing_anim( id, "KO_SKID_FRONT" )
+			     || game::player_playing_anim( id, "KO_SKID_BACK" ) )
+				continue; // Alive Filter: skip dead/downed/KO'd players
+		}
 		if ( set.silent_aim_afk_filter && samp::player_afk( id ) )
 			continue; // AFK Filter: skip AFK players
 		if ( set.silent_aim_skin_filter && game::player_skin( id ) >= 0 && game::player_skin( id ) == game::local_skin() )
@@ -497,6 +508,7 @@ void draw() {
 	bool suppress = ( GetAsyncKeyState( VK_F10 ) & 0x8000 ) != 0;
 	if ( samp::stScoreboardInfo *sb = samp::scoreboard_info() )
 		if ( sb->iIsEnabled ) suppress = true;
+	if ( render::overlay_hidden() ) suppress = true; // F8 (SA:MP screenshot key): hide overlays briefly
 	if ( suppress ) {
 		apply_native_nametags( false );
 		samp::disable_native_nametags( false );

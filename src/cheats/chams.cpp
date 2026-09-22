@@ -50,7 +50,7 @@ HRESULT gen_shader( IDirect3DDevice9 *dev, IDirect3DPixelShader9 **out, float a,
 }
 
 HRESULT __stdcall hkDIP( IDirect3DDevice9 *dev, D3DPRIMITIVETYPE pt, INT bvi, UINT mvi, UINT nv, UINT si, UINT pc ) {
-	if ( fx::g_set.chams && !fx::g_set.cheat_panic && g_blue && g_green &&
+	if ( fx::g_set.chams && !fx::g_set.cheat_panic && !render::overlay_hidden() && g_blue && g_green &&
 	     (DWORD) _ReturnAddress() == kPedDrawRetAddr ) {
 		dev->SetRenderState( D3DRS_FILLMODE, fx::g_set.chams_wireframe ? D3DFILL_WIREFRAME : D3DFILL_SOLID );
 		dev->SetRenderState( D3DRS_PATCHEDGESTYLE, D3DPATCHEDGE_CONTINUOUS );

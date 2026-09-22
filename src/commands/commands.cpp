@@ -97,17 +97,17 @@ static void __cdecl cmd_heal( char * ) {
 	samp::chat( "{33FF33}[heal] {FFFFFF}Health restored." );
 }
 
-// /goto <id> -- teleport to a connected player.
+// /warp <id> -- teleport to a connected player (registered as "warp", Fuego 1:1).
 static void __cdecl cmd_goto( char *params ) {
 	traceLastFunc( "cmd_goto" );
-	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /goto <player id>" ); return; }
+	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /warp <player id>" ); return; }
 	int id = atoi( params );
-	if ( !samp::is_connected( id ) ) { samp::chat( "{FF6347}[goto] {FFFFFF}That player isn't connected." ); return; }
+	if ( !samp::is_connected( id ) ) { samp::chat( "{FF6347}[warp] {FFFFFF}That player isn't connected." ); return; }
 	float pos[3];
-	if ( !game::player_world_pos( id, pos ) ) { samp::chat( "{FF6347}[goto] {FFFFFF}No position for that player." ); return; }
+	if ( !game::player_world_pos( id, pos ) ) { samp::chat( "{FF6347}[warp] {FFFFFF}No position for that player." ); return; }
 	game::teleport_local( pos );
 	char b[96];
-	_snprintf( b, sizeof( b ) - 1, "{33FF33}[goto] {FFFFFF}Warped to %s.", samp::player_name( id ).c_str() );
+	_snprintf( b, sizeof( b ) - 1, "{33FF33}[warp] {FFFFFF}Warped to %s.", samp::player_name( id ).c_str() );
 	samp::chat( b );
 }
 
@@ -243,15 +243,15 @@ static void __cdecl cmd_damagedoors( char *params ) {
 	samp::chat( "{33FF33}[veh] {FFFFFF}Door-damage sent." );
 }
 
-// /destroycar <vehicle id> -- destroy a vehicle (1:1 cmd_destroycar).
+// /.destroycar <vehicle id> -- destroy a vehicle (1:1 cmd_destroycar).
 static void __cdecl cmd_destroycar( char *params ) {
 	traceLastFunc( "cmd_destroycar" );
-	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /destroycar <vehicle id>" ); return; }
+	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /.destroycar <vehicle id>" ); return; }
 	rpc::destroy_vehicle( atoi( params ) );
 	samp::chat( "{33FF33}[veh] {FFFFFF}Vehicle-destroy sent." );
 }
 
-// /destroyallcars -- server-side destroy every streamed vehicle (RPC_VehicleDestroyed).
+// /.destroyallcars -- server-side destroy every streamed vehicle (RPC_VehicleDestroyed).
 static void __cdecl cmd_destroyallcars( char * ) {
 	traceLastFunc( "cmd_destroyallcars" );
 	samp::stVehiclePool *vp = samp::vehicle_pool();
@@ -263,10 +263,10 @@ static void __cdecl cmd_destroyallcars( char * ) {
 	samp::chat( b );
 }
 
-// /takedmgrpc <id> -- make the server think that player damaged you (troll).
+// /.takedmgrpc <id> -- make the server think that player damaged you (troll).
 static void __cdecl cmd_takedmgrpc( char *params ) {
 	traceLastFunc( "cmd_takedmgrpc" );
-	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /takedmgrpc <player id>" ); return; }
+	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /.takedmgrpc <player id>" ); return; }
 	rpc::take_damage( atoi( params ), 0, 3 );
 	samp::chat( "{33FF33}[dmg] {FFFFFF}TakeDamage RPC sent." );
 }
@@ -277,10 +277,10 @@ static void __cdecl cmd_unlockveh( char * ) { traceLastFunc( "cmd_unlockveh" ); 
 // /attveh -- tow/attach (partial; see veh::attach_trailer).
 static void __cdecl cmd_attveh( char * ) { traceLastFunc( "cmd_attveh" ); veh::attach_trailer(); }
 
-// /sethp <hp> -- set the local player's health (1:1 cmd_sethpar, health only).
+// /.sethp <hp> -- set the local player's health (1:1 cmd_sethpar, health only).
 static void __cdecl cmd_sethp( char *params ) {
 	traceLastFunc( "cmd_sethp" );
-	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /sethp <health>" ); return; }
+	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /.sethp <health>" ); return; }
 	game::set_local_player_health( (float) atoi( params ) );
 	samp::chat( "{33FF33}[hp] {FFFFFF}Health set." );
 }
@@ -365,12 +365,12 @@ static void __cdecl cmd_pweps( char * ) {
 	}
 }
 
-// /pmall <cmd> <message> -- send "<cmd> <id> <message>" to every connected player.
+// /.pmall <cmd> <message> -- send "<cmd> <id> <message>" to every connected player.
 static void __cdecl cmd_pmall( char *params ) {
 	traceLastFunc( "cmd_pmall" );
 	char cmd[32] = { 0 }, msg[160] = { 0 };
 	if ( !params || sscanf( params, "%31s %159[^\t\n]", cmd, msg ) < 2 ) {
-		samp::chat( "{FFFF00}USAGE: /pmall <cmd e.g. /pm> <message>" );
+		samp::chat( "{FFFF00}USAGE: /.pmall <cmd e.g. /pm> <message>" );
 		return;
 	}
 	int sent = 0;
@@ -407,24 +407,24 @@ static void __cdecl cmd_wordlist_add( char *params ) {
 	}
 }
 
-// /freeze <id> -- freeze a target driver's vehicle in place (you must be driving too).
+// /fr <id> -- freeze a target driver's vehicle in place (you must be driving too).
 static void __cdecl cmd_freeze( char *params ) {
 	traceLastFunc( "cmd_freeze" );
 	int id = ( params && params[0] ) ? atoi( params ) : -1;
 	int r = cheats::freeze_troll( id );
-	if ( r == 1 )       { char b[96]; _snprintf( b, sizeof( b ) - 1, "{33FF33}[freeze] {FFFFFF}Freezing %s -- /freeze to stop.", samp::player_name( id ).c_str() ); samp::chat( b ); }
+	if ( r == 1 )       { char b[96]; _snprintf( b, sizeof( b ) - 1, "{33FF33}[freeze] {FFFFFF}Freezing %s -- /fr to stop.", samp::player_name( id ).c_str() ); samp::chat( b ); }
 	else if ( r == 0 )  { samp::chat( "{FF6D70}[freeze] {FFFFFF}Stopped." ); }
 	else if ( r == -2 ) { samp::chat( "{FF6347}[freeze] {FFFFFF}You must be in a vehicle." ); }
 	else                { samp::chat( "{FF6347}[freeze] {FFFFFF}Target must be driving a vehicle." ); }
 }
 
-// /carcontrol (/cc) <id> -- remote-drive a target's vehicle; run again to stop.
+// /.carcontrol (/.cc) <id> -- remote-drive a target's vehicle; run again to stop.
 static void __cdecl cmd_carcontrol( char *params ) {
 	traceLastFunc( "cmd_carcontrol" );
 	int id = ( params && params[0] ) ? atoi( params ) : -1;
 	int r = cheats::car_control( id );
 	switch ( r ) {
-	case 1: { char b[96]; _snprintf( b, sizeof( b ) - 1, "{33FF33}[carcontrol] {FFFFFF}Controlling %s's vehicle -- /cc to stop.", samp::player_name( id ).c_str() ); samp::chat( b ); break; }
+	case 1: { char b[96]; _snprintf( b, sizeof( b ) - 1, "{33FF33}[carcontrol] {FFFFFF}Controlling %s's vehicle -- /.cc to stop.", samp::player_name( id ).c_str() ); samp::chat( b ); break; }
 	case 2:  samp::chat( "{33FF33}[carcontrol] {FFFFFF}Entering a nearby vehicle to start..." ); break;
 	case 0:  samp::chat( "{FF6D70}[carcontrol] {FFFFFF}Stopped." ); break;
 	case -2: samp::chat( "{FF6347}[carcontrol] {FFFFFF}Player not streamed / doesn't exist." ); break;
@@ -432,7 +432,7 @@ static void __cdecl cmd_carcontrol( char *params ) {
 	case -5: samp::chat( "{FF6347}[carcontrol] {FFFFFF}Target's vehicle handle is invalid." ); break;
 	case -6: samp::chat( "{FF6347}[carcontrol] {FFFFFF}Target is not in any vehicle." ); break;
 	case -3: break; // on-foot reset (handled silently)
-	default: samp::chat( "{FFFF00}USAGE: /cc <player id>" ); break; // -1 (not connected / no target)
+	default: samp::chat( "{FFFF00}USAGE: /.cc <player id>" ); break; // -1 (not connected / no target)
 	}
 }
 
@@ -461,10 +461,10 @@ static void __cdecl cmd_triggercp( char *params ) {
 	samp::chat( b );
 }
 
-// /gethere <id> -- drag an on-foot player to you (drop your car on them + release).
+// /.gethere <id> -- drag an on-foot player to you (drop your car on them + release).
 static void __cdecl cmd_gethere( char *params ) {
 	traceLastFunc( "cmd_gethere" );
-	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /gethere <player id>" ); return; }
+	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /.gethere <player id>" ); return; }
 	int id = atoi( params );
 	if ( !cheats::get_here( id ) ) {
 		samp::chat( "{FF6347}[gethere] {FFFFFF}Need to be driving a vehicle + target streamed." );
@@ -474,10 +474,10 @@ static void __cdecl cmd_gethere( char *params ) {
 	samp::chat( b );
 }
 
-// /carpark <id> -- drop the car you're driving onto an on-foot player (1:1).
+// /.carpark <id> -- drop the car you're driving onto an on-foot player (1:1).
 static void __cdecl cmd_carpark( char *params ) {
 	traceLastFunc( "cmd_carpark" );
-	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /carpark <player id>" ); return; }
+	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /.carpark <player id>" ); return; }
 	int id = atoi( params );
 	if ( !samp::is_connected( id ) ) { samp::chat( "{FF6347}[carpark] {FFFFFF}Target not connected." ); return; }
 	if ( !game::in_vehicle() )       { samp::chat( "{FF6347}[carpark] {FFFFFF}You aren't driving a vehicle." ); return; }
@@ -536,14 +536,14 @@ static void __cdecl cmd_meleedmg( char *params ) {
 	samp::chat( "{33FF33}[meleedmg] {FFFFFF}Damage sent." );
 }
 
-// /unfreezeme -- restore player control (Fuego cmd_unfreezeme).
+// /.unfreezeme -- restore player control (Fuego cmd_unfreezeme).
 static void __cdecl cmd_unfreezeme( char * ) {
 	traceLastFunc( "cmd_unfreezeme" );
 	game::make_player_controllable();
 	samp::chat( "{33FF33}[unfreeze] {FFFFFF}Control restored." );
 }
 
-// /desync -- toggle forced desync (pins the local drunk level to 0).
+// /.desync -- toggle forced desync (pins the local drunk level to 0).
 static void __cdecl cmd_desync( char * ) {
 	traceLastFunc( "cmd_desync" );
 	toggle_msg( "Desync", cheats::toggle_desync() );

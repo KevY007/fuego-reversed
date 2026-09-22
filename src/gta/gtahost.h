@@ -45,6 +45,7 @@ bool player_world_pos( int sampId, float out[3] );
 
 // A remote player's live health from the game ped (-1 if not streamed in).
 float player_gta_health( int sampId );
+bool  player_playing_anim( int sampId, const char *animName ); // ped playing a named anim (alive filter)
 int   player_skin( int sampId );                    // target ped model/skin id, -1 if none
 int   local_skin();                                 // local ped model/skin id, -1 if none
 
@@ -111,6 +112,7 @@ float local_vehicle_health();                    // local vehicle health, -1 on 
 // Geometry refinements: model bounding-box dims + index (gethere/carpark), forward
 // vector + width + pos (njkill), and the spin quaternion (iTroll mode 5).
 bool vehicle_dims_model( int sampVid, float out[3], int &modelIdx );
+const char *vehicle_model_name( int sampVid ); // GTA display name (picker label), null if none
 bool vehicle_forward( int sampVid, float fwd[3], float &width, float pos[3] );
 bool vehicle_spin_quat( int sampVid, float quat[4] );
 void set_local_armor( float armor );             // fake-lag backtrack restore

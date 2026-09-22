@@ -15,7 +15,7 @@ extern const float fWeaponDamage[55];
 
 // Damage a player: RPC_GiveTakeDamage with bTakeDamage=false. bodypart 3..9
 // (9 = head). weapon indexes fWeaponDamage. Sent as the local player hitting them.
-void give_damage( int targetId, int weapon, int bodypart );
+void give_damage( int targetId, int weapon, int bodypart, bool ordered = false ); // ordered=true: killer (RELIABLE_ORDERED), else silent-aim (RELIABLE_SEQUENCED)
 
 // Damage a player by an EXPLICIT amount (used by /meleedmg).
 void give_damage_amount( int targetId, float dmg, int weapon, int bodypart );

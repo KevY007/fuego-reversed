@@ -171,9 +171,10 @@ bool local_pos( float out[3] ) {
 	if ( !lp )
 		return false;
 
-	// sCurrentVehicleID == 0xFFFF (== (uint16_t)-1) means "not in a vehicle".
-	const bool in_vehicle =
-		( lp->sCurrentVehicleID != 0xFFFF && lp->sCurrentVehicleID != 0 );
+	// sCurrentVehicleID == 0xFFFF (== (uint16_t)-1) means "not in a vehicle" (Fuego 1:1 --
+	// only -1 counts as on-foot; do NOT also treat id 0 as on-foot, which would read
+	// onFootData for a legitimately-seated player if a server ever assigns vehicle id 0).
+	const bool in_vehicle = ( lp->sCurrentVehicleID != 0xFFFF );
 
 	const float *src = in_vehicle ? lp->inCarData.fPosition : lp->onFootData.fPosition;
 	out[0] = src[0];

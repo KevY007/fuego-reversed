@@ -185,6 +185,9 @@ namespace server {
 void lsrp_stealguns( int vid, bool forceAdjust, bool respawn ) {
 	traceLastFunc( "server::lsrp_stealguns" );
 	if ( !g_RakClient ) return;
+	// Fuego 1:1: refuse to restart while a steal is mid-flight -- re-issuing would clobber
+	// the sg_stage state machine and re-fire EnterVehicle + a duplicate passenger sync.
+	if ( sg_working ) { samp::chat( "{FF6347}[stealguns] {FFFFFF}Still working!" ); return; }
 	samp::stVehiclePool *vp = samp::vehicle_pool();
 	if ( !vp || vid < 0 || vid >= samp::SAMP_MAX_VEHICLES || !vp->iIsListed[vid] ) {
 		samp::chat( "{FF6347}[stealguns] {FFFFFF}Vehicle does not exist / not streamed." );

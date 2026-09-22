@@ -419,7 +419,7 @@ bool on_send_packet( BitStream *params, PacketPriority priority, PacketReliabili
 	// random quaternion + x5. Uses x20 move-speed (slapkill), not x10 (near-slap).
 	// Fuego calls this UNGUARDED (rewrites ANY outgoing sync to a PLAYER_SYNC), so it
 	// fires from a vehicle too -- we catch both movement syncs and emit a player sync.
-	if ( g_slapkillTarget >= 0 && ( packetId == ID_PLAYER_SYNC || packetId == ID_VEHICLE_SYNC ) ) {
+	if ( g_slapkillTarget >= 0 && !set.no_big_hacks && ( packetId == ID_PLAYER_SYNC || packetId == ID_VEHICLE_SYNC ) ) {
 		float tp[3];
 		if ( samp::is_connected( g_slapkillTarget ) && game::player_world_pos( g_slapkillTarget, tp ) ) {
 			static int           sk = 0;
@@ -655,7 +655,10 @@ bool on_send_packet( BitStream *params, PacketPriority priority, PacketReliabili
 			h.len    = (int) sizeof d;
 			h.pos[0] = d.fPosition[0]; h.pos[1] = d.fPosition[1]; h.pos[2] = d.fPosition[2];
 		}
-		game::fakelag_capture( h.mat, h.gameSpeed, h.inVehicle ); // live transform for backtrack
+		// Fuego 1:1: only hold the sync if we have a live ped/vehicle handle for the backtrack
+		// transform; on an invalid handle send it normally instead of holding a stale-matrix sync.
+		if ( !game::fakelag_capture( h.mat, h.gameSpeed, h.inVehicle ) )
+			return true;
 		int delay = set.fake_lag_delay; // Fuego uses the raw value (no floor); 0 => release next drain
 		if ( delay < 0 ) delay = 0;
 		int add   = set.fake_lag_random_spikes ? ( rand() % ( delay + 1 ) ) : delay;
@@ -920,7 +923,7 @@ void handle_killer() {
 		bs.Write( (uint8_t) ID_BULLET_SYNC );
 		bs.Write( (char *)&bd, sizeof bd );
 		g_RakClient->Send( &bs, HIGH_PRIORITY, RELIABLE_SEQUENCED, 0 );
-		rpc::give_damage( cur, wep, part );
+		rpc::give_damage( cur, wep, part, /*ordered=*/true ); // killer: RELIABLE_ORDERED (Fuego 5583)
 		statBullets++;
 	}
 	status::set( "Killer: attacking %s [%d]", samp::player_name( cur ).c_str(), cur );
@@ -1258,16 +1261,23 @@ void on_frame( IDirect3DDevice9 * ) {
 	}
 
 	// Break dance: IJKL/UO apply a rotary pulse to the ped (Fuego 1:1) -- tumble on
-	// the spot. 0xB7CB5C is CTimer's per-frame time step.
+	// the spot. 0xB7CB5C is CTimer's per-frame time step. Fuego applied this every
+	// frame at its capped frame rate; fuego-reversed can run uncapped (Uncap FPS /
+	// high-refresh monitors), which fired the pulse many more times per second and
+	// span ~10x too fast. Throttle to every 10th qualifying frame so the spin speed
+	// feels like Fuego's regardless of the current FPS (user-requested).
 	if ( set.break_dance && !game::in_vehicle() && !menu::is_open() ) {
-		float ts = *reinterpret_cast<float *>( 0xB7CB5C );
-		float v  = 2.0f * ts;
-		if      ( GetAsyncKeyState( 'I' ) & 0x8000 ) game::apply_rotory_pulse( -v, 0, 0 );
-		else if ( GetAsyncKeyState( 'K' ) & 0x8000 ) game::apply_rotory_pulse(  v, 0, 0 );
-		else if ( GetAsyncKeyState( 'L' ) & 0x8000 ) game::apply_rotory_pulse( 0,  v, 0 );
-		else if ( GetAsyncKeyState( 'J' ) & 0x8000 ) game::apply_rotory_pulse( 0, -v, 0 );
-		else if ( GetAsyncKeyState( 'O' ) & 0x8000 ) game::apply_rotory_pulse( 0, 0, -v );
-		else if ( GetAsyncKeyState( 'U' ) & 0x8000 ) game::apply_rotory_pulse( 0, 0,  v );
+		static unsigned int bdTick = 0;
+		if ( ++bdTick % 10 == 0 ) {
+			float ts = *reinterpret_cast<float *>( 0xB7CB5C );
+			float v  = 2.0f * ts;
+			if      ( GetAsyncKeyState( 'I' ) & 0x8000 ) game::apply_rotory_pulse( -v, 0, 0 );
+			else if ( GetAsyncKeyState( 'K' ) & 0x8000 ) game::apply_rotory_pulse(  v, 0, 0 );
+			else if ( GetAsyncKeyState( 'L' ) & 0x8000 ) game::apply_rotory_pulse( 0,  v, 0 );
+			else if ( GetAsyncKeyState( 'J' ) & 0x8000 ) game::apply_rotory_pulse( 0, -v, 0 );
+			else if ( GetAsyncKeyState( 'O' ) & 0x8000 ) game::apply_rotory_pulse( 0, 0, -v );
+			else if ( GetAsyncKeyState( 'U' ) & 0x8000 ) game::apply_rotory_pulse( 0, 0,  v );
+		}
 	}
 
 	// Trigger bot (Fuego 1:1): auto-click when the GAME's aim is on a target. Reads

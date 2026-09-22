@@ -79,7 +79,6 @@ void bring_up_subsystems() {
 	// --- cheats: net-seam packet handlers + per-frame driver (reads menu state) ---
 	cheats::install();
 
-	samp::chat( "{33FF33}[Fuego Reversed] {FFFFFF}online -- {FFFF00}F2{FFFFFF} for menu, {FFFF00}/fuego_cmds{FFFFFF} for commands." );
 	Log( "[init] core online." );
 }
 

@@ -40,21 +40,24 @@ void run_picker( float curX, float curY, bool clicked, bool cancel ) {
 
 	int vid = game::vehicle_under_cursor( curX, curY );
 	if ( vid < 0 ) { status::set( "Hover a vehicle to %s it...", pick_verb( g_pickMode ) ); return; }
-	status::set( "Vehicle %d -- click to %s it", vid, pick_verb( g_pickMode ) );
+	const char *vname = game::vehicle_model_name( vid ); // GTA model name (e.g. "Infernus"), null if none
+	if ( vname ) status::set( "%s (id %d) -- click to %s it", vname, vid, pick_verb( g_pickMode ) );
+	else         status::set( "Vehicle %d -- click to %s it", vid, pick_verb( g_pickMode ) );
 	if ( !clicked ) return;
 
 	int mode = g_pickMode;
 	g_pickMode = 0; // consume
-	char b[128];
+	const char *nm = vname ? vname : "vehicle";
+	char b[160];
 	if ( mode == 1 ) {
 		game::unlock_vehicle_id( vid );
-		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Unlocked vehicle %d.", vid );
+		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Unlocked %s (id %d).", nm, vid );
 	} else if ( mode == 2 ) {
 		rpc::damage_vehicle_doors( vid );
-		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Broke the doors on %d -- restream to sync.", vid );
+		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Broke the doors on %s (id %d) -- restream to sync.", nm, vid );
 	} else {
 		rpc::destroy_vehicle( vid );
-		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Destroyed vehicle %d.", vid );
+		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Destroyed %s (id %d).", nm, vid );
 	}
 	samp::chat( b );
 }

@@ -23,6 +23,8 @@ IDirect3DDevice9 *g_device = nullptr;
 HWND              g_window = nullptr;
 WNDPROC           g_origWndProc = nullptr;
 
+DWORD             g_overlayHideUntil = 0; // GetTickCount() deadline for the F8 screenshot hide
+
 LRESULT CALLBACK hkWndProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp ) {
 	bool consumed = false;
 	for ( auto fn : wndCbs() )
@@ -93,6 +95,10 @@ void on_wndproc( WndProcFn fn ) { if ( fn ) wndCbs().push_back( fn ); }
 bool installed() { return g_installed; }
 IDirect3DDevice9 *device() { return g_device; }
 HWND window() { return g_window; }
+
+void hide_overlay_for( unsigned ms ) { g_overlayHideUntil = GetTickCount() + ms; }
+// Wrap-safe (signed delta); the sentinel 0 never counts as "hidden".
+bool overlay_hidden() { return g_overlayHideUntil && (int) ( g_overlayHideUntil - GetTickCount() ) > 0; }
 
 bool install() {
 	if ( g_installed ) return true;

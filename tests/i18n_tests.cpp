@@ -2,7 +2,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
-static int g_fail = 0, g_ran = 0;
+int g_fail = 0, g_ran = 0; // external linkage: engine_test.cpp (a separate TU) shares these counters
 #define CHECK(cond, msg) do { ++g_ran; if(!(cond)){ ++g_fail; \
     std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, msg); } } while(0)
 #define CHECK_EQ(a, b) do { ++g_ran; auto _a=(a); auto _b=(b); if(!(_a==_b)){ ++g_fail; \
@@ -12,10 +12,12 @@ void test_charset();  void test_protect();  void test_detect();
 void test_cache();    void test_json();     void test_validate();
 void test_provider_breaker();
 void test_join_url();
+void test_engine();
 int main() {
     test_json(); test_charset(); test_protect(); test_detect(); test_cache(); test_validate();
     test_provider_breaker();
     test_join_url();
+    test_engine();
     std::printf("\n%d checks, %d failures\n", g_ran, g_fail);
     return g_fail ? 1 : 0;
 }

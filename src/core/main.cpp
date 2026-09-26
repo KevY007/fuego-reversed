@@ -26,6 +26,7 @@
 #include "../i18n/engine.h"
 #include "../i18n/hooks.h"
 #include "../i18n/outbound.h"
+#include "../i18n/surfaces.h"
 
 #include <windows.h>
 
@@ -87,6 +88,7 @@ void bring_up_subsystems() {
 	i18n::cache::load( "fuego_i18n_tm.txt" );
 	i18n::hooks::install();
 	i18n::outbound::install(); // register the outgoing-chat seam BEFORE net::install() below
+	i18n::surfaces::install(); // register the DialogResponse reverse-map (same, pre net::install)
 	i18n::hooks::apply_config();
 
 	// --- networking / RakNet hook (accurate) ---

@@ -58,4 +58,10 @@ bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, s
 // hit; queues a fill + leaves it unchanged on a miss. Main/net thread.
 void on_incoming_rpc(unsigned char id, RPCParameters* rpc);
 
+// Register the outbound DialogResponse (RPC 62) reverse-map handler. Call ONCE at
+// startup, BEFORE net::install() (like outbound::install). When a translated LIST
+// dialog row is selected, the client would send the TRANSLATED row text; this maps
+// it back to the ORIGINAL so text-matching servers still recognise the selection.
+void install();
+
 } // namespace i18n::surfaces

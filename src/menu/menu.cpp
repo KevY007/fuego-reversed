@@ -8,6 +8,7 @@
 #include "../samp/samp_sdk.h"   // scoreboard_info (hide the menu while the scoreboard is up)
 #include "../cheats/visuals.h"
 #include "../cheats/veh.h"
+#include "../gta/gtahost.h"   // game::repair_local_vehicle (Repair Vehicle button)
 #include "../core/config.h"
 #include "../i18n/config.h"
 #include "../i18n/engine.h"
@@ -136,6 +137,10 @@ void draw_ui() {
 			ImGui::Checkbox( "Floating Cars", &g_set.floating_cars );
 			ImGui::Checkbox( "Car Exploder Silent", &g_set.explode_cars_silent );
 			ImGui::Checkbox( "Unoccupied Car Remover", &g_set.unoccupied_remover );
+			ImGui::SeparatorText( "Actions (on your current vehicle)" );
+			// Repair is a menu button, NOT a hotkey -- an instant full repair is server-
+			// detectable, so it must be a deliberate click, never an accidental keypress.
+			if ( ImGui::Button( "Repair Vehicle" ) )        game::repair_local_vehicle();
 			ImGui::SeparatorText( "Actions (click a vehicle to pick it)" );
 			if ( ImGui::Button( "Unlock Vehicle" ) )        { veh::start_pick( 1 ); g_open = false; }
 			if ( ImGui::Button( "Damage Vehicle Doors" ) )  { veh::start_pick( 2 ); g_open = false; }

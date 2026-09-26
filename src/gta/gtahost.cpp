@@ -1105,9 +1105,10 @@ bool tow_to_local( int sampVid ) {
 	return true;
 }
 
-// `1`-key car repair (Fuego cheat_handle_vehicle_repair_car): only when driving our own
-// car; per press +50 hp, and once a link is >= 945 hp do a full Fix() then cap it at 945.
-// Walks the trailer chain (shipped trailer_support = true).
+// Car repair (Fuego cheat_handle_vehicle_repair_car), driven by the "Repair Vehicle" menu
+// button -- NOT a hotkey (an instant full repair is server-detectable, so it must be a
+// deliberate click). Only when driving our own car; per click +50 hp, and once a link is
+// >= 945 hp do a full Fix() then cap it at 945. Walks the trailer chain.
 void repair_local_vehicle() {
 	traceLastFunc( "game::repair_local_vehicle" );
 	CPlayerPed *self = find_player_ped();

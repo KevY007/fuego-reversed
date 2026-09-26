@@ -1251,9 +1251,6 @@ void on_frame( IDirect3DDevice9 * ) {
 		prevI = iDown;
 	}
 
-	// '1' key (Fuego key_repair_car): repair the car we're driving (+50 hp, full Fix at 945).
-	if ( input::pressed( '1' ) && !menu::is_open() )
-		game::repair_local_vehicle();
 
 	if ( !game::available() )
 		return;

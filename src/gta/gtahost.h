@@ -194,7 +194,7 @@ int  ped_weapons( void *ped, int types[13], int ammo[13] ); // per-slot weapon t
 namespace game {
 int  itroll_target_driver();          // SA:MP id of the nearest other occupied car's driver, -1 none
 bool tow_to_local( int sampVid );     // /attveh: SetTowLink the target car to ours
-void repair_local_vehicle();          // '1' key: +50hp / full-Fix-at-945, own car + trailers
+void repair_local_vehicle();          // "Repair Vehicle" menu button: +50hp / full-Fix-at-945, own car + trailers
 void unlock_vehicle_full( int sampVid ); // Fuego's LockDoors+SetScriptLocked+SetDoorsUndamageable
 } // namespace game
 // ==== end cheat/veh accessors ====

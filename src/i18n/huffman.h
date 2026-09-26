@@ -55,6 +55,14 @@
 //     wire framing (which is protocol-specific -- e.g. SA:MP's RPCs)
 //     builds it on top of encode()/decode().
 //
+//     UPDATE: that framing is now implemented too -- see
+//     decode_string()/encode_string() below. (There turned out to be no
+//     wide/narrow-string flag for the char*/std::string overloads SA:MP
+//     uses; see the framing write-up further down for what the real
+//     framing is.) encode()/decode() above are unchanged and still the
+//     right choice for anyone who already knows their own bit length and
+//     character count.
+//
 //   - RakNet::HuffmanEncodingTree::EncodeArray's end-of-stream byte-
 //     alignment padding trick (when the encoded bit count isn't a
 //     multiple of 8, it pads the last partial byte with a *prefix* of
@@ -123,5 +131,121 @@ std::vector<uint8_t> encode(const std::string& in, size_t& outBitLength);
 // `charCount == 0` always succeeds with `out` cleared, regardless of
 // `data`/`bitLength` (data may be nullptr in that case).
 bool decode(const uint8_t* data, size_t bitLength, size_t charCount, std::string& out);
+
+// ---------------------------------------------------------------------
+// StringCompressor wire framing (decode_string / encode_string)
+// ---------------------------------------------------------------------
+//
+// Everything above (encode()/decode()) is the bare Huffman codec only.
+// This section adds the actual RakNet::StringCompressor::EncodeString /
+// DecodeString wire framing that SA:MP uses for dialog `szInfo` and 3D
+// text label strings, reproduced from the canonical sources (fetched and
+// read directly for this change, not from memory):
+//   https://github.com/facebookarchive/RakNet/blob/master/Source/StringCompressor.cpp
+//   https://github.com/facebookarchive/RakNet/blob/master/Source/DS_HuffmanEncodingTree.cpp
+//   https://github.com/facebookarchive/RakNet/blob/master/Source/BitStream.cpp
+//
+// The verified framing (languageId == 0, the SA:MP default/English tree)
+// for EncodeString(input, maxCharsToWrite<=0 i.e. no truncation, output,
+// languageId=0) is:
+//
+//   1. A `BitStream::WriteCompressed<unsigned short>(stringBitLength)` /
+//      `ReadCompressed<unsigned short>` field FIRST -- NOT a plain
+//      fixed-width write, and NOT the `uint32_t`/`unsigned int` width the
+//      current facebookarchive/RakNet source (StringCompressor.cpp,
+//      fetched for this change) shows: SA:MP's RakNet fork evidently
+//      predates whichever RakNet revision widened this field to a full
+//      unsigned int, and uses the 16-bit form instead. This was confirmed
+//      empirically, not just by reading source: a 32-bit-header
+//      interpretation of the real captures below decodes to nothing (the
+//      first bit already implies an implausibly large length); the
+//      16-bit-header interpretation makes every one of the 5 captures
+//      decode to clean English AND makes the derived stringBitLength land
+//      exactly on a multiple of 8 in every case (expected -- see point 3
+//      -- and not something a wrong header width would produce by
+//      chance). This project's src/net/BitStream.cpp already implements
+//      the same variable-length byte-elision scheme generically (see its
+//      private WriteCompressed/ReadCompressed(unsigned char*, size,
+//      unsignedData)); huffman.cpp's read_compressed_uint16()/
+//      write_compressed_uint16() mirror it, specialized to 16 bits,
+//      against a raw bit position instead of a BitStream object. The
+//      value this field carries is a BIT count (the Huffman-encoded
+//      payload's length in bits) -- not a character count, not a byte
+//      count. There is NO leading bool/wide-narrow flag before it: that
+//      was an open question in the header comment above (see "does NOT
+//      include" section) and turned out not to exist for the const
+//      char*/std::string EncodeString/DecodeString overloads SA:MP's
+//      ANSI dialog/label text uses.
+//   2. Exactly `stringBitLength` raw bits of Huffman-coded payload,
+//      MSB-first, immediately following -- NOT byte-aligned. The
+//      compressed length field is very often not a multiple of 8 bits
+//      (e.g. 8 bits for a short length, 12, 19, ...), so the payload
+//      usually starts mid-byte.
+//   3. Per HuffmanEncodingTree::EncodeArray, the payload's own last byte
+//      -- if `stringBitLength` isn't itself a multiple of 8 -- is padded
+//      with a *prefix* of some other byte value's full Huffman code
+//      (scanning byte values 0..255 in order, the first one whose code
+//      is longer than the number of padding bits needed), so that prefix
+//      can never itself walk to a leaf. `stringBitLength` (the value
+//      transmitted in step 1) is measured AFTER this padding is added,
+//      i.e. it already includes the padding bits.
+//
+// Point 3 is why decoding must be driven by the transmitted BIT length
+// (walk every one of those bits through the tree and keep however many
+// leaves happen to complete), not by a predetermined character count the
+// way decode() above works: the receiver doesn't know the character
+// count in advance. HuffmanEncodingTree::DecodeArray(bitstream,
+// stringBitLength, maxCharsToWrite, output) discovers it as a side
+// effect of walking exactly `stringBitLength` bits -- the padding trick
+// guarantees the trailing partial code never completes one more phantom
+// trailing character.
+//
+// Reproduced with the same little-endian-native-byte-order assumption
+// RakNet's own WriteCompressed/ReadCompressed make (its BitStream.cpp
+// literally comments "// PCs" at the byte-indexing line) -- valid for
+// this project's Windows x86/x64 target.
+
+// Decodes a full RakNet StringCompressor frame -- as produced by a real
+// SA:MP server for dialog `szInfo` or a 3D text label's text, i.e.
+// exactly RakNet::StringCompressor::DecodeString's wire format for the
+// default (languageId == 0) English tree -- from the `numBytes` bytes at
+// `data`. `data` does not need to hold exactly the frame's length:
+// trailing bytes past the frame (an outer packet's byte-alignment
+// padding, or -- not the case for szInfo/label text, which run to the
+// end of their RPC -- a following sibling field) are fine, since the
+// frame is self-delimiting (its leading compressed-length field says
+// exactly how many payload bits follow); this never reads at or past
+// `data + numBytes`.
+//
+// On success, clears `out` and sets it to every character
+// StringCompressor would have decoded. Unlike RakNet's DecodeString,
+// which truncates to a caller-supplied maxCharsToWrite buffer size,
+// there is no such cap here -- the full string is always returned, since
+// `out` is a std::string, not a fixed-size buffer. Returns true (with
+// `out` cleared to "") for an empty encoded string, too.
+//
+// Returns false, and clears `out`, if `data` is null, `numBytes == 0`,
+// or the buffer is too short to hold the declared frame (the compressed
+// length prefix itself doesn't fully fit in `numBytes` bytes, or fewer
+// than `stringBitLength` bits follow it) -- malformed/truncated input,
+// never a crash or an out-of-bounds read.
+bool decode_string(const uint8_t* data, size_t numBytes, std::string& out);
+
+// Inverse of decode_string(): encodes `in` (every byte value 0..255 is
+// encodable, same as encode() -- this is not text-only) into a full
+// RakNet StringCompressor frame, matching what a real RakNet/SA:MP
+// peer's StringCompressor::EncodeString(in.c_str(), <no truncation>,
+// output, languageId=0) would produce on this (little-endian) target,
+// including the exact end-of-payload padding trick described above.
+// decode_string() applied to this function's output always yields back
+// `in` exactly.
+//
+// `in == ""` returns the single byte {0xC0}: a 6-bit compressed encoding
+// of stringBitLength == 0 (one "upper byte matches zero" bit, one "upper
+// nibble of last byte is zero" bit, then a zero nibble -- see
+// huffman.cpp) followed by zero payload bits, left-aligned in the byte
+// with its 2 trailing bits unused/zero (matching how encode() itself
+// leaves unused trailing bits in its last byte -- see above).
+std::vector<uint8_t> encode_string(const std::string& in);
 
 } // namespace i18n::huffman

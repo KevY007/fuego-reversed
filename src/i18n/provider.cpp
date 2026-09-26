@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <algorithm>
+#include <cstdio>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -34,6 +35,45 @@ struct WinHttpHandle {
     WinHttpHandle& operator=(const WinHttpHandle&) = delete;
     operator HINTERNET() const { return h; }
 };
+
+// Trims ASCII whitespace from both ends.
+std::string trim_ws(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+// Strips a leading ```/```lang fence and a trailing ``` fence (models often wrap
+// JSON that way), returning the inner text trimmed.
+std::string strip_code_fences(const std::string& in) {
+    std::string s = trim_ws(in);
+    if (s.size() >= 3 && s.compare(0, 3, "```") == 0) {
+        size_t nl = s.find('\n');
+        s = (nl != std::string::npos) ? s.substr(nl + 1) : s.substr(3);
+        size_t f = s.rfind("```");
+        if (f != std::string::npos) s = s.substr(0, f);
+        s = trim_ws(s);
+    }
+    return s;
+}
+
+// Trims whitespace, then one matching pair of surrounding quotes.
+std::string trim_ws_quotes(const std::string& in) {
+    std::string s = trim_ws(in);
+    if (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') && s.back() == s.front())
+        s = s.substr(1, s.size() - 2);
+    return s;
+}
+
+// Formats a double with a '.' decimal point regardless of C locale (the app
+// never setlocale()s, so the default "C" locale already uses '.', but be
+// explicit) for embedding in the JSON request body.
+std::string fmt_double(double d) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%.3f", d);
+    return b;
+}
 
 // Extracts model ids from an OpenAI-style /models reply
 // ({"data":[{"id":"..."},...]}). A targeted scan for "id" string values --
@@ -100,23 +140,38 @@ private:
     ProviderConfig cfg_;
     Breaker breaker_; // K=3, T=15000ms defaults (see breaker.h)
 
-    // Builds the OpenAI-style chat request body.
-    std::string build_request_body(const std::vector<std::string>& units, const std::string& systemPrompt,
+    // Builds the OpenAI-style chat request body as a NATIVE single-message
+    // translation prompt: `instruction` (the translate directive + do-not-touch
+    // rules from config::build_system_prompt) as the user message, the text to
+    // translate after a blank line, optionally preceded by rolling context. No
+    // system role -- Hy-MT2 has no default system prompt and dedicated MT models
+    // translate a single user turn; a "return JSON" instruction just makes them
+    // parrot the example, so we ask for plain text and parse plain text back.
+    std::string build_request_body(const std::vector<std::string>& units, const std::string& instruction,
                                     const std::string& rollingCtx) const {
-        std::string userContent = rollingCtx + "\n" + json::build_units(units);
+        std::string userContent;
+        if (!rollingCtx.empty()) { userContent += rollingCtx; userContent += "\n"; }
+        userContent += instruction;
+        userContent += "\n\n";
+        if (units.size() == 1) {
+            userContent += units[0];
+        } else {
+            // Multi-unit batching isn't used by the chat path; number them so a
+            // future caller at least gets a deterministic layout.
+            for (size_t i = 0; i < units.size(); ++i)
+                userContent += "[" + std::to_string(i) + "] " + units[i] + "\n";
+        }
 
         std::string body = "{";
         body += "\"model\":\"" + json::escape(cfg_.model) + "\",";
-        body += "\"temperature\":0,";
+        body += "\"temperature\":" + fmt_double(cfg_.temperature) + ",";
+        body += "\"top_p\":" + fmt_double(cfg_.topP) + ",";
+        body += "\"max_tokens\":" + std::to_string(cfg_.maxTokens) + ",";
         body += "\"stream\":false,";
-        // Disables extended thinking/reasoning output so the reply is just the
-        // translated JSON, not a chain-of-thought preamble. Ollama / most
-        // OpenAI-compatible servers accept "reasoning_effort":"none"; some
-        // providers use a different key (e.g. "think":false) instead -- this
-        // is the single place to change if a target provider needs that.
+        // Suppress chain-of-thought on reasoning-capable OpenAI models; Ollama
+        // and MT models ignore it harmlessly.
         body += "\"reasoning_effort\":\"none\",";
         body += "\"messages\":[";
-        body += "{\"role\":\"system\",\"content\":\"" + json::escape(systemPrompt) + "\"},";
         body += "{\"role\":\"user\",\"content\":\"" + json::escape(userContent) + "\"}";
         body += "]}";
         return body;
@@ -226,29 +281,19 @@ private:
             return false;
         }
 
-        std::vector<json::Unit> parsed;
-        if (!json::parse_units(content, parsed)) {
-            err = "failed to parse translated units from reply";
+        // Native MT reply is plain text -- strip any code fences / surrounding
+        // quotes the model may have added around it.
+        std::string translation = trim_ws_quotes(strip_code_fences(content));
+        if (translation.empty()) {
+            err = "empty translation in reply";
             return false;
         }
 
-        // Fill by id so out[i] always corresponds to units[i], regardless of
-        // the order the model emitted them in.
+        // The chat path always sends exactly one unit; put the reply there.
+        // (A multi-unit batch can't be split out of one plain-text reply, and
+        // nothing uses multi-unit batching, so out[0] is what the engine reads.)
         out.assign(units.size(), std::string());
-        std::vector<bool> filled(units.size(), false);
-        for (const auto& u : parsed) {
-            if (u.id >= 0 && (size_t)u.id < out.size()) {
-                out[(size_t)u.id] = u.text;
-                filled[(size_t)u.id] = true;
-            }
-        }
-        for (size_t i = 0; i < filled.size(); ++i) {
-            if (!filled[i]) {
-                err = "reply missing unit id " + std::to_string(i);
-                return false;
-            }
-        }
-
+        if (!out.empty()) out[0] = translation;
         return true;
     }
 };

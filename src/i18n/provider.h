@@ -13,8 +13,20 @@ struct ProviderConfig {
     std::string baseUrl;   // e.g. "http://127.0.0.1:11434/v1" (ends in /v1, no trailing slash)
     std::string apiKey;    // sent as "Authorization: Bearer <apiKey>" if non-empty
     std::string model;
-    int connectMs = 300;
-    int readMs = 2500;
+    int connectMs = 2000;
+    // Generous by default: a LOCAL LLM cold-loads the model on the first request
+    // (several seconds to tens of seconds) and even warm inference of a chat line
+    // can take a few seconds on CPU / a small GPU. 2.5s was far too short and made
+    // every call time out. Overridable per-config (menu: Response timeout).
+    int readMs = 30000;
+    // Sampling. Hy-MT2's recommended params: temp 0.7, top_p 0.6. IMPORTANT: at
+    // temperature 0 (greedy) Hy-MT2 runs away/loops (verified), so never send 0.
+    // maxTokens caps output -> bounds latency and stops any runaway generation.
+    // (top_k / repeat_penalty aren't honoured by the OpenAI /v1 endpoint, so we
+    // rely on temp + top_p + the maxTokens cap.)
+    double temperature = 0.7;
+    double topP = 0.6;
+    int maxTokens = 512;
 };
 
 struct IProvider {

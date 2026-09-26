@@ -96,6 +96,8 @@ void from_text(const std::string& text) {
                 g_settings.model = unescape(value);
             } else if (key == "marker_style") {
                 g_settings.marker_style = std::stoi(value);
+            } else if (key == "read_timeout_ms") {
+                g_settings.read_timeout_ms = std::stoi(value);
             } else if (key == "roman_output") {
                 g_settings.roman_output = (value == "true" || value == "1");
             }
@@ -115,6 +117,7 @@ std::string to_text() {
     out << "api_key=" << escape(g_settings.api_key) << "\n";
     out << "model=" << escape(g_settings.model) << "\n";
     out << "marker_style=" << g_settings.marker_style << "\n";
+    out << "read_timeout_ms=" << g_settings.read_timeout_ms << "\n";
     out << "roman_output=" << (g_settings.roman_output ? "true" : "false") << "\n";
     return out.str();
 }
@@ -196,27 +199,25 @@ std::string build_system_prompt(int targetLang, bool roman) {
         if (o.code == targetLang) { langName = o.name; break; }
     }
 
+    // Native single-message translation instruction -- what dedicated MT models
+    // (Hy-MT2) expect, and fine for general chat models too. The provider places
+    // this as the USER message prefix (no system role), with the text to
+    // translate after a blank line. Kept prose (no JSON): MT models don't follow
+    // a "emit a JSON array" instruction and just parrot the example.
     std::string p =
-        "You are a professional translator for SA-MP (San Andreas Multiplayer) in-game chat. "
-        "Translate each message into " + langName + ".\n\n"
-        "You may be shown a few recent chat lines labeled as context BEFORE the JSON array. "
-        "Use them only to understand meaning and keep terminology consistent -- translate ONLY "
-        "the items in the JSON array, never the context lines.\n\n"
-        "CRITICAL RULES:\n"
-        "1. Keep placeholder markers like \\x01..\\x02 EXACTLY as they appear -- never translate, "
-        "reorder, or remove them.\n"
-        "2. NEVER translate these -- copy them through verbatim: player names/nicknames, player IDs, "
-        "server commands (e.g. /help, /car), colour codes, GTA:SA vehicle names (e.g. Infernus, "
-        "Sultan, NRG-500), and San Andreas place/zone names (e.g. Grove Street, Idlewood, Los Santos).\n"
-        "3. Preserve numbers, money amounts, coordinates and times exactly.\n"
-        "4. Translate naturally, matching the casual tone of game chat -- not word-for-word.\n"
-        "5. Output ONLY a JSON array of objects: [{\"id\":0,\"text\":\"translated text\"}, ...]. "
-        "No extra text, no explanations.\n";
+        "Translate the following SA-MP (San Andreas Multiplayer) chat message into " + langName + ". "
+        "Only output the translated text -- no explanation, no quotes, no notes. "
+        "Do NOT translate, and keep EXACTLY as they are: player names and nicknames, player IDs, "
+        "server commands (like /help or /car), colour codes, GTA:SA vehicle names (Infernus, Sultan, "
+        "NRG-500, ...), and San Andreas place names (Grove Street, Idlewood, Los Santos, ...). "
+        "Keep numbers, money amounts and times exact. "
+        "Keep any placeholder markers like \\x01..\\x02 exactly where they appear. "
+        "Translate naturally, matching the casual tone of game chat.";
 
     if (roman) {
-        p += "6. Write the translation in the ROMAN (Latin) alphabet -- a natural phonetic "
-             "romanization of " + langName + " the way people type it online (e.g. Roman Urdu, "
-             "Hinglish, Arabizi), NOT the native script.\n";
+        p += " Write the translation in " + langName + " but using ONLY Latin/Roman letters "
+             "(romanized / transliterated the way people type online, e.g. Roman Urdu \"aap kaise ho\", "
+             "Hinglish, Arabizi) -- do NOT use the native script.";
     }
     return p;
 }

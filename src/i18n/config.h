@@ -10,11 +10,18 @@ struct Settings {
     int source_cp = 0;       // 0 = auto-detect
     std::string base_url = "http://127.0.0.1:11434/v1";
     std::string api_key;     // empty = no key (local Ollama)
-    // Default: Tencent Hy-MT2-1.8B (purpose-built MT LLM, Apache-2.0). Q4_K_M is
-    // ~1.1 GB -- runs on a 2-3 GB GPU beside the game, or on CPU. Bigger card?
-    // switch to hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M via the menu's model dropdown.
-    std::string model = "hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M";
+    // Default: Tencent Hy-MT2-7B (purpose-built MT LLM, Apache-2.0), Q4_K_M ~4.6 GB.
+    // The 7B is the reliable default -- the 1.8B GGUF produced garbage on Ollama
+    // 0.34.4 in testing (its hunyuan_v1_dense build was broken there). If you have
+    // a working small model / low VRAM, switch to the 1.8B via the menu dropdown.
+    // NOTE: Hy-MT2 translates to a language's NATIVE script; romanized output
+    // (Roman Urdu etc.) is unreliable with it -- use a general LLM for that.
+    std::string model = "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M";
     int marker_style = 0;
+    // Read timeout (ms) for a translation request. Local LLMs cold-load the model
+    // on the first call (seconds to tens of seconds), so this needs headroom;
+    // 30s is a safe default. Menu exposes it as "Response timeout".
+    int read_timeout_ms = 30000;
     // Write the target language phonetically in the Latin/Roman alphabet
     // (Roman Urdu, Hinglish, Arabizi, ...) instead of its native script. This
     // is REQUIRED for languages whose script SA:MP's cp1251/cp1252 font can't

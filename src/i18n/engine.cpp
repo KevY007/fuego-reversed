@@ -74,6 +74,11 @@ void (*g_applyFn)(const Result&) = nullptr;
 // reader can hold the returned pointer as long as it likes.
 std::atomic<const char*> g_status{"idle"};
 
+// Detailed last-error string (guarded by its own mutex), surfaced by the menu
+// next to status() so a failing translate says WHY, not just "error - retrying".
+std::mutex g_errMutex;
+std::string g_lastErr;
+
 void worker_loop() {
     for (;;) {
         Job job;
@@ -145,7 +150,13 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     std::vector<std::string> out;
     std::string err;
     bool callOk = prov->translate({ m.text }, sysPrompt, rollingCtx, out, err);
-    g_status.store(callOk ? "local ok" : "offline - retrying", std::memory_order_relaxed);
+    if (callOk) {
+        g_status.store("local ok", std::memory_order_relaxed);
+        { std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr.clear(); }
+    } else {
+        g_status.store("error - retrying", std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr = err;
+    }
     if (!callOk || out.empty()) return false;
 
     // 7: sanity-check the model's output (placeholders intact, non-empty,
@@ -283,6 +294,11 @@ void pump() {
 
 const char* status() {
     return g_status.load(std::memory_order_relaxed);
+}
+
+std::string last_error() {
+    std::lock_guard<std::mutex> lk(g_errMutex);
+    return g_lastErr;
 }
 
 } // namespace i18n::engine

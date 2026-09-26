@@ -304,12 +304,15 @@ void draw_ui() {
 			ImGui::InputText( "Model (or type manually)", model_buf, sizeof model_buf );
 			s.model = model_buf;
 
-			ImGui::TextDisabled( "Recommended local model for 2-3GB VRAM (or CPU):" );
+			ImGui::TextDisabled( "Recommended: Hy-MT2-7B (reliable). Low VRAM: try 1.8B but VERIFY it -- some Ollama builds emit garbage." );
+			if ( ImGui::SmallButton( "copy 7B pull" ) )
+				ImGui::SetClipboardText( "ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M" );
 			ImGui::SameLine();
-			if ( ImGui::SmallButton( "copy pull cmd" ) )
+			if ( ImGui::SmallButton( "copy 1.8B pull" ) )
 				ImGui::SetClipboardText( "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M" );
-			ImGui::TextDisabled( "  hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M  (bigger GPU -> ...Hy-MT2-7B-GGUF:Q4_K_M)" );
-			ImGui::TextDisabled( "  Claude/OpenAI etc. work too -- for Claude use https://api.anthropic.com/v1/ + your key" );
+			ImGui::TextDisabled( "  Hy-MT2 outputs a language's NATIVE script -> great for Spanish/Russian/etc." );
+			ImGui::TextDisabled( "  Romanized (Roman Urdu/Hinglish) is unreliable with it; use a general LLM (qwen3, gemma3) for that." );
+			ImGui::TextDisabled( "  Claude/OpenAI etc. work too -- for Claude use https://api.anthropic.com/v1/ + your key." );
 
 			ImGui::Separator();
 

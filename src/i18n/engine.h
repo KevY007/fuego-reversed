@@ -102,4 +102,9 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
 // since there's nothing new to report about connectivity.
 const char* status();
 
+// The most recent provider error string (empty if none / last call succeeded).
+// Thread-safe copy for the menu, so a failing translate says WHY (timeout, HTTP
+// status, parse) instead of just "error - retrying".
+std::string last_error();
+
 } // namespace i18n::engine

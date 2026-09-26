@@ -108,6 +108,8 @@ void from_text(const std::string& text) {
                 g_settings.debug_capture = (value == "true" || value == "1");
             } else if (key == "translate_dialogs") {
                 g_settings.translate_dialogs = (value == "true" || value == "1");
+            } else if (key == "translate_hud") {
+                g_settings.translate_hud = (value == "true" || value == "1");
             }
             // unknown keys are silently ignored
         } catch (...) {
@@ -131,6 +133,7 @@ std::string to_text() {
     out << "outbound_target_lang=" << g_settings.outbound_target_lang << "\n";
     out << "debug_capture=" << (g_settings.debug_capture ? "true" : "false") << "\n";
     out << "translate_dialogs=" << (g_settings.translate_dialogs ? "true" : "false") << "\n";
+    out << "translate_hud=" << (g_settings.translate_hud ? "true" : "false") << "\n";
     return out.str();
 }
 

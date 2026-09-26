@@ -320,6 +320,13 @@ void draw_ui() {
 			            "first: the FIRST time a given dialog/label appears it shows in the original while "
 			            "it's translated in the background; the NEXT time it appears (login, menus, repeated "
 			            "labels) it shows translated. One-off text may show once in the original." );
+			if ( ImGui::Checkbox( "Translate HUD (textdraws, gametext, chat bubbles)", &s.translate_hud ) )
+				i18n::hooks::apply_config();
+			ImGui::SameLine();
+			HelpMarker( "Translates HUD textdraws, big center gametext, and chat bubbles. Dynamic/numeric "
+			            "textdraws (timers, counters, stats) are auto-skipped so they don't spam the "
+			            "translator. NOTE: textdraws/gametext use GTA's glyph font -- best for English/"
+			            "romanized targets; Cyrillic/Arabic may not render there (dialogs/labels/chat are fine)." );
 			ImGui::Separator();
 
 			// Endpoint

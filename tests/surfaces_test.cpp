@@ -96,6 +96,51 @@ int main() {
         check(t == kTitle, "rebuilt title is the translated title");
     }
 
+    // ---- is_dynamic_text: skip timers/counters, translate real labels ----
+    check(is_dynamic_text("1h 27m 49s"), "'1h 27m 49s' is dynamic (skip)");
+    check(is_dynamic_text("27"), "'27' is dynamic (skip)");
+    check(is_dynamic_text("$5000"), "'$5000' is dynamic (skip)");
+    check(is_dynamic_text("~r~8:10"), "'~r~8:10' is dynamic (skip)");
+    check(is_dynamic_text("_"), "'_' is dynamic (skip)");
+    check(!is_dynamic_text("Active city: ~P~San Fierro"), "'Active city: San Fierro' is translatable");
+    check(!is_dynamic_text("Players online: ~Y~27"), "'Players online: 27' is translatable");
+
+    // ---- Plain HUD surfaces: identity rebuild is byte-exact ----
+    {
+        // Real TextDrawSetString (105), id=3 "Active city: ..." (133 bytes).
+        std::vector<uint8_t> orig = hex(
+            "0300810041637469766520636974793A207E507E53616E2046696572726F7E4E7E7E577E4E657874"
+            "20636974793A207E507E4C61732056656E7475726173202831682032376D20343973297E4E7E7E57"
+            "7E54696D653A207E477E7E487E546875727364617920383A31307E4E7E7E577E506C6179657273206F"
+            "6E6C696E653A207E597E3237");
+        std::vector<uint8_t> out;
+        check(rebuild_textdraw_setstring(orig.data(), orig.size(), identity, out), "rebuild textdraw105 ok");
+        check(out == orig, "textdraw105 identity is byte-exact");
+    }
+    {
+        // Real ShowTextDraw (134), the "_" textdraw (68 bytes).
+        std::vector<uint8_t> orig = hex(
+            "0008110000000000004842E1E1E1FF0000A0440000A044000000000200000000FF010000000000000000"
+            "0000000000000000000000000000000000803FFFFFFFFF01005F");
+        std::vector<uint8_t> out;
+        check(rebuild_textdraw_show(orig.data(), orig.size(), identity, out), "rebuild textdraw134 ok");
+        check(out == orig, "textdraw134 identity is byte-exact");
+    }
+    {
+        // Synthesized gametext (73): style=1, time=5000, "MISSION PASSED".
+        std::vector<uint8_t> orig = hex("010000008813" "00000E0000004D495353494F4E20504153534544");
+        std::vector<uint8_t> out;
+        check(rebuild_gametext(orig.data(), orig.size(), identity, out), "rebuild gametext ok");
+        check(out == orig, "gametext identity is byte-exact");
+    }
+    {
+        // Synthesized chat bubble (59): pid=5, "hello".
+        std::vector<uint8_t> orig = hex("0500FFFFFFFF00004842B80B00000568656C6C6F");
+        std::vector<uint8_t> out;
+        check(rebuild_chatbubble(orig.data(), orig.size(), identity, out), "rebuild chatbubble ok");
+        check(out == orig, "chatbubble identity is byte-exact");
+    }
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

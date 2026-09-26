@@ -43,6 +43,12 @@ struct Settings {
     // bodies). Translation-memory-first: first sight shows the original + fills the
     // cache, the next identical dialog/label shows translated. Default OFF.
     bool translate_dialogs = false;
+
+    // Translate the HUD: textdraws (RPC 105/134), gametext (73), chat bubbles (59).
+    // Plain text (no Huffman). Also TM-first; dynamic/numeric-heavy textdraws
+    // (timers, counters) are skipped automatically. NOTE: textdraws/gametext render
+    // via GTA's bitmap-glyph font -> best for Latin/romanized targets. Default OFF.
+    bool translate_hud = false;
 };
 
 Settings& get();

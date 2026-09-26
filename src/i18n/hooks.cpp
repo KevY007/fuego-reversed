@@ -196,7 +196,7 @@ void apply_config() {
 	// The one worker engine serves every surface (inbound chat display, outbound
 	// send, and the dialog/label cache-fill jobs), so it runs whenever ANY of them
 	// is enabled.
-	if ( !s.inbound_chat && !s.outbound_enabled && !s.translate_dialogs ) {
+	if ( !s.inbound_chat && !s.outbound_enabled && !s.translate_dialogs && !s.translate_hud ) {
 		i18n::engine::stop();
 		Log( "[i18n] translation disabled (engine stopped)." );
 		return;

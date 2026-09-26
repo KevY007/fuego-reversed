@@ -38,6 +38,21 @@ bool rebuild_dialog(const uint8_t* pkt, size_t n, const Translator& tr, std::vec
 // header then a CSTRING. Returns true/`out` only on a translation hit.
 bool rebuild_label(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
 
+// --- plain-text HUD surfaces (no Huffman) ----------------------------------
+// True if `text` (ignoring ~x~/{RRGGBB} codes + spaces) is mostly digits/symbols
+// -- a timer/counter/stat where translating is pointless (numbers are universal).
+// Used to auto-skip dynamic textdraws so they don't spam the translator.
+bool is_dynamic_text(const std::string& text);
+
+// ShowGameText (73): u32 style, u32 time, u32 msgLen, char[] message.
+bool rebuild_gametext(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
+// ChatBubble (59): u16 pid, u32 color, f dist, u32 expire, u8 len, char[] text.
+bool rebuild_chatbubble(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
+// TextDrawSetString (105): u16 id, u16 len, char[] text.
+bool rebuild_textdraw_setstring(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
+// ShowTextDraw (134): 65-byte fixed header, u16 szTextLen, char[] szText (last field).
+bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
+
 // Called from the incoming RPC-dispatch chokepoint (compat::HandleRPCPacketFunc).
 // No-op unless config.translate_dialogs is on. Modifies rpc in place on a cache
 // hit; queues a fill + leaves it unchanged on a miss. Main/net thread.

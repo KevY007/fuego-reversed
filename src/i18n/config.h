@@ -11,11 +11,9 @@ struct Settings {
     std::string base_url = "http://127.0.0.1:11434/v1";
     std::string api_key;     // empty = no key (local Ollama)
     // Default: Tencent Hy-MT2-7B (purpose-built MT LLM, Apache-2.0), Q4_K_M ~4.6 GB.
-    // The 7B is the reliable default -- the 1.8B GGUF produced garbage on Ollama
-    // 0.34.4 in testing (its hunyuan_v1_dense build was broken there). If you have
-    // a working small model / low VRAM, switch to the 1.8B via the menu dropdown.
-    // NOTE: Hy-MT2 translates to a language's NATIVE script; romanized output
-    // (Roman Urdu etc.) is unreliable with it -- use a general LLM for that.
+    // Great for native-script languages (Spanish/Russian/etc.). NOTE: Hy-MT2 emits a
+    // language's NATIVE script, so romanized output (Roman Urdu etc.) is unreliable
+    // with it -- use a general LLM (e.g. qwen3:4b) for romanized targets.
     std::string model = "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M";
     int marker_style = 0;
     // Read timeout (ms) for a translation request. Local LLMs cold-load the model

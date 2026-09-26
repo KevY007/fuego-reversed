@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 namespace i18n::hooks {
 
@@ -32,17 +33,22 @@ AddEntryFn g_origAddEntry = nullptr;
 bool                  g_installed = false;
 std::atomic<uint64_t> g_seq{ 1 };
 
-// Phase 0 marker: a small leading marker + a faint colour tint, so a landed
-// translation reads as machine-translated without shouting. ASCII, not a
-// UTF-8 glyph: displayBytes are cp1252 bytes that SA:MP renders via
-// DrawTextA under the process's ANSI codepage (CP_ACP), so a multi-byte
-// UTF-8 marker (originally the U+25C6 diamond here) prints as mojibake --
-// each UTF-8 byte redecoded as its own cp1252 character -- instead of a
-// glyph. ">> " is pure ASCII, so it renders identically under any ANSI
-// codepage. (marker_style in config is reserved for a Task 12 menu choice;
-// Phase 0 has just this one.)
-constexpr char     kMarker[]    = ">> ";
-constexpr uint32_t kMarkerColor = 0xFFB7B7FFu;      // faint lavender (ARGB)
+// The original AddEntry call's formatting, kept while its translation is in
+// flight so apply_result() can re-emit the finished line with the SAME
+// type/prefix/colours. That REPLACES the line we swallowed in hooked_add_entry()
+// rather than adding a second (marked) line on top of it -- the previous
+// "original now + translation appended" design showed every line twice.
+// Main-thread only (SA:MP calls AddEntry and the pump both run on the game
+// thread), so no lock is needed -- same reasoning as outbound's pending map.
+struct PendingLine {
+	int         type = 0;
+	std::string msg;             // original text -> shown if translation declines/fails
+	std::string prefix;
+	bool        hasPrefix = false;
+	uint32_t    textColor = 0;
+	uint32_t    prefixColor = 0;
+};
+std::unordered_map<uint64_t, PendingLine> g_pendingLines;
 
 // Called from i18n::engine::pump() on the main thread once a translation
 // lands. MUST go through the trampoline (g_origAddEntry), never through
@@ -53,43 +59,27 @@ void apply_result( const i18n::engine::Result &r ) {
 	// local chat window -- route them to the outbound module.
 	if ( r.surface == 1 ) { i18n::outbound::on_result( r ); return; }
 
-	// Guards against an exception (realistically only std::bad_alloc, from
-	// the std::string work below) crossing this C-ABI seam: apply_result()
-	// runs from pump_tick() (below), itself a D3D EndScene callback invoked
-	// from inside SA:MP/D3D's own C call stack via render::on_frame() -- an
-	// escaping exception there is undefined behaviour, not a clean crash.
-	// Swallow it; the worst case is the translated line silently doesn't
-	// show (the original already did, from hooked_add_entry()).
+	// Inbound: emit the finished line exactly ONCE, with the original sender's
+	// type/prefix/colours -- REPLACING the line hooked_add_entry() swallowed
+	// (never a second line on top). Guarded try/catch: apply_result() runs from
+	// pump_tick() inside SA:MP/D3D's C call stack, where an escaping exception is
+	// UB, not a clean crash.
 	try {
-		if ( !r.ok || r.displayBytes.empty() ) return; // leave whatever original already showed
-		if ( !g_origAddEntry ) return;
+		auto it = g_pendingLines.find( r.handle );
+		if ( it == g_pendingLines.end() ) return; // no record -> nothing to emit
+		PendingLine pl = std::move( it->second );
+		g_pendingLines.erase( it );
 
+		if ( !g_origAddEntry ) return;
 		void *chat = samp::chat_ptr();
 		if ( !chat ) return; // left the server before the result landed
 
-		std::string marked;
-		marked.reserve( sizeof( kMarker ) - 1 + r.displayBytes.size() );
-		marked.append( kMarker );
-		marked.append( r.displayBytes );
-
-		// engine::process_one() already caps displayBytes to 144 bytes (the
-		// crash-safety limit for SA:MP's fixed chat-line buffer) on its own,
-		// but prepending kMarker here can push the COMBINED line back over
-		// that same cap. marker + displayBytes are cp1252/ASCII -- one byte
-		// per character -- so a plain byte-count truncate can't split a
-		// multi-byte sequence; that makes it safe here even though it
-		// wouldn't be for arbitrary UTF-8 (contrast
-		// charset::cap_and_sanitize(), which is UTF-8-boundary-aware).
-		constexpr size_t kMaxLine = 144;
-		if ( marked.size() > kMaxLine )
-			marked.resize( kMaxLine );
-
-		// CHAT_TYPE_DEBUG: a local-only line (no player prefix), the same type
-		// samp::chat() uses for our own overlay/status output -- and, since it's
-		// never CHAT_TYPE_CHAT/CHAT_TYPE_INFO, hooked_add_entry() would ignore it
-		// for translation even if this call somehow went through the patched
-		// address (it doesn't -- see above).
-		g_origAddEntry( chat, samp::CHAT_TYPE_DEBUG, marked.c_str(), nullptr, kMarkerColor, 0 );
+		// Translated text if we have it; otherwise the original (translation
+		// declined -- e.g. already target language / nothing translatable -- or
+		// failed). Either way the line appears once, in its native formatting.
+		const std::string &text = ( r.ok && !r.displayBytes.empty() ) ? r.displayBytes : pl.msg;
+		const char *prefix = pl.hasPrefix ? pl.prefix.c_str() : nullptr;
+		g_origAddEntry( chat, pl.type, text.c_str(), prefix, pl.textColor, pl.prefixColor );
 	} catch ( ... ) {
 	}
 }
@@ -113,40 +103,51 @@ void apply_result( const i18n::engine::Result &r ) {
 // never itself resubmitted for translation.
 void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const char *msg,
                                    const char *prefix, uint32_t textColor, uint32_t prefixColor ) {
-	// Always show the original line immediately (decided UX: original now,
-	// translation appended when it lands), via the real AddEntry.
-	// Deliberately OUTSIDE, and before, the try/catch below: even if the
-	// submit work that follows throws, the original line must already be on
-	// screen.
-	if ( g_origAddEntry )
-		g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
-
-	// Guards against an exception (realistically only std::bad_alloc, from
-	// the Job/std::string allocations below) crossing this C-ABI seam:
-	// hooked_add_entry() is the detour target, called directly from SA:MP's
-	// own code on the game thread -- an escaping exception there is
-	// undefined behaviour, not a clean crash. Swallow it; the only effect is
-	// that this one line doesn't get queued for translation (the original
-	// line already showed, above).
+	// Decide whether to translate this line. If we will, we must NOT show the
+	// original now -- we swallow it and apply_result() emits the finished line
+	// once (translated, or original on failure). Showing it here too is exactly
+	// the "double text" bug. Never CHAT_TYPE_DEBUG (our own / re-emitted lines).
+	bool doTranslate = false;
 	try {
-		// Runtime enable check: the seam is always wired (install() is one-time
-		// at startup, race-free), but we only queue work while translation is
-		// switched on. apply_config() toggles this live from the menu.
-		if ( !i18n::config::get().inbound_chat ) return;
+		if ( i18n::config::get().inbound_chat && msg && msg[0] &&
+		     ( type == samp::CHAT_TYPE_CHAT || type == samp::CHAT_TYPE_INFO ) )
+			doTranslate = true;
+	} catch ( ... ) {}
 
-		// Only genuine incoming server chat/info lines are worth translating.
-		// Never CHAT_TYPE_DEBUG (our own overlay/status output, including the
-		// marked line apply_result() just showed above) and never empty text.
-		if ( type != samp::CHAT_TYPE_CHAT && type != samp::CHAT_TYPE_INFO ) return;
-		if ( !msg || !msg[0] ) return;
+	if ( !doTranslate ) {
+		// Not translating -> show the line immediately, unchanged, via the real
+		// AddEntry (the trampoline, never the patched address -> no re-entry).
+		if ( g_origAddEntry )
+			g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
+		return;
+	}
+
+	// Translating: SWALLOW the original (do not show it now), remember its
+	// formatting, and queue the job. Guarded: an escaping exception across this
+	// C-ABI detour seam is UB. If queueing throws, fall back to showing the
+	// original so the line is never lost.
+	try {
+		uint64_t h = g_seq.fetch_add( 1, std::memory_order_relaxed );
+
+		PendingLine pl;
+		pl.type        = type;
+		pl.msg         = msg;
+		pl.hasPrefix   = ( prefix != nullptr );
+		if ( prefix ) pl.prefix = prefix;
+		pl.textColor   = textColor;
+		pl.prefixColor = prefixColor;
+		g_pendingLines[h] = std::move( pl );
 
 		i18n::engine::Job job;
-		job.handle      = g_seq.fetch_add( 1, std::memory_order_relaxed );
-		job.surface     = 0; // Phase 0: Chat
+		job.handle      = h;
+		job.surface     = 0; // inbound chat display
 		job.sourceBytes = msg;
 		job.srcCodepage = i18n::config::get().source_cp; // 0 = auto-detect
+		job.noDedup     = true; // every swallowed line must produce exactly one shown line
 		i18n::engine::submit( job );
 	} catch ( ... ) {
+		if ( g_origAddEntry )
+			g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
 	}
 }
 

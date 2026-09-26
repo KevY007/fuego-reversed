@@ -50,6 +50,7 @@ Desktop.ini
 #  tests / any standalone save). fuego_i18n_tm.txt is the on-disk
 #  translation-memory cache written at runtime.
 /fuego_reversed.cfg
+/fuego_reversed.log
 /fuego_i18n.cfg
 /fuego_i18n_tm.txt
 

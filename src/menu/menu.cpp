@@ -105,6 +105,19 @@ void run_selftest_async() {
 	} ).detach();
 }
 
+// Auto-apply the fullscreen refresh override without the user Alt+Entering: run
+// GTA's OWN video-mode apply, which resets the same device -> render::hkReset then
+// injects the max refresh. Called from on_wndproc (message-pump thread), the same
+// safe between-frames context GTA uses for its Alt+Enter reset.
+//   GcurSelVM (current video mode index) @ 0x8D6220; SetVideoMode(int) @ 0x745C70
+//   (__cdecl) -> RwD3D9ChangeVideoMode. Addresses from gta-reversed VideoMode.cpp.
+bool g_reapplyVideo = false;
+void reapply_video_mode_now() {
+	if ( !render::installed() ) return; // device/game not ready
+	int mode = *reinterpret_cast<int *>( 0x8D6220 );
+	reinterpret_cast<void( __cdecl * )( int )>( 0x745C70 )( mode );
+}
+
 // Small "(?)" hover-help marker (ImGui demo idiom; the built-in demo helper
 // isn't linked into a stripped build, so define our own).
 void HelpMarker( const char* desc ) {
@@ -268,13 +281,15 @@ void draw_ui() {
 		if ( ImGui::BeginTabItem( "Display" ) ) {
 			ImGui::Checkbox( "Uncap FPS (frame limiter off)", &g_set.uncap_fps );
 			ImGui::Checkbox( "Borderless window (fill screen)", &g_set.borderless );
-			if ( ImGui::Checkbox( "Exclusive fullscreen: max refresh rate", &g_set.fullscreen_max_hz ) )
+			if ( ImGui::Checkbox( "Exclusive fullscreen: max refresh rate", &g_set.fullscreen_max_hz ) ) {
 				render::set_max_fullscreen_refresh( g_set.fullscreen_max_hz );
+				if ( g_set.fullscreen_max_hz ) g_reapplyVideo = true; // auto-apply once (one reset/flicker)
+			}
 			ImGui::SameLine();
 			HelpMarker( "Forces GTA's EXCLUSIVE fullscreen to your monitor's HIGHEST refresh at the current "
-			            "resolution (GTA hardcodes the lowest >=60Hz). No borderless needed. Applies on the "
-			            "next device reset -- after enabling, re-select your resolution in GTA's Display menu "
-			            "once (or Alt+Tab out and back)." );
+			            "resolution (GTA hardcodes the lowest >=60Hz). No borderless needed. On enable it "
+			            "auto-applies (one screen flicker as the display resets). If it doesn't take, Alt+Enter "
+			            "out and back once." );
 			ImGui::SeparatorText( "Overlay" );
 			ImGui::Checkbox( "Cheat state text (top-right)", &g_set.status_text );
 			ImGui::Checkbox( "Active-cheat watermark (top-left)", &g_set.show_active_list );
@@ -347,14 +362,13 @@ void draw_ui() {
 			ImGui::InputText( "Model (or type manually)", model_buf, sizeof model_buf );
 			s.model = model_buf;
 
-			ImGui::TextDisabled( "Recommended: Hy-MT2-7B (reliable). Low VRAM: try 1.8B but VERIFY it -- some Ollama builds emit garbage." );
+			ImGui::TextDisabled( "Recommended: Hy-MT2-7B for native-script languages (Spanish/Russian/etc.)." );
 			if ( ImGui::SmallButton( "copy 7B pull" ) )
 				ImGui::SetClipboardText( "ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M" );
 			ImGui::SameLine();
-			if ( ImGui::SmallButton( "copy 1.8B pull" ) )
-				ImGui::SetClipboardText( "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M" );
-			ImGui::TextDisabled( "  Hy-MT2 outputs a language's NATIVE script -> great for Spanish/Russian/etc." );
-			ImGui::TextDisabled( "  Romanized (Roman Urdu/Hinglish) is unreliable with it; use a general LLM (qwen3, gemma3) for that." );
+			if ( ImGui::SmallButton( "copy qwen3:4b pull" ) )
+				ImGui::SetClipboardText( "ollama pull qwen3:4b" );
+			ImGui::TextDisabled( "  For ROMANIZED output (Roman Urdu / Hinglish) use a general LLM: qwen3:4b or gemma3:4b." );
 			ImGui::TextDisabled( "  Claude/OpenAI etc. work too -- for Claude use https://api.anthropic.com/v1/ + your key." );
 
 			ImGui::Separator();
@@ -574,6 +588,11 @@ void on_reset( IDirect3DDevice9 *, bool preReset ) {
 
 bool on_wndproc( HWND h, UINT m, WPARAM w, LPARAM l ) {
 	if ( !g_init ) return false;
+
+	// Apply a pending fullscreen-refresh change here (message-pump thread, between
+	// frames -- the safe context for GTA's device reset). Clear first so a message
+	// during the reset can't re-enter it.
+	if ( g_reapplyVideo ) { g_reapplyVideo = false; reapply_video_mode_now(); }
 
 	if ( m == WM_KEYDOWN || m == WM_SYSKEYDOWN ) {
 		// One-time heartbeat: proves the WndProc hook is actually receiving keys.

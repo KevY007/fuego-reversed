@@ -75,8 +75,21 @@ void ensure_window( IDirect3DDevice9 *dev ) {
 HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
 	if ( !g_device ) { g_device = dev; Log( "[render] device captured (0x%p).", dev ); }
 	ensure_window( dev );
-	for ( auto fn : frameCbs() ) fn( dev );
-	return g_origEndScene( dev );
+
+	// Let the game + SA:MP finish their scene FIRST -- including SA:MP's chat window,
+	// which it draws inside its own EndScene (the trampoline below). THEN draw our
+	// overlay in a fresh scene so it sits ON TOP of the chat: the menu, cheat-state
+	// text and active-cheat watermark are no longer covered by the chat box. (Trade-
+	// off: ESP/nametags also draw over chat, but they're world-anchored and rarely
+	// overlap the chat corner.) Guarded: if BeginScene can't start (device lost /
+	// scene still open), we simply skip our overlay this frame rather than risk a
+	// bad draw -- never a black screen.
+	HRESULT hr = g_origEndScene( dev );
+	if ( SUCCEEDED( dev->BeginScene() ) ) {
+		for ( auto fn : frameCbs() ) fn( dev );
+		dev->EndScene();
+	}
+	return hr;
 }
 
 HRESULT __stdcall hkReset( IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp ) {

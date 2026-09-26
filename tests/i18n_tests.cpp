@@ -35,6 +35,17 @@ void test_cache() {
     load("test_tm.txt");
     CHECK(get(k, out), "cache hit after reload");
     CHECK_EQ(out, std::string("hello"));
+
+    // Test escaping and concurrent-ish put: special chars round-trip correctly
+    std::string special_value = "line1\nline2\twith tab\\and backslash";
+    uint64_t k_special = key("test", 1033, 1251, "test:provider");
+    clear_for_test();
+    put(k_special, special_value);
+    // Reload from disk to verify escaping round-trip
+    clear_for_test();
+    load("test_tm.txt");
+    CHECK(get(k_special, out), "cache hit for special char value after reload");
+    CHECK_EQ(out, special_value);
 }
 
 #include "i18n/detect.h"

@@ -3,6 +3,7 @@
 #include <mutex>
 #include <fstream>
 #include <sstream>
+#include <cstdlib>
 
 namespace i18n::cache {
     // FNV-1a parameters
@@ -114,12 +115,12 @@ namespace i18n::cache {
     }
 
     void put(uint64_t k, const std::string& value) {
-        {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            g_map[k] = value;
-        }
+        std::lock_guard<std::mutex> lock(g_mutex);
 
-        // Append to disk
+        // Update in-memory map
+        g_map[k] = value;
+
+        // Append to disk (under lock to prevent data race on g_save_path and file interleaving)
         std::ofstream ofs(g_save_path, std::ios_base::app);
         if (ofs.is_open()) {
             ofs << k << '\t' << escape_value(value) << '\n';

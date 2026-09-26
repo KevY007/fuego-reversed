@@ -8,6 +8,7 @@ namespace {
 using namespace render;
 
 std::vector<FrameFn>   &frameCbs() { static std::vector<FrameFn> v; return v; }
+std::vector<FrameFn>   &topCbs()   { static std::vector<FrameFn> v; return v; } // drawn AFTER SA:MP chat
 std::vector<ResetFn>   &resetCbs() { static std::vector<ResetFn> v; return v; }
 std::vector<WndProcFn> &wndCbs()   { static std::vector<WndProcFn> v; return v; }
 
@@ -76,17 +77,17 @@ HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
 	if ( !g_device ) { g_device = dev; Log( "[render] device captured (0x%p).", dev ); }
 	ensure_window( dev );
 
-	// Let the game + SA:MP finish their scene FIRST -- including SA:MP's chat window,
-	// which it draws inside its own EndScene (the trampoline below). THEN draw our
-	// overlay in a fresh scene so it sits ON TOP of the chat: the menu, cheat-state
-	// text and active-cheat watermark are no longer covered by the chat box. (Trade-
-	// off: ESP/nametags also draw over chat, but they're world-anchored and rarely
-	// overlap the chat corner.) Guarded: if BeginScene can't start (device lost /
-	// scene still open), we simply skip our overlay this frame rather than risk a
-	// bad draw -- never a black screen.
-	HRESULT hr = g_origEndScene( dev );
-	if ( SUCCEEDED( dev->BeginScene() ) ) {
-		for ( auto fn : frameCbs() ) fn( dev );
+	// Main overlay (menu, ESP, nametags, ...) draws BEFORE the game + SA:MP finish
+	// their scene, so it sits UNDER the SA:MP chat -- the preferred order.
+	for ( auto fn : frameCbs() ) fn( dev );
+
+	HRESULT hr = g_origEndScene( dev ); // game + SA:MP HUD/chat, then the scene ends
+
+	// TOP overlay (only the cheat-state text + active-cheat watermark) draws AFTER, in
+	// a fresh scene, so just those two sit ON TOP of the chat. Guarded: if BeginScene
+	// can't start we simply skip them this frame -- never a black screen.
+	if ( !topCbs().empty() && SUCCEEDED( dev->BeginScene() ) ) {
+		for ( auto fn : topCbs() ) fn( dev );
 		dev->EndScene();
 	}
 	return hr;
@@ -136,6 +137,7 @@ void **game_device_vtable() {
 namespace render {
 
 void on_frame( FrameFn fn )     { if ( fn ) frameCbs().push_back( fn ); }
+void on_frame_top( FrameFn fn ) { if ( fn ) topCbs().push_back( fn ); } // drawn AFTER SA:MP chat
 void on_reset( ResetFn fn )     { if ( fn ) resetCbs().push_back( fn ); }
 void on_wndproc( WndProcFn fn ) { if ( fn ) wndCbs().push_back( fn ); }
 

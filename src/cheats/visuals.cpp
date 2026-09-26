@@ -1111,8 +1111,8 @@ void draw() {
 	ImDrawList *dl = bg();
 	const bool paused = input::gta_menu_active();
 
-	if ( set.show_active_list )
-		draw_active_list( dl );
+	// NOTE: the active-cheat watermark + cheat-state text are drawn by draw_over_chat()
+	// instead (a separate post-chat pass), so they sit ON TOP of the SA:MP chat.
 
 	float ourPos[3];
 	const bool haveOur = game::local_tag_origin( ourPos );
@@ -1144,7 +1144,18 @@ void draw() {
 	slapper_esp();
 	fakelag_marker();
 	aim_slapper_crosshair();
+	// status text + watermark now render in draw_over_chat() (post-chat pass).
+}
 
+// Drawn in a SEPARATE post-chat pass (render::on_frame_top) so these sit ON TOP of
+// the SA:MP chat, while everything in draw() stays under it. Only the two small
+// corner overlays: the active-cheat watermark + the cheat-state text.
+void draw_over_chat() {
+	auto &set = fx::g_set;
+	if ( set.cheat_panic ) return;
+	if ( render::overlay_hidden() ) return; // F8 screenshot hide
+	if ( set.show_active_list )
+		draw_active_list( bg() );
 	status::draw(); // cheat state text (only with set.status_text, Fuego d3dtext_hud)
 }
 

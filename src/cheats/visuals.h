@@ -18,6 +18,10 @@ namespace visuals {
 // after the menu font (so the menu font stays the default).
 void init_fonts();
 void draw();
+// The two corner overlays (active-cheat watermark + cheat-state text), drawn in a
+// SEPARATE post-chat ImGui pass so they sit ON TOP of the SA:MP chat (draw() stays
+// under it). Called from the menu's render::on_frame_top callback.
+void draw_over_chat();
 
 // Fuego's overlay fonts (the CD3DFont instances in proxyIDirect3DDevice9.cpp).
 enum class Font : int {

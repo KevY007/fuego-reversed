@@ -58,6 +58,19 @@ std::string strip_code_fences(const std::string& in) {
     return s;
 }
 
+// Some "thinking" models (Qwen3, DeepSeek-R1, ...) prefix the answer with a
+// <think>...</think> chain-of-thought block. Drop everything up to and including the
+// closing tag so only the actual translation remains. (No tag -> returned unchanged;
+// note some models emit untagged reasoning, which can't be stripped -- use a
+// non-thinking model for those.)
+std::string strip_think(const std::string& in) {
+    size_t end = in.find("</think>");
+    if (end != std::string::npos) return in.substr(end + 8);
+    // A stray opening tag with no close (rare) -> nothing usable.
+    if (in.find("<think>") != std::string::npos) return std::string();
+    return in;
+}
+
 // Trims whitespace, then one matching pair of surrounding quotes.
 std::string trim_ws_quotes(const std::string& in) {
     std::string s = trim_ws(in);
@@ -281,9 +294,9 @@ private:
             return false;
         }
 
-        // Native MT reply is plain text -- strip any code fences / surrounding
-        // quotes the model may have added around it.
-        std::string translation = trim_ws_quotes(strip_code_fences(content));
+        // Native MT reply is plain text -- drop any <think> block, then strip code
+        // fences / surrounding quotes the model may have added around it.
+        std::string translation = trim_ws_quotes(strip_code_fences(strip_think(content)));
         if (translation.empty()) {
             err = "empty translation in reply";
             return false;

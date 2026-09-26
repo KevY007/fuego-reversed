@@ -13,11 +13,13 @@ void test_cache();    void test_json();     void test_validate();
 void test_provider_breaker();
 void test_join_url();
 void test_engine();
+void test_config();
 int main() {
     test_json(); test_charset(); test_protect(); test_detect(); test_cache(); test_validate();
     test_provider_breaker();
     test_join_url();
     test_engine();
+    test_config();
     std::printf("\n%d checks, %d failures\n", g_ran, g_fail);
     return g_fail ? 1 : 0;
 }
@@ -259,4 +261,40 @@ void test_join_url() {
     // produce a doubled '/' at the seam -- many servers 404 on "//".
     CHECK_EQ(join_url("http://x/v1/", "/chat/completions"), std::string("http://x/v1/chat/completions"));
     CHECK_EQ(join_url("http://x/v1", "/chat/completions"), std::string("http://x/v1/chat/completions"));
+}
+
+#include "i18n/config.h"
+void test_config() {
+    using namespace i18n::config;
+
+    // Round-trip test: save and load via temp path
+    Settings& s = get();
+
+    // Set some fields to non-default values
+    s.inbound_chat = true;
+    s.target_lang = 1049;  // Russian
+    s.model = "custom-model";
+    s.api_key = "test-key-123";
+
+    // Save to temp file
+    save("test_cfg.cfg");
+
+    // Mutate get() to different values
+    s.inbound_chat = false;
+    s.target_lang = 1031;  // German
+    s.model = "different-model";
+    s.api_key = "different-key";
+
+    // Load from temp file - should restore original values
+    load("test_cfg.cfg");
+
+    CHECK_EQ(s.inbound_chat, true);
+    CHECK_EQ(s.target_lang, 1049);
+    CHECK_EQ(s.model, std::string("custom-model"));
+    CHECK_EQ(s.api_key, std::string("test-key-123"));
+
+    // Test build_system_prompt(1033) contains "English" and "placeholder"
+    std::string prompt = build_system_prompt(1033);
+    CHECK(prompt.find("English") != std::string::npos, "build_system_prompt(1033) must contain 'English'");
+    CHECK(prompt.find("placeholder") != std::string::npos, "build_system_prompt must mention 'placeholder'");
 }

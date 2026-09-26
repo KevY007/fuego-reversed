@@ -120,4 +120,13 @@ const char* status();
 // status, parse) instead of just "error - retrying".
 std::string last_error();
 
+// Synchronous translation-memory lookup for the non-chat surfaces (dialogs, 3D
+// labels, textdraws, ...). Computes the SAME cache key process_one() uses, so a
+// hit returns the finished, display-codepage-encoded translation a prior job
+// cached. Returns false on a miss -- the caller then queues a fill job (a normal
+// submit() with a cache-fill surface) and shows the original this time; the next
+// identical string is an instant hit. Safe to call from the main/net thread
+// (cache is internally locked). Returns false if the engine isn't running.
+bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::string& out);
+
 } // namespace i18n::engine

@@ -312,4 +312,14 @@ std::string last_error() {
     return g_lastErr;
 }
 
+bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::string& out) {
+    // Mirror process_one()'s key computation EXACTLY so a hit here matches what a
+    // fill job stored (decode -> normalized UTF-8 -> key(normSrc, cp, target, profile)).
+    if (srcBytes.empty()) return false;
+    int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
+    std::string normSrc = charset::to_utf8(charset::decode(srcBytes, cp2));
+    uint64_t k = cache::key(normSrc, cp2, targetLang, g_profile);
+    return cache::get(k, out);
+}
+
 } // namespace i18n::engine

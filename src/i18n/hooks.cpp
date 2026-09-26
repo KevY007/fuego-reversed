@@ -59,6 +59,11 @@ void apply_result( const i18n::engine::Result &r ) {
 	// local chat window -- route them to the outbound module.
 	if ( r.surface == 1 ) { i18n::outbound::on_result( r ); return; }
 
+	// Surface >= 2: non-chat cache-fill jobs (dialogs/labels/textdraws). process_one
+	// already stored the result in the translation-memory cache; nothing to display
+	// here -- the surface re-emits it from cache on the packet's next arrival.
+	if ( r.surface >= 2 ) return;
+
 	// Inbound: emit the finished line exactly ONCE, with the original sender's
 	// type/prefix/colours -- REPLACING the line hooked_add_entry() swallowed
 	// (never a second line on top). Guarded try/catch: apply_result() runs from
@@ -188,9 +193,10 @@ void install() {
 
 void apply_config() {
 	auto &s = i18n::config::get();
-	// The one worker engine serves BOTH directions (inbound display + outbound
-	// send via per-job overrides), so it runs whenever either is enabled.
-	if ( !s.inbound_chat && !s.outbound_enabled ) {
+	// The one worker engine serves every surface (inbound chat display, outbound
+	// send, and the dialog/label cache-fill jobs), so it runs whenever ANY of them
+	// is enabled.
+	if ( !s.inbound_chat && !s.outbound_enabled && !s.translate_dialogs ) {
 		i18n::engine::stop();
 		Log( "[i18n] translation disabled (engine stopped)." );
 		return;

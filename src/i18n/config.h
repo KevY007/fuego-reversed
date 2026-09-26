@@ -38,6 +38,11 @@ struct Settings {
     // can be verified against a real server before those surfaces are built.
     // Read-only; never modifies packets. Default OFF.
     bool debug_capture = false;
+
+    // Translate incoming DIALOGS + 3D text labels (RPC 61/36 -- Huffman CSTRING
+    // bodies). Translation-memory-first: first sight shows the original + fills the
+    // cache, the next identical dialog/label shows translated. Default OFF.
+    bool translate_dialogs = false;
 };
 
 Settings& get();

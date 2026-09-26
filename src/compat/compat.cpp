@@ -14,6 +14,7 @@
 #include "../cheats/cheats.h"
 #include "../cheats/server.h"
 #include "../i18n/capture.h"   // debug: log incoming dialog/label/textdraw/gametext RPCs
+#include "../i18n/surfaces.h"  // translate incoming dialogs / 3D labels in place
 #include "../hook/CDetour.h"
 
 #include <windows.h>
@@ -135,6 +136,11 @@ void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback
 	// Read-only capture for building the dialog/label/textdraw/gametext surfaces
 	// (no-op unless config.debug_capture is on; never modifies the packet).
 	i18n::capture::on_incoming_rpc( id, rpc );
+
+	// Translate incoming dialogs / 3D labels IN PLACE before the game parses them
+	// (no-op unless config.translate_dialogs is on; TM-first, so it only rewrites
+	// on a cache hit). Runs before the rewrites/reads below so they see final text.
+	i18n::surfaces::on_incoming_rpc( id, rpc );
 
 	if ( rpc != nullptr && rpc->numberOfBitsOfData >= 8 ) {
 		// wrong-version reject -> tell the user to enable compat manually

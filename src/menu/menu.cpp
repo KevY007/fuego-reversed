@@ -313,6 +313,13 @@ void draw_ui() {
 			                    "Ollama (default) or any OpenAI-compatible endpoint. Everything here saves to "
 			                    "the main config and applies when you hit Save config -- no restart." );
 			ImGui::Checkbox( "Enable inbound chat translation", &s.inbound_chat );
+			if ( ImGui::Checkbox( "Translate dialogs + 3D labels", &s.translate_dialogs ) )
+				i18n::hooks::apply_config(); // live: (re)start the engine if needed
+			ImGui::SameLine();
+			HelpMarker( "Translates incoming dialog boxes and 3D world text labels. Translation-memory-"
+			            "first: the FIRST time a given dialog/label appears it shows in the original while "
+			            "it's translated in the background; the NEXT time it appears (login, menus, repeated "
+			            "labels) it shows translated. One-off text may show once in the original." );
 			ImGui::Separator();
 
 			// Endpoint

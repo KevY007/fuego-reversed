@@ -65,6 +65,31 @@ void bring_up_subsystems() {
 	menu::install();    // in-house ImGui menu
 	cheats::install();  // net-seam packet handlers + per-frame driver (reads menu state)
 
+	// --- i18n: Phase 0 inbound chat translation (inert unless enabled) ---
+	// Registered here, alongside compat/input/menu/cheats above (NOT after
+	// render::install() below), for the same reason those are: hooks::install()
+	// calls render::on_frame(pump_tick), which push_back()s onto render's
+	// frameCbs vector. That must happen BEFORE render::install() makes
+	// hkEndScene live and starts iterating that same vector every frame on
+	// the game thread -- otherwise the push_back races a concurrent
+	// iteration (vector realloc -> use-after-free/torn read -> crash), which
+	// is exactly what the comment above compat::install() warns about.
+	// samp::base()/is_in_game() are already guaranteed by this point (the
+	// polling loops earlier in this function), and neither engine::start()
+	// nor hooks::install() needs net:: or render:: to be installed first.
+	i18n::config::load();
+	i18n::cache::load( "fuego_i18n_tm.txt" );
+	if ( i18n::config::get().inbound_chat ) {
+		i18n::ProviderConfig pc;
+		auto &s   = i18n::config::get();
+		pc.baseUrl = s.base_url;
+		pc.apiKey  = s.api_key;
+		pc.model   = s.model;
+		i18n::engine::start( pc, i18n::config::build_system_prompt( s.target_lang ) );
+		i18n::hooks::install();
+		Log( "[i18n] inbound chat translation ENABLED (target_lang=%d, model=%s).", s.target_lang, s.model.c_str() );
+	}
+
 	// --- networking / RakNet hook (accurate) ---
 	// Poll until SA:MP's RakClient interface is live, then swap in our hook.
 	int ni = 0;
@@ -82,20 +107,6 @@ void bring_up_subsystems() {
 		Sleep( 100 );
 	Log( render::installed() ? "[init] overlay online (F2 for menu)."
 	                         : "[init] WARNING: render hook failed; menu unavailable." );
-
-	// --- i18n: Phase 0 inbound chat translation (inert unless enabled) ---
-	i18n::config::load();
-	i18n::cache::load( "fuego_i18n_tm.txt" );
-	if ( i18n::config::get().inbound_chat ) {
-		i18n::ProviderConfig pc;
-		auto &s   = i18n::config::get();
-		pc.baseUrl = s.base_url;
-		pc.apiKey  = s.api_key;
-		pc.model   = s.model;
-		i18n::engine::start( pc, i18n::config::build_system_prompt( s.target_lang ) );
-		i18n::hooks::install();
-		Log( "[i18n] inbound chat translation ENABLED (target_lang=%d, model=%s).", s.target_lang, s.model.c_str() );
-	}
 
 	Log( "[init] core online." );
 }

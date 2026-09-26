@@ -16,8 +16,19 @@ int main() {
     return g_fail ? 1 : 0;
 }
 // Stubs so it links before later tasks fill them in (each task replaces its stub).
-void test_detect(){}
 void test_cache(){}   void test_validate(){}
+
+#include "i18n/detect.h"
+void test_detect() {
+    using namespace i18n::detect;
+    CHECK(script_of(L"\x043F\x0440\x0438\x0432\x0435\x0442") == Script::Cyrillic, "script_of Cyrillic");
+    CHECK(script_of(L"hello") == Script::Latin, "script_of Latin");
+    CHECK(is_probably_english(L"you need to go to the store"), "is_probably_english true");
+    CHECK(!is_probably_english(L"hola como estas amigo"), "is_probably_english false");
+    CHECK(!worth_translating(L"the door is open", true), "skip English when target EN");
+    CHECK(worth_translating(L"\x043F\x0440\x0438\x0432\x0435\x0442", true), "translate Cyrillic");
+    CHECK(!worth_translating(L"12345", true), "skip pure digits");
+}
 
 #include "i18n/json_min.h"
 void test_json() {

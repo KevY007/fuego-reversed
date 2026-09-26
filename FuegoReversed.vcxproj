@@ -124,6 +124,9 @@
     <ClCompile Include="src\i18n\hooks.cpp">
       <ObjectFileName>$(IntDir)i18n_hooks.obj</ObjectFileName>
     </ClCompile>
+    <ClCompile Include="src\i18n\outbound.cpp">
+      <ObjectFileName>$(IntDir)i18n_outbound.obj</ObjectFileName>
+    </ClCompile>
     <!-- gta-reversed bridge: the ONE TU that sees gta-reversed's headers. Compiled
          exactly like upstream compiled gta_reversed.lib (language mode, defines,
          include roots, charset/conformance flags; all from gta_deps.props). -->

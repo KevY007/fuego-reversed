@@ -2,6 +2,7 @@
 
 #include "engine.h"
 #include "config.h"
+#include "outbound.h"
 
 #include "../samp/samp.h"
 #include "../samp/addresses.h"
@@ -48,6 +49,10 @@ constexpr uint32_t kMarkerColor = 0xFFB7B7FFu;      // faint lavender (ARGB)
 // hooked_add_entry() or the patched address itself -- otherwise the line we
 // print here would re-enter the detour and get queued for translation again.
 void apply_result( const i18n::engine::Result &r ) {
+	// Outbound translations (surface 1) are SENT to the server, not shown in the
+	// local chat window -- route them to the outbound module.
+	if ( r.surface == 1 ) { i18n::outbound::on_result( r ); return; }
+
 	// Guards against an exception (realistically only std::bad_alloc, from
 	// the std::string work below) crossing this C-ABI seam: apply_result()
 	// runs from pump_tick() (below), itself a D3D EndScene callback invoked
@@ -182,7 +187,9 @@ void install() {
 
 void apply_config() {
 	auto &s = i18n::config::get();
-	if ( !s.inbound_chat ) {
+	// The one worker engine serves BOTH directions (inbound display + outbound
+	// send via per-job overrides), so it runs whenever either is enabled.
+	if ( !s.inbound_chat && !s.outbound_enabled ) {
 		i18n::engine::stop();
 		Log( "[i18n] translation disabled (engine stopped)." );
 		return;
@@ -199,8 +206,9 @@ void apply_config() {
 	i18n::engine::start( pc,
 	                     i18n::config::build_system_prompt( s.target_lang, s.roman_output ),
 	                     s.target_lang, dispCp );
-	Log( "[i18n] translation ENABLED (target_lang=%d, roman=%d, cp=%d, model=%s).",
-	     s.target_lang, (int)s.roman_output, dispCp, s.model.c_str() );
+	Log( "[i18n] engine running (inbound=%d target=%d roman=%d cp=%d | outbound=%d server=%d | model=%s).",
+	     (int)s.inbound_chat, s.target_lang, (int)s.roman_output, dispCp,
+	     (int)s.outbound_enabled, s.outbound_target_lang, s.model.c_str() );
 }
 
 } // namespace i18n::hooks

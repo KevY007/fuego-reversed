@@ -100,6 +100,10 @@ void from_text(const std::string& text) {
                 g_settings.read_timeout_ms = std::stoi(value);
             } else if (key == "roman_output") {
                 g_settings.roman_output = (value == "true" || value == "1");
+            } else if (key == "outbound_enabled") {
+                g_settings.outbound_enabled = (value == "true" || value == "1");
+            } else if (key == "outbound_target_lang") {
+                g_settings.outbound_target_lang = std::stoi(value);
             }
             // unknown keys are silently ignored
         } catch (...) {
@@ -119,6 +123,8 @@ std::string to_text() {
     out << "marker_style=" << g_settings.marker_style << "\n";
     out << "read_timeout_ms=" << g_settings.read_timeout_ms << "\n";
     out << "roman_output=" << (g_settings.roman_output ? "true" : "false") << "\n";
+    out << "outbound_enabled=" << (g_settings.outbound_enabled ? "true" : "false") << "\n";
+    out << "outbound_target_lang=" << g_settings.outbound_target_lang << "\n";
     return out.str();
 }
 

@@ -14,6 +14,7 @@
 #include "../i18n/engine.h"
 #include "../i18n/provider.h" // list_models (model dropdown) + ProviderConfig
 #include "../i18n/hooks.h"    // apply_config (live-apply translator settings)
+#include "../i18n/outbound.h" // Ctrl+Shift outgoing-chat toggle
 
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
@@ -66,6 +67,41 @@ void fetch_models_async() {
 			g_modelErr = err;
 			g_modelState.store( 3 );
 		}
+	} ).detach();
+}
+
+// --- translator self-test: translate a sample line so the user can verify the
+// endpoint/model/prompt without joining a server. Async (blocking provider). ---
+std::mutex        g_selfMtx;
+std::string       g_selfResult;
+std::atomic<int>  g_selfState{ 0 }; // 0 idle, 1 running, 2 done, 3 error
+long              g_selfMs = 0;
+
+const char *kSelfSample = "Hey Kevy, meet me at Grove Street with the Infernus, this server is fun!";
+
+void run_selftest_async() {
+	if ( g_selfState.load() == 1 ) return;
+	g_selfState.store( 1 );
+
+	i18n::ProviderConfig pc;
+	auto &s = i18n::config::get();
+	pc.baseUrl = s.base_url;
+	pc.apiKey  = s.api_key;
+	pc.model   = s.model;
+	pc.readMs  = s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000;
+	std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output );
+
+	std::thread( [pc, prompt]() {
+		auto prov = i18n::make_openai_compatible( pc );
+		std::vector<std::string> out;
+		std::string err;
+		DWORD t0 = GetTickCount();
+		bool ok = prov && prov->translate( { kSelfSample }, prompt, "", out, err );
+		DWORD t1 = GetTickCount();
+		std::lock_guard<std::mutex> lk( g_selfMtx );
+		g_selfMs = (long)( t1 - t0 );
+		if ( ok && !out.empty() ) { g_selfResult = out[0]; g_selfState.store( 2 ); }
+		else { g_selfResult = err.empty() ? "(failed)" : err; g_selfState.store( 3 ); }
 	} ).detach();
 }
 
@@ -344,8 +380,52 @@ void draw_ui() {
 			const char* marker_styles[] = { "Glyph + tint", "Tint only", "Prefix tag" };
 			ImGui::Combo( "Marker style", &s.marker_style, marker_styles, 3 );
 
+			// --- Outgoing chat translation (my messages -> server language) ---
+			ImGui::SeparatorText( "Outgoing chat (translate MY messages)" );
+			if ( ImGui::Checkbox( "Translate my chat before sending", &s.outbound_enabled ) )
+				i18n::hooks::apply_config(); // apply live
+			ImGui::SameLine();
+			HelpMarker( "Your typed chat is translated into the server's language before it is sent. "
+			            "Toggle in-game with Ctrl+Shift. Commands (/...) are never translated. "
+			            "If translation fails, your original message is sent unchanged." );
+			{
+				const auto &langs = i18n::config::language_options();
+				int cur = -1;
+				for ( size_t i = 0; i < langs.size(); ++i )
+					if ( langs[i].code == s.outbound_target_lang ) { cur = (int) i; break; }
+				const char* preview = ( cur >= 0 ) ? langs[cur].name : "(custom)";
+				if ( ImGui::BeginCombo( "Server language (translate into)", preview ) ) {
+					for ( size_t i = 0; i < langs.size(); ++i ) {
+						bool sel = ( (int) i == cur );
+						if ( ImGui::Selectable( langs[i].name, sel ) ) s.outbound_target_lang = langs[i].code;
+						if ( sel ) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+			}
+
 			ImGui::Separator();
 			ImGui::Text( "Status: %s", i18n::engine::status() );
+			{
+				std::string le = i18n::engine::last_error();
+				if ( !le.empty() ) { ImGui::SameLine(); ImGui::TextDisabled( "(%s)", le.c_str() ); }
+			}
+
+			// Self-test: translate a sample line right now so you can verify the
+			// endpoint/model/prompt without joining a server.
+			if ( ImGui::Button( "Test translation" ) ) run_selftest_async();
+			ImGui::SameLine();
+			int sst = g_selfState.load();
+			if ( sst == 1 )      ImGui::TextDisabled( "translating..." );
+			else if ( sst == 2 ) ImGui::TextDisabled( "ok (%ld ms)", g_selfMs );
+			else if ( sst == 3 ) ImGui::TextDisabled( "failed (%ld ms)", g_selfMs );
+			{
+				std::lock_guard<std::mutex> lk( g_selfMtx );
+				if ( !g_selfResult.empty() ) {
+					ImGui::TextWrapped( "sample: %s", kSelfSample );
+					ImGui::TextWrapped( "result: %s", g_selfResult.c_str() );
+				}
+			}
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();
@@ -403,8 +483,12 @@ void on_frame( IDirect3DDevice9 *dev ) {
 		fcfg.OversampleH = 3;
 		fcfg.OversampleV = 2;
 		fcfg.PixelSnapH  = true;
-		ImFont *f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\segoeui.ttf", 20.0f, &fcfg );
-		if ( !f ) f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\tahoma.ttf", 19.0f, &fcfg );
+		// Cyrillic range (also includes basic Latin) so translated RU/UK text --
+		// and the translator self-test result -- renders in the menu instead of
+		// as '?' boxes. (Arabic/CJK still won't render; romanize those.)
+		const ImWchar *ranges = io.Fonts->GetGlyphRangesCyrillic();
+		ImFont *f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\segoeui.ttf", 20.0f, &fcfg, ranges );
+		if ( !f ) f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\tahoma.ttf", 19.0f, &fcfg, ranges );
 		if ( !f ) { io.Fonts->AddFontDefault(); io.FontGlobalScale = 1.4f; }
 		visuals::init_fonts(); // overlay (ESP/nametag) fonts, after the default menu font
 		style();
@@ -424,6 +508,21 @@ void on_frame( IDirect3DDevice9 *dev ) {
 	}
 
 	display_tick(); // uncap FPS + borderless window
+
+	// Ctrl+Shift toggles outgoing chat translation (edge-detected + 400ms cooldown
+	// so a held combo, or an incidental Ctrl+Shift+key, fires the toggle at most
+	// once; toggle() prints a chat notice so it's never silently flipped).
+	{
+		static bool  prevCombo  = false;
+		static DWORD lastToggle = 0;
+		bool  combo = ( GetAsyncKeyState( VK_CONTROL ) & 0x8000 ) && ( GetAsyncKeyState( VK_SHIFT ) & 0x8000 );
+		DWORD now   = GetTickCount();
+		if ( combo && !prevCombo && ( now - lastToggle ) > 400 ) {
+			i18n::outbound::toggle();
+			lastToggle = now;
+		}
+		prevCombo = combo;
+	}
 
 	ImGui_ImplDX9_NewFrame();
 	ImGui_ImplWin32_NewFrame();

@@ -90,11 +90,17 @@ void worker_loop() {
             g_jobs.pop_front();
         }
 
+        // Per-job direction overrides (outbound uses them); fall back to the
+        // engine defaults set by start().
+        const std::string& sp = job.promptOverride.empty() ? g_sysPrompt : job.promptOverride;
+        int tl  = job.targetLangOverride ? job.targetLangOverride : g_targetLang;
+        int dcp = job.displayCpOverride  ? job.displayCpOverride  : g_displayCp;
+
         std::string disp;
         bool ok = false;
         try {
-            ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), g_sysPrompt, disp,
-                             g_targetLang, g_displayCp, job.rollingCtx);
+            ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), sp, disp,
+                             tl, dcp, job.rollingCtx);
         } catch (...) {
             // Realistically only std::bad_alloc anywhere in this call graph
             // (string/vector/wstring allocations along the pipeline). An
@@ -114,9 +120,9 @@ void worker_loop() {
             std::lock_guard<std::mutex> lock(g_resultMutex);
             g_results.push_back(Result{ job.handle, job.surface, disp, ok });
         }
-        {
+        if (!job.noDedup) {
             std::lock_guard<std::mutex> lock(g_jobMutex);
-            g_inFlight.erase(std::hash<std::string>{}(job.sourceBytes));
+            g_inFlight.erase(std::hash<std::string>{}(job.sourceBytes) * 31u + (size_t)job.surface);
         }
     }
 }
@@ -243,7 +249,7 @@ void stop() {
 }
 
 void submit(const Job& job) {
-    size_t h = std::hash<std::string>{}(job.sourceBytes);
+    size_t h = std::hash<std::string>{}(job.sourceBytes) * 31u + (size_t)job.surface;
 
     // Decode this line to UTF-8 once, outside the lock, so it's JSON-safe to
     // reuse as future context (raw cp1251/cp1252 bytes would corrupt the
@@ -253,24 +259,29 @@ void submit(const Job& job) {
 
     Job j = job;
     std::lock_guard<std::mutex> lock(g_jobMutex);
-    if (!g_inFlight.insert(h).second) return; // identical source already queued/in-flight: dedup
+    if (!job.noDedup && !g_inFlight.insert(h).second) return; // identical source already queued/in-flight: dedup
 
-    // Attach the recent conversation (oldest -> newest) as background context
-    // for this job, BEFORE recording the current line so a line is never its
-    // own context.
-    if (!g_recentCtx.empty()) {
-        std::string ctx = "Recent chat (context only, do NOT translate):\n";
-        for (const std::string& line : g_recentCtx) {
-            ctx += "- ";
-            ctx += line;
-            ctx += "\n";
+    // Rolling context is the inbound chat conversation. Outbound jobs (which the
+    // player is composing, translated the other way) opt out via skipContext so
+    // they neither read nor pollute the inbound context ring.
+    if (!job.skipContext) {
+        // Attach the recent conversation (oldest -> newest) as background context
+        // for this job, BEFORE recording the current line so a line is never its
+        // own context.
+        if (!g_recentCtx.empty()) {
+            std::string ctx = "Recent chat (context only, do NOT translate):\n";
+            for (const std::string& line : g_recentCtx) {
+                ctx += "- ";
+                ctx += line;
+                ctx += "\n";
+            }
+            j.rollingCtx = std::move(ctx);
         }
-        j.rollingCtx = std::move(ctx);
-    }
 
-    // Remember this line for the next few jobs' context.
-    g_recentCtx.push_back(std::move(utf8Line));
-    if (g_recentCtx.size() > kCtxLines) g_recentCtx.pop_front();
+        // Remember this line for the next few jobs' context.
+        g_recentCtx.push_back(std::move(utf8Line));
+        if (g_recentCtx.size() > kCtxLines) g_recentCtx.pop_front();
+    }
 
     g_jobs.push_back(std::move(j));
     g_jobCv.notify_one();

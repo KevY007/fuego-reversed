@@ -20,13 +20,26 @@ namespace i18n::engine {
 // later phases and reuse this same Job/Result shape.
 struct Job {
     uint64_t handle;
-    int surface;
+    int surface;          // 0 = inbound chat display; 1 = outbound chat (send). See hooks::apply_result.
     std::string sourceBytes;
     int srcCodepage; // 0 = auto-detect via charset::guess_codepage
     // Recent chat lines (UTF-8, already labeled) to send as background context
     // so the model keeps conversational relevancy. Filled by submit() from a
     // main-thread ring buffer; leave empty and submit() will populate it.
+    // (Outbound jobs set surface=1 and leave this empty -- no shared context.)
     std::string rollingCtx;
+    // Per-job direction overrides, for surfaces that translate the OPPOSITE way
+    // from the engine default (outbound: player-lang -> server-lang). When set
+    // they replace the engine's start()-time prompt/target/codepage for this one
+    // job. Empty prompt / 0 lang / 0 codepage mean "use the engine default".
+    std::string promptOverride;
+    int targetLangOverride = 0;
+    int displayCpOverride = 0;
+    bool skipContext = false; // don't add this line to the inbound rolling-context ring
+    // Outbound sets this: the player may legitimately send the same text twice,
+    // and it must never be dropped as a duplicate of an inbound line, so these
+    // jobs bypass the in-flight dedup entirely.
+    bool noDedup = false;
 };
 
 struct Result {

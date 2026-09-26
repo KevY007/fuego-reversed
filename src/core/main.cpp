@@ -25,6 +25,7 @@
 #include "../i18n/provider.h"
 #include "../i18n/engine.h"
 #include "../i18n/hooks.h"
+#include "../i18n/outbound.h"
 
 #include <windows.h>
 
@@ -85,6 +86,7 @@ void bring_up_subsystems() {
 	// render::install()), then start the worker engine iff translation is on.
 	i18n::cache::load( "fuego_i18n_tm.txt" );
 	i18n::hooks::install();
+	i18n::outbound::install(); // register the outgoing-chat seam BEFORE net::install() below
 	i18n::hooks::apply_config();
 
 	// --- networking / RakNet hook (accurate) ---

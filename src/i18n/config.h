@@ -27,6 +27,13 @@ struct Settings {
     // is REQUIRED for languages whose script SA:MP's cp1251/cp1252 font can't
     // render at all (Urdu, Arabic, Hindi, ...); harmless for Latin languages.
     bool roman_output = false;
+
+    // --- Outbound: translate MY typed chat before it is sent (opposite
+    // direction: my language -> the server's language). Toggled live with
+    // Ctrl+Shift; outbound_enabled persists the last state. outbound_target_lang
+    // is the SERVER's language to translate into. ---
+    bool outbound_enabled = false;
+    int outbound_target_lang = 1049; // default Russian (classic "I speak EN, RU server")
 };
 
 Settings& get();

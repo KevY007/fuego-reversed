@@ -54,23 +54,19 @@ std::wstring from_utf8(const std::string& s) {
 int guess_codepage(const std::string& bytes) {
     if (bytes.empty()) return 1252;
 
-    // Histogram of high bytes (0xC0-0xFF)
+    // Count high bytes (0x80-0xFF) - substantial presence indicates Cyrillic (cp1251)
     int high_count = 0;
-    int cyrillic_count = 0;
+    int total = (int)bytes.size();
 
     for (unsigned char c : bytes) {
-        if (c >= 0xC0) {
+        if (c >= 0x80) {
             high_count++;
-            // Cyrillic in cp1251 is typically 0xC0-0xFF
-            if (c >= 0xC0) {
-                cyrillic_count++;
-            }
         }
     }
 
-    // If more than 50% of bytes are in the 0xC0-0xFF range,
-    // it's likely Cyrillic (cp1251)
-    if (high_count > 0 && cyrillic_count * 2 > high_count) {
+    // If more than ~33% of bytes are high (0x80-0xFF),
+    // it's likely Cyrillic (cp1251); otherwise Western (cp1252)
+    if (high_count * 3 > total) {
         return 1251;
     }
 
@@ -88,23 +84,78 @@ std::string cap_and_sanitize(const std::string& s, size_t maxBytes) {
         }
     }
 
-    // Now truncate to maxBytes on a UTF-8 code-point boundary
+    // Truncate to maxBytes if needed
     if (result.size() > maxBytes) {
         result.resize(maxBytes);
+    }
 
-        // Walk backwards to find a valid UTF-8 boundary
-        // UTF-8 continuation bytes start with 10xxxxxx (0x80-0xBF)
-        // Start bytes are 0xxxxxxx (single byte) or 11xxxxxx (multi-byte)
-        while (!result.empty()) {
-            unsigned char last = (unsigned char)result.back();
+    // Drop any trailing incomplete UTF-8 sequence
+    // Algorithm: from the end, count trailing continuation bytes (10xxxxxx, i.e. (b & 0xC0)==0x80)
+    // The byte before them must be a lead byte; check if it declares the right number of continuations
+    // If not enough continuations are present, remove the lead byte and all trailing continuations
 
-            // If it's a start byte (0xxxxxxx or 11xxxxxx), we're at a boundary
-            if ((last & 0x80) == 0 || (last & 0xC0) == 0xC0) {
-                break;
+    size_t i = result.size();
+    while (i > 0) {
+        unsigned char last = (unsigned char)result[i - 1];
+
+        // Single-byte character (0xxxxxxx) - valid boundary
+        if ((last & 0x80) == 0) {
+            break;
+        }
+
+        // Continuation byte (10xxxxxx) - need to count and find the lead byte
+        if ((last & 0xC0) == 0x80) {
+            // Count trailing continuation bytes
+            size_t cont_count = 0;
+            size_t j = i - 1;
+            while (j > 0 && ((unsigned char)result[j] & 0xC0) == 0x80) {
+                cont_count++;
+                j--;
             }
 
-            // It's a continuation byte (10xxxxxx), remove it
-            result.pop_back();
+            // Now check the byte before the continuations (should be a lead byte)
+            if (j < result.size()) {
+                unsigned char lead = (unsigned char)result[j];
+                int expected_continuations = 0;
+
+                if ((lead & 0xE0) == 0xC0) {        // 110xxxxx - 2-byte sequence
+                    expected_continuations = 1;
+                } else if ((lead & 0xF0) == 0xE0) { // 1110xxxx - 3-byte sequence
+                    expected_continuations = 2;
+                } else if ((lead & 0xF8) == 0xF0) { // 11110xxx - 4-byte sequence
+                    expected_continuations = 3;
+                } else {
+                    // Invalid lead byte or another continuation byte - remove it and all trailing continuations
+                    result.resize(j);
+                    i = j;
+                    continue;
+                }
+
+                // Check if we have the expected number of continuations
+                if (cont_count == expected_continuations) {
+                    // Complete sequence - valid boundary
+                    break;
+                } else {
+                    // Incomplete sequence - remove the lead byte and continuations
+                    result.resize(j);
+                    i = j;
+                    continue;
+                }
+            } else {
+                // Continuation bytes with no lead byte - remove them
+                result.resize(i - cont_count);
+                i -= cont_count;
+                continue;
+            }
+        } else if ((last & 0xC0) == 0xC0) {
+            // Lead byte with no continuation - this is an incomplete sequence
+            // Remove it
+            result.resize(i - 1);
+            i--;
+            continue;
+        } else {
+            // Should not reach here, but just in case
+            break;
         }
     }
 

@@ -136,4 +136,33 @@ void test_charset() {
     // cap + % strip
     CHECK(cap_and_sanitize("100% sure", 64).find('%') == std::string::npos, "% should be removed");
     CHECK(cap_and_sanitize(std::string(200,'x'), 144).size() <= 144, "should truncate to maxBytes");
+
+    // Regression tests for bug fixes
+    // IMPORTANT 1: cap_and_sanitize must handle incomplete UTF-8 sequences
+    // Euro sign (€) is U+20AC = UTF-8 {0xE2, 0x82, 0xAC} (3 bytes)
+    // Test: "x" (0x78) + € capped to 2 bytes should drop the incomplete Euro
+    std::string x_euro = "x\xE2\x82\xAC";
+    std::string capped_x = cap_and_sanitize(x_euro, 2);
+    CHECK_EQ(capped_x, std::string("x"));
+    CHECK(capped_x.find('\xE2') == std::string::npos, "lead byte of incomplete sequence must be gone");
+
+    // Test: "a" + é (U+00E9 = UTF-8 {0xC3, 0xA9}) capped to 2 should drop incomplete é
+    std::string a_e_acute = "a\xC3\xA9";
+    std::string capped_ae = cap_and_sanitize(a_e_acute, 2);
+    CHECK_EQ(capped_ae, std::string("a"));
+
+    // Test: emoji (U+1F600 = {0xF0, 0x9F, 0x98, 0x80}) capped to 1/2/3 should have nothing left
+    std::string emoji = "\xF0\x9F\x98\x80";
+    CHECK_EQ(cap_and_sanitize(emoji, 1), std::string(""));
+    CHECK_EQ(cap_and_sanitize(emoji, 2), std::string(""));
+    CHECK_EQ(cap_and_sanitize(emoji, 3), std::string(""));
+    CHECK_EQ(cap_and_sanitize(emoji, 4), emoji);
+
+    // IMPORTANT 2: guess_codepage must use proportion of high bytes over total
+    // "café" in cp1252 is {0x63, 0x61, 0x66, 0xE9} (4 bytes, 1 high => 25% > 33% threshold is false)
+    std::string cafe_cp1252 = "\x63\x61\x66\xE9";
+    CHECK_EQ(guess_codepage(cafe_cp1252), 1252);
+
+    // "привет" (hello in Russian) has many high bytes, should return 1251
+    CHECK_EQ(guess_codepage(ru), 1251);
 }

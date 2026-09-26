@@ -5,6 +5,7 @@
 #include "../core/logger.h"
 #include "../compat/compat.h"
 #include "../samp/samp.h"
+#include "../samp/samp_sdk.h"   // scoreboard_info (hide the menu while the scoreboard is up)
 #include "../cheats/visuals.h"
 #include "../cheats/veh.h"
 #include "../core/config.h"
@@ -95,6 +96,8 @@ void draw_ui() {
 			ImGui::Checkbox( "Locked Vehicle ESP", &g_set.locked_vehicle_esp );
 			ImGui::Checkbox( "Weapon Finder", &g_set.weapon_finder );
 			ImGui::Checkbox( "Show Players Guns", &g_set.show_players_guns );
+			ImGui::SliderFloat( "Nametag Distance", &g_set.player_tags_dist, 20.0f, 500.0f, "%.0f" );
+			ImGui::SliderFloat( "Vehicle Tag Distance", &g_set.vehicle_tags_dist, 20.0f, 300.0f, "%.0f" );
 			ImGui::Checkbox( "Player ESP (box)", &g_set.player_esp );
 			if ( g_set.player_esp ) { ImGui::Indent();
 				ImGui::Checkbox( "Box", &g_set.esp_box ); ImGui::SameLine(); ImGui::Checkbox( "Name", &g_set.esp_name ); ImGui::SameLine();
@@ -135,7 +138,7 @@ void draw_ui() {
 			if ( ImGui::Button( "Unlock Vehicle" ) )        { veh::start_pick( 1 ); g_open = false; }
 			if ( ImGui::Button( "Damage Vehicle Doors" ) )  { veh::start_pick( 2 ); g_open = false; }
 			if ( ImGui::Button( "Destroy Vehicle" ) )       { veh::start_pick( 3 ); g_open = false; }
-			if ( ImGui::Button( "Attach/Tow Vehicle" ) )    veh::attach_trailer();
+			if ( ImGui::Button( "Attach/Tow Vehicle" ) )    { veh::start_pick( 4 ); g_open = false; }
 			ImGui::EndTabItem();
 		}
 		// ---------------- Movement (our extras) ----------------
@@ -163,6 +166,9 @@ void draw_ui() {
 		if ( ImGui::BeginTabItem( "Display" ) ) {
 			ImGui::Checkbox( "Uncap FPS (frame limiter off)", &g_set.uncap_fps );
 			ImGui::Checkbox( "Borderless window (fill screen)", &g_set.borderless );
+			ImGui::SeparatorText( "Overlay" );
+			ImGui::Checkbox( "Cheat state text (top-right)", &g_set.status_text );
+			ImGui::Checkbox( "Active-cheat watermark (top-left)", &g_set.show_active_list );
 			ImGui::Spacing();
 			ImGui::TextWrapped( "For 1440p @ your monitor's refresh (e.g. 260Hz): set GTA to "
 			                    "WINDOWED at 2560x1440 in its own Display menu, then enable both "
@@ -222,6 +228,7 @@ void on_frame( IDirect3DDevice9 *dev ) {
 		ImFont *f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\segoeui.ttf", 18.0f );
 		if ( !f ) f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\tahoma.ttf", 17.0f );
 		if ( !f ) { io.Fonts->AddFontDefault(); io.FontGlobalScale = 1.35f; }
+		visuals::init_fonts(); // overlay (ESP/nametag) fonts, after the default menu font
 		style();
 		ImGui_ImplWin32_Init( render::window() );
 		ImGui_ImplDX9_Init( dev );
@@ -258,7 +265,10 @@ void on_frame( IDirect3DDevice9 *dev ) {
 	// Use SA:MP's cursor (shown by toggle_cursor) as the single visible cursor;
 	// don't also draw ImGui's software one.
 	ImGui::GetIO().MouseDrawCursor = false;
-	if ( g_open && !render::overlay_hidden() )
+	// Hide the menu while the SA:MP scoreboard is up (Fuego 1:1) so it doesn't cover it.
+	bool sbOpen = false;
+	if ( samp::stScoreboardInfo *sb = samp::scoreboard_info() ) sbOpen = sb->iIsEnabled != 0;
+	if ( g_open && !render::overlay_hidden() && !sbOpen )
 		draw_ui();
 
 	ImGui::EndFrame();
@@ -303,6 +313,7 @@ bool on_wndproc( HWND h, UINT m, WPARAM w, LPARAM l ) {
 namespace menu {
 
 bool is_open() { return g_open; }
+void set_open( bool on ) { g_open = on; }
 
 void install() {
 	render::on_frame( on_frame );

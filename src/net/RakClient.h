@@ -107,7 +107,7 @@ enum RPCEnumeration
 	RPC_DeathMessage				= 55,
 	RPC_SetPlayerMapIcon			= 56,
 	RPC_RemoveVehicleComponent		= 57,
-	RPC_Update3DTextLabel			= 58,
+	RPC_Delete3DTextLabel			= 58, // (was mislabeled Update3DTextLabel; 58 = Delete3DTextLabel on the wire)
 	RPC_ChatBubble					= 59,
 	RPC_UpdateSystemTime			= 60,
 	RPC_ShowDialog					= 61,

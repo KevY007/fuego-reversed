@@ -10,6 +10,7 @@
 #include "logger.h"
 #include "crashlog.h"
 #include "config.h"
+#include "input.h"
 #include "../samp/samp.h"
 #include "../net/net.h"
 #include "../compat/compat.h"
@@ -50,6 +51,15 @@ void bring_up_subsystems() {
 	Sleep( kLoadSettleMs ); // 250ms settle after chat handle == loaded in
 	Log( "[init] in-game. Bringing up subsystems." );
 
+	// --- register every handler BEFORE the hooks go live ---
+	// The game's main thread starts walking the net/render callback lists the moment
+	// net::install() / render::install() swap our hooks in; appending to those lists
+	// afterwards (from this thread) would race with that iteration.
+	compat::install();  // 0.3.7 layer (inert until /compat) + the incoming RPC-dispatch hook
+	input::install();   // first frame/WndProc user: hotkey snapshot for everyone after it
+	menu::install();    // in-house ImGui menu
+	cheats::install();  // net-seam packet handlers + per-frame driver (reads menu state)
+
 	// --- networking / RakNet hook (accurate) ---
 	// Poll until SA:MP's RakClient interface is live, then swap in our hook.
 	int ni = 0;
@@ -57,27 +67,16 @@ void bring_up_subsystems() {
 		Sleep( 100 );
 	Log( "[init] networking hook: %s", net::installed() ? "ACTIVE" : "NOT INSTALLED (samp iface not ready)" );
 
-	// --- 0.3.7 compatibility layer (inert until /compat switches to 0.3.7) ---
-	if ( net::installed() )
-		compat::install();
-
 	// --- client chat commands (/compat, /fuego_cmds, ...) ---
 	cmd::install();
 
-	// --- overlay: D3D9 render hook + in-house ImGui menu ---
+	// --- overlay: D3D9 render hook (menu + per-frame cheats ride on it) ---
 	// Poll until GTA's D3D9 device is live (0xC97C28), then hook it.
 	int ri = 0;
 	while ( !render::install() && ri++ < 100 )
 		Sleep( 100 );
-	if ( render::installed() ) {
-		menu::install();
-		Log( "[init] overlay online (F2 for menu)." );
-	} else {
-		Log( "[init] WARNING: render hook failed; menu unavailable." );
-	}
-
-	// --- cheats: net-seam packet handlers + per-frame driver (reads menu state) ---
-	cheats::install();
+	Log( render::installed() ? "[init] overlay online (F2 for menu)."
+	                         : "[init] WARNING: render hook failed; menu unavailable." );
 
 	Log( "[init] core online." );
 }

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  deps.props : everything FuegoReversed takes from its dependencies.
+
+  The gta-reversed game layer (external\gta-reversed submodule) is built by
+  scripts\bootstrap.ps1, which also writes external\generated\gta_deps.props with
+  the exact include dirs / defines / language mode / link inputs upstream compiled
+  with. That generated file defines:
+    GtaReversedIncludes, GtaReversedDefines, GtaLanguageStandard, GtaCompileOptions
+        -> applied ONLY to the gta bridge TU (src\gta\gtahost.cpp), C++23 like upstream
+    GtaLinkDeps
+        -> gta_reversed.lib + its Conan packages + system libs
+    ImguiInclude, ImguiBindings
+        -> the one imgui (upstream's Conan package) the whole ASI uses, menu included
+  Nothing here points outside this repository.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <FuegoDepsProps>$(MSBuildThisFileDirectory)external\generated\gta_deps.props</FuegoDepsProps>
+  </PropertyGroup>
+  <Import Project="$(FuegoDepsProps)" Condition="Exists('$(FuegoDepsProps)')" />
+
+  <!-- The commit the submodule is checked out at (detached HEAD, or a branch ref). -->
+  <PropertyGroup>
+    <FuegoGtaGitDir>$(MSBuildThisFileDirectory).git\modules\external\gta-reversed</FuegoGtaGitDir>
+    <FuegoGtaHead Condition="Exists('$(FuegoGtaGitDir)\HEAD')">$([System.IO.File]::ReadAllText('$(FuegoGtaGitDir)\HEAD').Trim())</FuegoGtaHead>
+    <FuegoGtaHeadRef Condition="$(FuegoGtaHead.StartsWith('ref: '))">$(FuegoGtaHead.Substring(5))</FuegoGtaHeadRef>
+    <FuegoGtaHead Condition="'$(FuegoGtaHeadRef)' != '' and Exists('$(FuegoGtaGitDir)\$(FuegoGtaHeadRef)')">$([System.IO.File]::ReadAllText('$(FuegoGtaGitDir)\$(FuegoGtaHeadRef)').Trim())</FuegoGtaHead>
+    <FuegoGtaHead Condition="$(FuegoGtaHead.StartsWith('ref: '))"></FuegoGtaHead>
+  </PropertyGroup>
+
+  <Target Name="FuegoCheckDeps" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(FuegoDepsProps)')"
+           Text="Fuego Reversed dependencies are not set up yet. Run scripts\bootstrap.cmd once (fetches + builds the gta-reversed submodule), then build again." />
+    <Warning Condition="'$(FuegoGtaHead)' != '' and '$(GtaDepsCommit)' != '' and '$(FuegoGtaHead)' != '$(GtaDepsCommit)'"
+             Text="external\gta-reversed is at $(FuegoGtaHead) but gta_reversed.lib was built from $(GtaDepsCommit). Re-run scripts\bootstrap.cmd to rebuild it." />
+  </Target>
+</Project>

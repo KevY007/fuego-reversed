@@ -7,9 +7,7 @@
 
 #include <windows.h>
 #include <d3d9.h>
-#include <d3dx9.h>     // D3DXAssembleShader (DirectX SDK June 2010; per-file include path)
 #include <intrin.h>
-#include <cstdio>
 #include <cstring>
 
 #pragma intrinsic( _ReturnAddress )
@@ -27,26 +25,21 @@ bool                   g_armed   = false;
 // the primitive being drawn is an actor/ped (Fuego's detection).
 constexpr DWORD kPedDrawRetAddr = 0x761142;
 
-// D3DXAssembleShader is resolved dynamically from d3dx9_43.dll rather than linked,
-// so a missing DirectX runtime just disables chams instead of blocking the whole
-// ASI from loading (an import dependency would).
-typedef HRESULT( WINAPI *AssembleShader_t )( LPCSTR, UINT, const D3DXMACRO *, LPD3DXINCLUDE,
-                                             DWORD, LPD3DXBUFFER *, LPD3DXBUFFER * );
-AssembleShader_t g_assemble = nullptr;
+DWORD f2dw( float f ) { DWORD d; std::memcpy( &d, &f, sizeof d ); return d; }
 
-// Flat-colour pixel shader (s0beit/Azorbix): outputs a constant RGBA. ps.1.1, so it
-// can fail on very modern drivers -- if it does we leave the shader null and skip.
+// Flat-colour pixel shader (s0beit/Azorbix): outputs a constant RGBA. This is the
+// token stream D3DXAssembleShader produces for
+//     ps.1.1 / def c0, r, g, b, a / mov r0, c0
+// emitted directly, so there's no d3dx9 (DirectX SDK) build or runtime dependency.
+// ps.1.1 can still be refused by a driver -- then the shader stays null and chams is inert.
 HRESULT gen_shader( IDirect3DDevice9 *dev, IDirect3DPixelShader9 **out, float a, float r, float g, float b ) {
-	if ( !g_assemble )
-		return E_FAIL;
-	char src[256];
-	_snprintf( src, sizeof( src ), "ps.1.1\ndef c0, %f, %f, %f, %f\nmov r0,c0", r, g, b, a );
-	ID3DXBuffer *buf = nullptr;
-	if ( FAILED( g_assemble( src, (UINT) strlen( src ), nullptr, nullptr, 0, &buf, nullptr ) ) || !buf )
-		return E_FAIL;
-	HRESULT hr = dev->CreatePixelShader( (const DWORD *) buf->GetBufferPointer(), out );
-	buf->Release();
-	return hr;
+	const DWORD code[] = {
+		0xFFFF0101,                                         // ps_1_1
+		0x00000051, 0xA00F0000, f2dw( r ), f2dw( g ), f2dw( b ), f2dw( a ), // def c0, r, g, b, a
+		0x00000001, 0x800F0000, 0xA0E40000,                 // mov r0, c0
+		0x0000FFFF,                                         // end
+	};
+	return dev->CreatePixelShader( code, out );
 }
 
 HRESULT __stdcall hkDIP( IDirect3DDevice9 *dev, D3DPRIMITIVETYPE pt, INT bvi, UINT mvi, UINT nv, UINT si, UINT pc ) {
@@ -77,10 +70,6 @@ void first_frame( IDirect3DDevice9 *dev ) {
 	if ( g_armed || !dev )
 		return;
 	g_armed = true;
-
-	// Resolve D3DXAssembleShader from the DirectX runtime (no hard link dependency).
-	if ( HMODULE d3dx = LoadLibraryA( "d3dx9_43.dll" ) )
-		g_assemble = reinterpret_cast<AssembleShader_t>( GetProcAddress( d3dx, "D3DXAssembleShader" ) );
 
 	if ( FAILED( gen_shader( dev, &g_blue,  0.8f, 0.0f, 0.0f, 1.0f ) ) ) g_blue  = nullptr;
 	if ( FAILED( gen_shader( dev, &g_green, 0.8f, 0.0f, 1.0f, 0.0f ) ) ) g_green = nullptr;

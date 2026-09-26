@@ -18,6 +18,9 @@
 #include "server.h"             // server::tick (LSRP automations)
 #include "chams.h"              // chams::install (DrawIndexedPrimitive hook)
 #include "status.h"             // status::set (1:1 active-cheat feedback)
+#include "../core/input.h"      // Fuego keyhook semantics (gated: not while typing/alt-tabbed)
+#include "../core/memory.h"     // mem::write (DisableFlyingBirds RET-patch)
+#include "veh.h"                // veh::is_picking (cursor-up gating, like Fuego's g_iCursorEnabled)
 
 #include <windows.h>
 #include <cmath>
@@ -181,12 +184,30 @@ float moonwalk_quat_w( float w ) {
 	return (float)cos( invertedRad / 2.0 );
 }
 
-// Nearest streamed player to us (optionally skipping friends). -1 if none.
-int find_nearest_player( bool friendFilter ) {
+// A player the slappers should skip: dead/downed (Fuego sampFindNearestPlayer checkdead --
+// GTA hp < 0.9, SA:MP synced health < 0.9, an injured/KO/dead anim, or a NONE/WASTED state).
+bool player_dead_or_downed( int id ) {
+	if ( game::player_gta_health( id ) < 0.9f ) return true;
+	float sh = samp::player_synced_health( id );
+	if ( sh >= 0.0f && sh < 0.9f ) return true;
+	if ( game::player_playing_anim( id, "SWEET_INJUREDLOOP" ) ||
+	     game::player_playing_anim( id, "CS_DEAD_GUY" ) ||
+	     game::player_playing_anim( id, "KO_SKID_FRONT" ) ||
+	     game::player_playing_anim( id, "KO_SKID_BACK" ) )
+		return true;
+	samp::stRemotePlayer *rp = samp::remote_player( id );
+	int st = ( rp && rp->pPlayerData ) ? rp->pPlayerData->bytePlayerState : 0;
+	return st == PLAYER_STATE_NONE || st == PLAYER_STATE_WASTED;
+}
+
+// Nearest streamed player to us. friendFilter skips friends; skipDead skips dead/downed
+// players (Fuego's near-slapper passes checkdead=true so it doesn't keep hitting corpses).
+int find_nearest_player( bool friendFilter, bool skipDead = false ) {
 	int best = -1; float bestDist = 1e18f;
 	for ( int id = 0; id < SAMP_MAX_PLAYERS; id++ ) {
 		if ( !samp::is_connected( id ) || !game::player_streamed( id ) ) continue;
 		if ( friendFilter && friends::is_friend( samp::player_name( id ) ) ) continue;
+		if ( skipDead && player_dead_or_downed( id ) ) continue;
 		float p[3];
 		if ( !game::player_world_pos( id, p ) ) continue;
 		float d = game::distance_to( p );
@@ -241,7 +262,7 @@ bool on_send_packet( BitStream *params, PacketPriority priority, PacketReliabili
 	// send it HIGH/RELIABLE and drop your real sync -- so the spoof isn't overwritten by the
 	// target's own sync a frame later. (On foot it's the one-shot command, fired in on_frame.)
 	if ( set.itroll_mode >= 1 && g_itrollTarget >= 0 && !set.no_big_hacks && packetId == ID_VEHICLE_SYNC &&
-	     ( GetAsyncKeyState( 'I' ) & 0x8000 ) && !menu::is_open() && g_RakClient ) {
+	     input::down( 'I' ) && !menu::is_open() && g_RakClient ) {
 		stInCarData d{}; uint8_t tmp;
 		params->ResetReadPointer(); params->Read( tmp ); params->Read( (char *)&d, sizeof d );
 		if ( trolls::itroll_incar_rewrite( g_itrollTarget, set.itroll_mode, d ) ) {
@@ -481,7 +502,7 @@ bool on_send_packet( BitStream *params, PacketPriority priority, PacketReliabili
 	// rotating knockback. A target in a VEHICLE gets anim 301 + a x15 offset and NO
 	// random quaternion; an on-foot target gets a random anim + random quaternion + x5.
 	if ( set.near_slapper && !set.no_big_hacks && packetId == ID_PLAYER_SYNC ) {
-		int   tgt = find_nearest_player( set.near_slapper_friend_filter );
+		int   tgt = find_nearest_player( set.near_slapper_friend_filter, /*skipDead=*/true );
 		float tp[3];
 		if ( tgt >= 0 && game::player_world_pos( tgt, tp ) ) {
 			static int           slapState = 0;
@@ -679,6 +700,11 @@ bool on_send_packet( BitStream *params, PacketPriority priority, PacketReliabili
 // CLIENT_CHECK flag query, our client replies with its actor flags. If health-hack
 // is on, strip the INVULNERABLE bits from the reported flags so godmode is hidden.
 bool on_send_rpc( int uniqueID, BitStream *params, PacketPriority, PacketReliability, char, bool ) {
+	// Panic: Fuego gates every one of these on !isCheatPanicEnabled() -- pass untouched.
+	// (The flag strip below is moot under panic: engaging it clears the invuln flags.)
+	if ( fx::g_set.cheat_panic )
+		return true;
+
 	// Smart Health Hack (Fuego 1:1): drop a proc% of our OUTGOING take-damage reports
 	// so the server ignores that damage -- but sometimes it lands, reading as legit.
 	// (Our own give-damage RPCs use g_RakClient directly and bypass this hook, so
@@ -769,12 +795,12 @@ bool on_recv_packet( Packet *p ) {
 // WASD + Space/Ctrl as a camera-relative movement vector, scaled by speed.
 void read_move( float speed, float &fwd, float &right, float &up ) {
 	fwd = right = up = 0;
-	if ( GetAsyncKeyState( 'W' ) & 0x8000 ) fwd   += speed;
-	if ( GetAsyncKeyState( 'S' ) & 0x8000 ) fwd   -= speed;
-	if ( GetAsyncKeyState( 'D' ) & 0x8000 ) right += speed;
-	if ( GetAsyncKeyState( 'A' ) & 0x8000 ) right -= speed;
-	if ( GetAsyncKeyState( VK_SPACE )   & 0x8000 ) up += speed;
-	if ( GetAsyncKeyState( VK_LCONTROL ) & 0x8000 ) up -= speed;
+	if ( input::down( 'W' ) ) fwd   += speed;
+	if ( input::down( 'S' ) ) fwd   -= speed;
+	if ( input::down( 'D' ) ) right += speed;
+	if ( input::down( 'A' ) ) right -= speed;
+	if ( input::down( VK_SPACE ) )    up += speed;
+	if ( input::down( VK_LCONTROL ) ) up -= speed;
 }
 
 // Release every held sync whose delay has elapsed (called each frame). Sends via
@@ -821,7 +847,9 @@ void handle_fakelag_backtrack() {
 	// last-sent snapshot (Fuego 1:1): on foot -> armor/health/weapon/matrix/pos/speed;
 	// in a vehicle -> same for the ped + the car's speed(0)/matrix/pos(+0.25z)/health and
 	// a +200ms matrix/speed re-apply. Latch at -1 so it fires ONCE per press.
-	if ( ( GetAsyncKeyState( VK_BACK ) & 0x8000 ) && !menu::is_open() ) {
+	// Fuego: only while no cursor is up (menu / picker) and not typing -- input::down
+	// already ignores keys while SA:MP's chat box is open.
+	if ( input::down( VK_BACK ) && !menu::is_open() && !veh::is_picking() ) {
 		if ( now >= g_lagBackHoldTick + 50 ) { g_lagBTLeft -= 0.05f; g_lagBackHoldTick = now; }
 		if ( g_lagBTLeft <= 0.0f && g_lagBTLeft > -1.0f ) {
 			{ std::lock_guard<std::mutex> lk( g_lagMx ); g_lagQueue.clear(); }
@@ -1131,9 +1159,55 @@ void handle_carcontrol() {
 	}
 }
 
+// Panic transitions (Fuego cheat_panic, cheat_generic.cpp): engaging strips the health-
+// hack invulnerability and closes the menu (restored on release). Runs whether panic
+// came from F12 or the menu checkbox.
+void handle_panic_transition() {
+	auto &set = fx::g_set;
+	static bool prev = false, menuWasOpen = false;
+	if ( set.cheat_panic == prev ) return;
+	prev = set.cheat_panic;
+	if ( set.cheat_panic ) {
+		game::set_local_invulnerable( false );
+		game::set_local_vehicle_invulnerable( false );
+		menuWasOpen = menu::is_open();
+		if ( menuWasOpen ) menu::set_open( false );
+	} else if ( menuWasOpen ) {
+		menu::set_open( true );
+		menuWasOpen = false;
+	}
+}
+
+// "Disable Unsafe/Big Hacks" (Fuego sampMainCheat): while it's on, the big toggles are
+// forced off every frame, so they can't be switched on at all.
+void enforce_no_big_hacks() {
+	auto &set = fx::g_set;
+	if ( !set.no_big_hacks ) return;
+	set.itroll_mode         = 0;
+	g_itrollTarget          = -1;
+	set.break_dance         = false;
+	set.aim_slapper         = false;
+	set.floating_cars       = false;
+	set.explode_cars_silent = false;
+	set.unoccupied_remover  = false;
+	set.car_shooter         = false;
+	set.explode_cars        = false;
+	set.near_slapper        = false;
+	set.remove_cars         = false;
+	set.killer_enabled      = false;
+	g_freezeTarget          = -1;
+	g_slapkillTarget        = -1;
+}
+
 void on_frame( IDirect3DDevice9 * ) {
 	traceLastFunc( "cheats::on_frame" );
 	auto &set = fx::g_set;
+
+	if ( input::pressed( VK_F12 ) ) // Fuego key_panic
+		set.cheat_panic = !set.cheat_panic;
+	handle_panic_transition();
+	enforce_no_big_hacks();
+
 	if ( set.cheat_panic )
 		return;
 
@@ -1168,24 +1242,29 @@ void on_frame( IDirect3DDevice9 * ) {
 	// foot it's the one-shot command on the key edge (the passenger-enter -> driver flow).
 	if ( set.itroll_mode >= 1 && !menu::is_open() ) {
 		static bool prevI = false;
-		bool iDown = ( GetAsyncKeyState( 'I' ) & 0x8000 ) != 0;
-		g_itrollTarget = iDown ? find_nearest_player( false ) : -1;
+		bool iDown = input::down( 'I' );
+		// Fuego's targetfinder: the driver of the nearest OTHER occupied vehicle (not just
+		// the nearest player of any state). Resolved while I is held.
+		g_itrollTarget = iDown ? game::itroll_target_driver() : -1;
 		if ( iDown && !prevI && !game::in_vehicle() && g_itrollTarget >= 0 )
 			trolls::itroll( g_itrollTarget, set.itroll_mode );
 		prevI = iDown;
 	}
+
+	// '1' key (Fuego key_repair_car): repair the car we're driving (+50 hp, full Fix at 945).
+	if ( input::pressed( '1' ) && !menu::is_open() )
+		game::repair_local_vehicle();
 
 	if ( !game::available() )
 		return;
 
 	// Health hack: the server-side half (swallowing RPC_SetPlayerHealth) lives in
 	// compat::HandleRPCPacketFunc; the client half here mirrors Fuego's cheat_handle_hp
-	// -- set the ped's damage-immunity flags + keep HP topped. Flags are cleared when
-	// the toggle goes off so you don't stay invincible.
+	// -- set the ped's damage-immunity flags. HP itself is never raised (Fuego shipped
+	// hp_regen = 0). Flags are cleared when the toggle goes off.
 	static bool prevHealth = false;
 	if ( set.health_hack ) {
 		game::set_local_invulnerable( true );
-		game::set_local_player_health( 100.0f );
 		if ( game::in_vehicle() ) game::set_local_vehicle_invulnerable( true ); // Fuego pins the car too
 		prevHealth = true;
 	} else if ( prevHealth ) {
@@ -1194,9 +1273,9 @@ void on_frame( IDirect3DDevice9 * ) {
 		prevHealth = false;
 	}
 
-	// No reload: refill the active weapon's clip so it never reloads.
+	// No reload (Fuego): cancel the reload state as soon as it starts.
 	if ( set.no_reload )
-		game::top_up_clip();
+		game::no_reload_tick();
 
 	// Fly (on foot): camera-relative WASD + Space/Ctrl, gravity cancelled, noclip.
 	static bool prevFly = false;
@@ -1271,12 +1350,12 @@ void on_frame( IDirect3DDevice9 * ) {
 		if ( ++bdTick % 10 == 0 ) {
 			float ts = *reinterpret_cast<float *>( 0xB7CB5C );
 			float v  = 2.0f * ts;
-			if      ( GetAsyncKeyState( 'I' ) & 0x8000 ) game::apply_rotory_pulse( -v, 0, 0 );
-			else if ( GetAsyncKeyState( 'K' ) & 0x8000 ) game::apply_rotory_pulse(  v, 0, 0 );
-			else if ( GetAsyncKeyState( 'L' ) & 0x8000 ) game::apply_rotory_pulse( 0,  v, 0 );
-			else if ( GetAsyncKeyState( 'J' ) & 0x8000 ) game::apply_rotory_pulse( 0, -v, 0 );
-			else if ( GetAsyncKeyState( 'O' ) & 0x8000 ) game::apply_rotory_pulse( 0, 0, -v );
-			else if ( GetAsyncKeyState( 'U' ) & 0x8000 ) game::apply_rotory_pulse( 0, 0,  v );
+			if      ( input::down( 'I' ) ) game::apply_rotory_pulse( -v, 0, 0 );
+			else if ( input::down( 'K' ) ) game::apply_rotory_pulse(  v, 0, 0 );
+			else if ( input::down( 'L' ) ) game::apply_rotory_pulse( 0,  v, 0 );
+			else if ( input::down( 'J' ) ) game::apply_rotory_pulse( 0, -v, 0 );
+			else if ( input::down( 'O' ) ) game::apply_rotory_pulse( 0, 0, -v );
+			else if ( input::down( 'U' ) ) game::apply_rotory_pulse( 0, 0,  v );
 		}
 	}
 
@@ -1286,6 +1365,9 @@ void on_frame( IDirect3DDevice9 * ) {
 	if ( set.trigger_bot ) {
 		static unsigned long tbTick = 0;
 		static bool tbAiming = false;
+		// Fuego gate: never trigger while holding fists (SA:MP byteCurrentWeapon == 0).
+		samp::stLocalPlayer *tbLp = samp::local_player();
+		if ( tbLp && tbLp->byteCurrentWeapon == 0 ) { /* skip */ } else
 		if ( GetTickCount() - tbTick >= 50 ) {
 			tbTick = GetTickCount();
 			int a1 = *reinterpret_cast<int *>( 0xB6F3B8 );
@@ -1309,6 +1391,10 @@ void on_frame( IDirect3DDevice9 * ) {
 	// No spread (Fuego cheat_handle_nospread): zero the game's bullet-spread global.
 	if ( set.no_spread_trigger == 0 && !g_nospreadGo ) g_nospreadGo = true;
 	if ( set.no_spread && g_nospreadGo ) *reinterpret_cast<float *>( 0xB7CDC8 ) = 0.0f;
+
+	// Fuego runs DisableFlyingBirds() unconditionally every frame: RET-patch the bird
+	// spawn/update entry (0x712330 -> 0xC3) so no birds ever appear.
+	mem::write<uint8_t>( 0x712330, 0xC3 );
 }
 
 } // namespace
@@ -1634,6 +1720,8 @@ bool slapkill( int id ) {
 	g_slapkillTarget = id;
 	return true;
 }
+
+bool slapkill_active() { return g_slapkillTarget >= 0; }
 
 void install() {
 	net::on_send_packet( on_send_packet );

@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #include "veh.h"
 #include "../samp/samp.h"
+#include "../samp/pools.h"   // samp::vehicle_streamed (/attveh validation)
 #include "../gta/gtahost.h"
 #include "../net/rpc.h"
 #include "../core/trace.h"
@@ -15,7 +16,9 @@ namespace {
 // it). mode: 0 none, 1 unlock, 2 damage doors, 3 destroy.
 int  g_pickMode  = 0;
 bool g_pickArmed = false; // don't let the click that opened the picker count as the pick
-const char *pick_verb( int m ) { return m == 1 ? "unlock" : m == 2 ? "damage the doors on" : "destroy"; }
+const char *pick_verb( int m ) {
+	return m == 1 ? "unlock" : m == 2 ? "damage the doors on" : m == 4 ? "tow to your vehicle" : "destroy";
+}
 } // namespace
 
 // Begin a vehicle pick (called from the menu buttons). The menu closes itself so the
@@ -50,11 +53,16 @@ void run_picker( float curX, float curY, bool clicked, bool cancel ) {
 	const char *nm = vname ? vname : "vehicle";
 	char b[160];
 	if ( mode == 1 ) {
-		game::unlock_vehicle_id( vid );
+		game::unlock_vehicle_full( vid ); // Fuego's full door-state unlock
 		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Unlocked %s (id %d).", nm, vid );
 	} else if ( mode == 2 ) {
 		rpc::damage_vehicle_doors( vid );
 		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Broke the doors on %s (id %d) -- restream to sync.", nm, vid );
+	} else if ( mode == 4 ) {
+		if ( game::tow_to_local( vid ) )
+			_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Towed %s (id %d) to your vehicle.", nm, vid );
+		else
+			_snprintf( b, sizeof( b ) - 1, "{FF6347}[veh] {FFFFFF}Get in a vehicle first to tow %s.", nm );
 	} else {
 		rpc::destroy_vehicle( vid );
 		_snprintf( b, sizeof( b ) - 1, "{33FF33}[veh] {FFFFFF}Destroyed %s (id %d).", nm, vid );
@@ -64,12 +72,22 @@ void run_picker( float curX, float curY, bool clicked, bool cancel ) {
 
 void unlock_vehicle() {
 	traceLastFunc( "veh::unlock_vehicle" );
-	if ( game::local_vehicle_samp_id() < 0 ) {
+	int vid = game::local_vehicle_samp_id();
+	if ( vid < 0 ) {
 		samp::chat( "{FF6347}[veh] {FFFFFF}Get in a vehicle first." );
 		return;
 	}
-	game::unlock_local_vehicle();
+	game::unlock_vehicle_full( vid ); // Fuego's full door-state unlock
 	samp::chat( "{33FF33}[veh] {FFFFFF}Vehicle unlocked." );
+}
+
+// /attveh <vehicle id> (Fuego cmd_attachveh): tow a specific streamed vehicle to ours.
+void attach_vehicle_id( int vid ) {
+	traceLastFunc( "veh::attach_vehicle_id" );
+	if ( game::local_vehicle_samp_id() < 0 ) { samp::chat( "{FF6347}[veh] {FFFFFF}You aren't in a vehicle." ); return; }
+	if ( !samp::vehicle_streamed( vid ) )    { samp::chat( "{FF6347}[veh] {FFFFFF}Vehicle does not exist / not streamed." ); return; }
+	if ( game::tow_to_local( vid ) ) samp::chat( "{33FF33}[veh] {FFFFFF}Tow-linked to your vehicle." );
+	else                             samp::chat( "{FF6347}[veh] {FFFFFF}Invalid vehicle." );
 }
 
 void destroy_doors() {

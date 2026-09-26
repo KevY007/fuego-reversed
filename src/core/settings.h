@@ -11,8 +11,11 @@
 namespace fx {
 
 struct Settings {
+	// Defaults follow what Fuego actually shipped with (bin\project_fuego\fuego.ini),
+	// which overrides several of ini.cpp's built-in defaults.
+
 	// ================= MAIN =================
-	bool  no_big_hacks = false;      // "Disable Unsafe/Big Hacks" (noBigHacks)
+	bool  no_big_hacks = true;       // "Disable Unsafe/Big Hacks" (noBigHacks; shipped ON)
 	bool  cheat_panic = false;       // master hide-everything (our own)
 
 	// ============ WEAPON FUNCTIONS ============
@@ -56,7 +59,7 @@ struct Settings {
 	bool  smart_invis = false;
 	// --- Slappers ---
 	bool  aim_slapper = false;
-	int   aim_slapper_power = 20;    // 0..100
+	int   aim_slapper_power = 10;    // 0..100 (Fuego default 10)
 	bool  near_slapper = false;
 	bool  near_slapper_friend_filter = true;
 	// --- Visuals ---
@@ -70,15 +73,19 @@ struct Settings {
 	bool  show_players_guns = false; // "Show Players Guns"
 	bool  player_esp = false;        // our extra: full box ESP
 	bool  esp_box = true, esp_name = true, esp_health = true, esp_distance = true;
+	float player_tags_dist = 225.0f; // S0biet nametag range + SA:MP draw distance (fuego.ini)
+	float vehicle_tags_dist = 100.0f;// vehicle tag range incl. [LOCKED] (fuego.ini)
+	bool  status_text = false;       // cheat state text, top-right (Fuego d3dtext_hud; shipped OFF)
+	bool  show_active_list = false;  // our extra: "Fuego Reversed" + active-cheat list watermark
 	// --- other misc ---
 	bool  break_dance = false;       // "Onfoot Break Dance"
 	bool  auto_unscramble = false;   // "Auto Unscrambler LSRP"
 	int   auto_unscramble_delay = 1250; // ms before submitting /uns (Fuego default)
 	// --- Health Hack ---
 	bool  health_hack = false;       // "Health Hack" (hp_cheat) -- packet based
-	bool  enable_extra_godmode = false; // also swallow server vehicle-health drops (Fuego)
+	bool  enable_extra_godmode = true;  // also swallow server vehicle-health drops (shipped ON)
 	bool  smart_health_hack = false;
-	int   smart_hh_proc = 50;        // 0..100
+	int   smart_hh_proc = 30;        // 0..100 (Fuego default 30)
 	// --- Fake Lag group ---
 	bool  fake_lag = false;          // "Fake Movement Lag" (fakesynclag) = freeze+backtrack
 	bool  fake_lag_random_spikes = false;

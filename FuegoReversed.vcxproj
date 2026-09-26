@@ -21,8 +21,8 @@
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <Import Project="gta_reversed.props" />
-  <Import Project="gta_link.props" />
+  <!-- gta-reversed game layer + imgui: produced by scripts\bootstrap.ps1 (see deps.props) -->
+  <Import Project="deps.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <TargetName>FuegoReversed</TargetName>
     <TargetExt>.asi</TargetExt>
@@ -35,8 +35,8 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>vendor\imgui;vendor\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ImguiInclude);$(ImguiBindings);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <WarningLevel>Level3</WarningLevel>
@@ -45,12 +45,12 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalLibraryDirectories>$(GtaLinkDirs);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <!-- bin\FuegoReversed.map: which object every symbol came from (crash triage,
+           and auditing what the gta-reversed archive contributes to the link). -->
+      <GenerateMapFile>true</GenerateMapFile>
       <AdditionalDependencies>d3d9.lib;$(GtaLinkDeps);%(AdditionalDependencies)</AdditionalDependencies>
-      <!-- FORCE:MULTIPLE folds the identical PoolOf<>/Compress* template defs shared
-           by gtahost.obj and the lib's PCH. FORCE:UNRESOLVED lets the imgui-docking
-           UI symbols (gta-reversed's debug menu, which fuego never renders) stay
-           unbound. Both are in never-executed paths for our coexist model. -->
+      <!-- FORCE:MULTIPLE folds the identical PoolOf<>/Compress* defs that gtahost.obj
+           and the lib's PCH both emit (non-inline functions in upstream headers). -->
       <AdditionalOptions>/FORCE:MULTIPLE /IGNORE:4006,4088 %(AdditionalOptions)</AdditionalOptions>
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -62,6 +62,7 @@
   <ItemGroup>
     <ClCompile Include="src\core\main.cpp" />
     <ClCompile Include="src\core\logger.cpp" />
+    <ClCompile Include="src\core\input.cpp" />
     <ClCompile Include="src\core\crashlog.cpp" />
     <ClCompile Include="src\core\config.cpp" />
     <ClCompile Include="src\core\trace.cpp" />
@@ -86,33 +87,28 @@
     <ClCompile Include="src\cheats\status.cpp" />
     <ClCompile Include="src\cheats\veh.cpp" />
     <ClCompile Include="src\cheats\server.cpp" />
-    <!-- chams needs D3DXAssembleShader from the legacy DirectX SDK (June 2010). The
-         SDK's include path is scoped to THIS file only so its older d3d9.h doesn't
-         shadow the Windows SDK headers in every other TU. -->
-    <ClCompile Include="src\cheats\chams.cpp">
-      <AdditionalIncludeDirectories>$(DXSDK_DIR)Include;C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-    </ClCompile>
-    <!-- gta-reversed bridge. Compiles cleanly (proves the integration), but the
-         class tree pulls out-of-line vtable/ctor symbols that need gta-reversed's
-         game_sa .cpp linked. Staged out of the shipping ASI until that game_sa
-         static lib is built + load-safety verified in-game (see MIGRATION notes). -->
+    <ClCompile Include="src\cheats\chams.cpp" />
+    <!-- gta-reversed bridge: the ONE TU that sees gta-reversed's headers. Compiled
+         exactly like upstream compiled gta_reversed.lib (language mode, defines,
+         include roots, charset/conformance flags; all from gta_deps.props). -->
     <ClCompile Include="src\gta\gtastubs.cpp" />
     <ClCompile Include="src\gta\gtahost.cpp">
-      <LanguageStandard>stdcpplatest</LanguageStandard>
-      <AdditionalOptions>/Zc:preprocessor %(AdditionalOptions)</AdditionalOptions>
+      <LanguageStandard>$(GtaLanguageStandard)</LanguageStandard>
+      <AdditionalOptions>/Zc:preprocessor $(GtaCompileOptions) %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(GtaReversedIncludes);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>$(GtaReversedDefines);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- + 4099/4018: class-vs-struct forward decls and a signed compare in upstream headers -->
+      <DisableSpecificWarnings>$(GtaDisableWarnings);4099;4018;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
-    <ClCompile Include="vendor\imgui\imgui.cpp" />
-    <ClCompile Include="vendor\imgui\imgui_draw.cpp" />
-    <ClCompile Include="vendor\imgui\imgui_tables.cpp" />
-    <ClCompile Include="vendor\imgui\imgui_widgets.cpp" />
-    <ClCompile Include="vendor\imgui\backends\imgui_impl_dx9.cpp" />
-    <ClCompile Include="vendor\imgui\backends\imgui_impl_win32.cpp" />
+    <!-- imgui core is linked from upstream's Conan package (in GtaLinkDeps); we only
+         compile the two backends our overlay uses, from that same package. -->
+    <ClCompile Include="$(ImguiBindings)\imgui_impl_dx9.cpp" />
+    <ClCompile Include="$(ImguiBindings)\imgui_impl_win32.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\core\memory.h" />
     <ClInclude Include="src\core\logger.h" />
+    <ClInclude Include="src\core\input.h" />
     <ClInclude Include="src\core\trace.h" />
     <ClInclude Include="src\samp\samp.h" />
     <ClInclude Include="src\samp\addresses.h" />

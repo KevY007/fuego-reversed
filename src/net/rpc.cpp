@@ -3,6 +3,7 @@
 #include "BitStream.h"
 #include "../samp/samp.h"
 #include "../samp/pools.h"      // samp::local_player() -- the 'this' for CInput::Say (chat)
+#include "../gta/gtahost.h"     // game::vehicle_forward / vehicle_live_data (door-damage restream)
 #include "../samp/addresses.h"
 #include "../core/memory.h"
 #include "../core/trace.h"
@@ -64,6 +65,18 @@ void take_damage( int issuerId, int weapon, int bodypart ) {
 	g_RakClient->RPC( RPC_GiveTakeDamage, &bs, HIGH_PRIORITY, RELIABLE_SEQUENCED, 0, false );
 }
 
+void take_damage_amount( int issuerId, int amount, int weapon ) {
+	traceLastFunc( "rpc::take_damage_amount" );
+	if ( !g_RakClient ) return;
+	BitStream bs;
+	bs.Write( true );                              // bTakeDamage=true -> we take it
+	bs.Write<uint16_t>( (uint16_t) issuerId );
+	bs.Write( (float) amount * 1.0001f );          // Fuego's exact amount fudge
+	bs.Write<uint32_t>( (uint32_t) weapon );       // arbitrary (illegal ids trip bans)
+	bs.Write<uint32_t>( 3u );                      // bodypart (torso)
+	g_RakClient->RPC( RPC_GiveTakeDamage, &bs );
+}
+
 void death( uint16_t killerId, uint8_t reason ) {
 	traceLastFunc( "rpc::death" );
 	if ( !g_RakClient ) return;
@@ -99,13 +112,37 @@ void spawn() {
 void damage_vehicle_doors( int vid ) {
 	traceLastFunc( "rpc::damage_vehicle_doors" );
 	if ( !g_RakClient ) return;
+
+	// Fuego DamageVehicleDoor (1:1): RPC_DamageVehicle carries FOUR uint32 damage words
+	// (panels, doors, lights, tyres) after the u16 id -- NOT u8 lights/tyres. doors packs
+	// one byte per door as (state<<24|state<<16|state<<8|state): 0x04 = removed on the
+	// driver + co-driver doors. Sent 3x, like Fuego.
 	BitStream bs;
 	bs.Write<uint16_t>( (uint16_t) vid );
-	bs.Write<uint32_t>( 0u );                                 // panels
-	bs.Write<uint32_t>( ( 0x04u << 24 ) | ( 0x04u << 16 ) );  // doors: driver+co-driver removed
-	bs.Write<uint8_t>( 0 );                                    // lights
-	bs.Write<uint8_t>( 0 );                                    // tyres
-	g_RakClient->RPC( RPC_DamageVehicle, &bs );
+	bs.Write<uint32_t>( 0u );                                       // panels
+	bs.Write<uint32_t>( ( 0x04u << 24 ) | ( 0x04u << 16 ) );        // doors: driver + co-driver removed
+	bs.Write<uint32_t>( 0u );                                       // lights
+	bs.Write<uint32_t>( 0u );                                       // tyres
+
+	// Fuego also restreams the car as an unoccupied-sync (3x) BEFORE the RPCs, so the
+	// door state actually syncs without a manual re-enter. Roll is built from the car's
+	// forward vector exactly as Fuego does: (fY, -fX, -fZ); direction = the forward vector.
+	float fwd[3], width, pos[3], speed[3], hp;
+	if ( game::vehicle_forward( vid, fwd, width, pos ) &&
+	     game::vehicle_live_data( vid, pos, speed, hp ) ) {
+		BitStream u;
+		u.Write<uint8_t>( (uint8_t) ID_UNOCCUPIED_SYNC );
+		u.Write<uint16_t>( (uint16_t) vid );
+		u.Write<uint8_t>( 0 );                                      // seat
+		u.Write( fwd[1] ); u.Write( -fwd[0] ); u.Write( -fwd[2] );  // roll
+		u.Write( fwd[0] ); u.Write( fwd[1] );  u.Write( fwd[2] );   // direction
+		u.Write( pos[0] ); u.Write( pos[1] );  u.Write( pos[2] );   // position
+		u.Write( speed[0] ); u.Write( speed[1] ); u.Write( speed[2] ); // angular velocity (Fuego)
+		u.Write( hp );                                              // health
+		for ( int i = 0; i < 3; i++ ) g_RakClient->Send( &u );
+	}
+
+	for ( int i = 0; i < 3; i++ ) g_RakClient->RPC( RPC_DamageVehicle, &bs );
 }
 
 void destroy_vehicle( int vid ) {

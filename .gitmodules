@@ -1,0 +1,6 @@
+[submodule "external/gta-reversed"]
+	path = external/gta-reversed
+	url = https://github.com/gta-reversed/gta-reversed.git
+[submodule "docs/reference/samp-packet-list.wiki"]
+	path = docs/reference/samp-packet-list.wiki
+	url = https://github.com/Brunoo16/samp-packet-list.wiki.git

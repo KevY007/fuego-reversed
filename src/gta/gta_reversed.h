@@ -39,7 +39,7 @@
 
 // --- world / pools / core systems -------------------------------------------
 #include "World.h"        // CWorld            (FindGroundZ, entity queries)
-#include "Pools.h"        // CPools            (GetPedPool / GetVehiclePool / ...)
+#include "Pools/Pools.h"  // CPools            (GetPedPool / GetVehiclePool / ...)
 #include "Camera.h"       // TheCamera         (matrices, look direction)
 #include "Weapon.h"       // CWeapon           (m_Type, ammo, fire)
 #include "Pickups.h"      // CPickups          (aPickUps)

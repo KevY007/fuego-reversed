@@ -23,6 +23,7 @@ bool toggle_desync();
 
 // Toggle continuous slap-kill on a target (-1 to stop). Returns true if now active.
 bool slapkill( int id );
+bool slapkill_active(); // true while a slap-kill target is locked (slapper-ESP gate)
 
 // Get here: drop your vehicle onto an on-foot target and drag them to you.
 bool get_here( int id );

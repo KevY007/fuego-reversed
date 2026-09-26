@@ -1,15 +1,24 @@
-#define _CRT_SECURE_NO_WARNINGS 1
 #include "status.h"
+#include "visuals.h"
+#include "../core/settings.h"
 #include "imgui.h"
 
 #include <windows.h>
 #include <cstdio>
 #include <cstdarg>
 
+/*
+	Fuego cheat_state_text (proxyIDirect3DDevice9.cpp:3937-3949): the latest message,
+	top-right as "<text> <-", white, for 3s -- fading out over the last second. Fuego
+	only draws it with d3dtext_hud on, which its shipped fuego.ini has OFF, so this is
+	gated on fx::g_set.status_text (default off).
+*/
+
 namespace {
 char  g_text[256] = { 0 };
 DWORD g_time      = 0;
-constexpr DWORD kShowMs = 1400; // how long a message lingers after last set
+constexpr DWORD kShowMs = 3000;
+constexpr DWORD kFadeMs = 1000;
 }
 
 namespace status {
@@ -19,26 +28,25 @@ void set( const char *fmt, ... ) {
 	va_start( ap, fmt );
 	_vsnprintf( g_text, sizeof( g_text ) - 1, fmt, ap );
 	va_end( ap );
+	g_text[sizeof( g_text ) - 1] = '\0';
 	g_time = GetTickCount();
 }
 
 void draw() {
-	if ( !g_time )
+	if ( !fx::g_set.status_text || !g_time )
 		return;
-	DWORD age = GetTickCount() - g_time;
-	if ( age > kShowMs )
+	const DWORD age = GetTickCount() - g_time;
+	if ( age >= kShowMs )
 		return;
-	float alpha = 1.0f - (float) age / (float) kShowMs;
-	if ( alpha < 0 ) alpha = 0;
+	uint32_t alpha = 255;
+	if ( age > kShowMs - kFadeMs )
+		alpha -= ( age - ( kShowMs - kFadeMs ) ) * 255 / kFadeMs;
 
-	ImGuiIO &io = ImGui::GetIO();
-	ImDrawList *dl = ImGui::GetForegroundDrawList();
-	ImVec2 sz = ImGui::CalcTextSize( g_text );
-	float x = ( io.DisplaySize.x - sz.x ) * 0.5f;
-	float y = io.DisplaySize.y * 0.72f;
-	int a = (int) ( alpha * 255 );
-	dl->AddText( ImVec2( x + 1, y + 1 ), IM_COL32( 0, 0, 0, ( a * 220 ) / 255 ), g_text );
-	dl->AddText( ImVec2( x, y ), IM_COL32( 255, 120, 40, a ), g_text );
+	char buf[300];
+	_snprintf( buf, sizeof( buf ) - 1, "%s <-", g_text );
+	buf[sizeof( buf ) - 1] = '\0';
+	const float x = ImGui::GetIO().DisplaySize.x - visuals::draw_length( visuals::Font::Main, buf ) - 3.0f;
+	visuals::print_shadow( visuals::Font::Main, x, 1.0f, ( alpha << 24 ) | 0x00FFFFFF, buf );
 }
 
 } // namespace status

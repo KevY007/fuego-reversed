@@ -39,3 +39,8 @@ vendor/imgui/examples/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# ---- Dependencies (scripts/bootstrap.ps1) ----
+# project-local Conan cache + everything generated from the gta-reversed submodule
+/external/.conan2/
+/external/generated/

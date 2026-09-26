@@ -77,7 +77,7 @@ bool pickup_pos( int idx, float out[3], int &modelOut ); // active pickup -> pos
 
 // --- local-player weapon / movement cheats --------------------------------
 int  local_weapon_type();      // active weapon id (0..54), -1 if no ped
-void top_up_clip();            // no-reload: refill the active weapon's clip
+void no_reload_tick();         // no-reload: RELOADING -> READY on the active weapon (Fuego)
 int  player_weapon( int sampId ); // a remote player's active weapon id, -1 if none
 int  player_weapon_slots( int sampId, int out[13] ); // all carried weapons (Show Players Guns)
 void apply_rotory_pulse( float x, float y, float z ); // break-dance angular impulse
@@ -164,3 +164,37 @@ int  cc_nearest_empty_vehicle( float radius );      // nearest empty streamed ve
 void cc_vehicle_collision_proof( int sampVid, bool on ); // (nocols stand-in) collision-proof a vehicle
 
 } // namespace game
+
+// ==== visuals accessors (fork V) ====
+namespace game {
+
+// One live entry of GTA's ped pool. Fuego's overlays (nametags, players' guns, silent-aim
+// selection) iterate the GTA ped pool rather than SA:MP's player list, so non-player peds
+// (actors) take part in e.g. the nametag stacking even though only players get a tag.
+struct PoolPed {
+	void *ped;       // CPed* (compare with SA:MP's pSAMP_Actor->pGTA_Ped)
+	int   poolIndex; // GTA ped-pool slot (Fuego GetArrayID)
+	float pos[3];    // tag anchor: the ped's position, or its vehicle's when it drives a
+	                 // mod_sa VEHICLE_CLASS_MINI model (Fuego's "RC vehicle fix")
+	float pedPos[3]; // the ped's own position (GetPosition)
+};
+// Snapshot every live ped (the local one included); selfIndex = our pool slot (-1 if none).
+int  ped_pool_snapshot( PoolPed *out, int maxN, int &selfIndex );
+bool local_bone_pos( int bone, float out[3] );            // own ped bone, raw game bone id (3 = spine1, 8 = mod_sa's BONE_HEAD)
+bool ped_bone_pos( void *ped, int bone, float out[3] );   // any ped's bone (by CPed*)
+bool local_tag_origin( float out[3] );                    // own vehicle's position if in one, else own ped's (Fuego ourPosition)
+bool active_cam_source( float out[3] );                   // TheCamera active cam m_vecSource (Fuego pCam->Source)
+bool entity_pos( void *entity, float out[3] );            // any CEntity* position (objects' live matrix)
+int  ped_weapons( void *ped, int types[13], int ammo[13] ); // per-slot weapon type + total ammo; 13, or 0 if bad ped
+
+} // namespace game
+// ==== end visuals accessors ====
+
+// ==== cheat/veh accessors (port pass) ====
+namespace game {
+int  itroll_target_driver();          // SA:MP id of the nearest other occupied car's driver, -1 none
+bool tow_to_local( int sampVid );     // /attveh: SetTowLink the target car to ours
+void repair_local_vehicle();          // '1' key: +50hp / full-Fix-at-945, own car + trailers
+void unlock_vehicle_full( int sampVid ); // Fuego's LockDoors+SetScriptLocked+SetDoorsUndamageable
+} // namespace game
+// ==== end cheat/veh accessors ====

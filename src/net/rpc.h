@@ -23,6 +23,10 @@ void give_damage_amount( int targetId, float dmg, int weapon, int bodypart );
 // Take damage from a player (troll: make the server think THEY hit YOU).
 void take_damage( int issuerId, int weapon, int bodypart );
 
+// /.takedmgrpc 1:1: take an EXPLICIT amount from an issuer with an arbitrary weapon id
+// (e.g. an illegal id to trip a server ban). bodypart is always 3, amount is *1.0001f.
+void take_damage_amount( int issuerId, int amount, int weapon );
+
 // Kill self / respawn helpers.
 void death( uint16_t killerId = 0xFFFF, uint8_t reason = 200 );
 void request_spawn();

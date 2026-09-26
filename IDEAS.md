@@ -3,6 +3,42 @@
 Running list of improvements/ideas found while building. Nothing here is done —
 it's a menu of things we *could* do, for you to pick from.
 
+## Fidelity port pass — 2026-09-26 (status)
+
+A four-way audit of Project Fuego vs fuego-reversed drove a fidelity pass. **Done**
+this session: hotkeys routed through a Fuego-style keyhook (`src/core/input.*`) so
+they no longer fire while typing in chat / alt-tabbed; F12 cheat-panic + proper
+panic transitions (clears health-hack flags, closes/restores the menu, RPC handlers
+respect panic); `no_big_hacks` default ON + it force-resets the big toggles;
+health-hack now sets Fuego's exact `4|8|64|128` ped flags (no HP raise, tyre
+protection, trailer chain) so nothing extra leaks past the ClientCheck strip;
+No-Reload = RELOADING→READY (not infinite ammo); `damage_vehicle_doors` fixed to
+Fuego's wire format (4× u32 + 3× unoccupied restream + 3× RPC); `/.takedmgrpc`
+takes `[id] [amount] [weapon]`; near-slapper skips dead/downed players; trigger-bot
+skips fists; extra-godmode only guards our own vehicle; DisableFlyingBirds always on;
+RPC 58 enum corrected to Delete3DTextLabel.
+
+**Still to port** (lower severity; several need one more gta-reversed accessor):
+- **iTroll target** should be the driver of the nearest *occupied* vehicle
+  (Fuego `cheat_handle_itroll_targetfinder`), not the nearest player of any state;
+  add the read-only "iTroll Target" name in the menu.
+- **Attach/Tow** vehicle is a stub — wire it to `CVehicle::SetTowLink` (click-pick,
+  like Fuego).
+- **`1`-key car repair** (driver of own car: +50 hp/press, full Fix + cap at 945).
+- **Unlock** should use Fuego's door-state dance (`LockDoors(false)` +
+  `SetScriptLocked(false)` + `SetDoorsUndamageable(false)`), not just `m_nDoorLock`.
+- Silent-aim visuals + centre, nametag/ESP look, fake-lag marker, etc. — being
+  brought to Fuego's exact look in `cheats/visuals.cpp` (in progress).
+- mod_sa **base** ini patches (sprint-any-surface, keep-HUD, no-connect-delay) are
+  deliberately out of scope (base, not Fuego-custom) unless you want them as toggles.
+
+**Net layer verdict: byte-accurate, zero wire bugs.** Un-ported *features* only:
+the `netPatch` RPC/packet id-block table (a menu feature to drop arbitrary ids),
+incoming-chat anti-spam + chatlog-to-file, and the `SetupSAMPHook` memcmp safety
+pre-check. Low priority. The two backdoors (C2 socket, chat kill-switch) stay out.
+
+Full audit notes: session scratchpad `audit_{A,B,C,D,E}_*.md`.
+
 ## Build / infrastructure
 - **Eliminate the `/FORCE:MULTIPLE` + `LNK4088` warning.** The 15 duplicate
   `notsa::PoolOf<>` / `Compress*` template symbols come from `gtahost.obj` re-emitting

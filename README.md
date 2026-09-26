@@ -23,10 +23,12 @@ src/
   net/      RakNet/BitStream/RakClient + RPC hooks (accurate)   [done]
   compat/   0.3.7 compatibility layer + auto-detect             [done]
   hook/     ADE32 length-disassembler + CDetour                 [done]
-  render/   D3D9 EndScene/Reset vtable hook (dummy-device)      [done]
-  menu/     in-house Dear ImGui overlay (INSERT)                [done]
-  cheats/   net-seam + per-frame cheat driver                   [partial]
-  commands/ /fuego_cmds custom commands                         [partial]
+  render/   D3D9 EndScene/Reset vtable hook (game device)       [done]
+  menu/     in-house Dear ImGui overlay (F2)                    [done]
+  cheats/   net-seam + per-frame cheat driver + visuals         [done]
+  commands/ /fuego_cmds custom commands                         [done]
+  gta/      bridge to the gta-reversed game layer               [done]
+  i18n/     in-game translation layer                           [planned]
 ```
 
 **Modern conventions:** every game/SA:MP call goes through typed `mem::thiscall<>` /
@@ -46,32 +48,58 @@ and the samp-packet-list wiki.
 - [x] **0.3.7 compat layer** — skin-RPC rewrites, RPC-dispatch hook, ClientJoin spoof;
   **auto-detects** a 0.3.7 reject (RPC 130 reason 1) → enables compat + prompts reconnect.
 - [x] **D3D9 render hook** — EndScene(42)/Reset(16) via a dummy-device vtable grab.
-- [x] **In-house menu** — Dear ImGui DX9 (compiled in, no external dll), INSERT to toggle.
-- [x] **Cheats (net-seam) — 5 live** — invisibility, fake-lag, moonwalk, upside-down,
-  shot-repeater (faithful packet-rewrite ports, bound to the menu).
-- [x] **Commands** — `/compat`, `/fuego_cmds`, `/shotrepeater`; `cmd::add` framework.
+- [x] **In-house menu** — Dear ImGui DX9 (compiled in, no external dll), F2 to toggle.
+- [x] **Cheats** — the net-seam packet-rewrite cheats **and** the GTA-coupled ones
+  (silent aim, ESP, chams, car trolls, fly/air-brake, carcontrol, gethere/njkill,
+  gun-stealer) — faithful ports bound to the menu.
+- [x] **Commands** — the full `/fuego_cmds` set (see `src/commands/commands.cpp`).
 - [x] **SA:MP pools** — player/vehicle pool structs + accessors (offset-pinned).
-- [~] **gta-reversed game layer** — *proven to compile in* (vendored json/spdlog/Tracy-stub,
-  C++23, `gta_reversed.props`); bridge in `src/gta/`. Staged out of the link until
-  gta-reversed's `game_sa` is built as a static lib (see below).
-- [ ] GTA-coupled cheats (silent aim, ESP, cars) + `/fuego_cmds` trolls — need the game layer linked.
+- [x] **gta-reversed game layer — LINKED.** Built from the `external/gta-reversed`
+  submodule by `scripts/bootstrap.ps1` into `gta_reversed.lib` and linked in; the
+  bridge (`src/gta/gtahost.cpp`) drives the real game through it.
 
-**Working in-game** (loads, hooks SA:MP, chat, menu, compat, the 5 cheats). Builds green.
+**Working in-game** (loads, hooks SA:MP, chat, menu, compat, cheats). Builds green.
 
-## gta-reversed integration (in progress)
+## gta-reversed integration
 
-The plan is to use **gta-reversed** (`../gta-reversed`, the full GTA:SA reimplementation)
-as the game layer — accurate `CPed`/`CVehicle`/`CWorld`/pools with correct offsets. Its
-headers already compile into this project (`src/gta/gtahost.cpp`, the single TU that pulls
-gta-reversed's `StdInc.h`; built at C++23 with the deps in `vendor/gta-deps/`). Using the
-classes needs gta-reversed's `game_sa` `.cpp` **linked** (the class tree emits out-of-line
-vtable/ctor symbols). Next step: build `game_sa` as a static lib (its own conan+cmake),
-link it here **minus** the entry points and **without** calling `InjectHooksMain` (we
-coexist with the running game, we don't replace it), then flip `gtahost.cpp` back into the
-build and port the GTA-coupled cheats on gta-reversed's API.
+The game layer is **gta-reversed** (the full GTA:SA reimplementation), pinned as the
+`external/gta-reversed` **git submodule** — accurate `CPed`/`CVehicle`/`CWorld`/pools
+with correct offsets. `scripts/bootstrap.ps1` builds it **unmodified** (its own
+conan + cmake) and archives its object files — minus the process entry points
+(`dllmain`/`WinMain`/`WinPlatform`) — into `external/generated/gta_reversed.lib`, then
+generates `external/generated/gta_deps.props` (the exact include roots, defines,
+language mode and link inputs upstream used, plus the single imgui Conan package the
+menu also uses). `deps.props` imports that into the build.
+
+We **coexist** with the running game: `gtahost.cpp` uses gta-reversed's headers for
+accurate layouts + inline accessors and *calls the real game's functions at their
+addresses*; we never install gta-reversed's own hooks (`InjectHooksMain` is never
+called), so the real GTA:SA keeps running underneath. Because of that, gta-reversed's
+ongoing reversing work has ~zero behavioural impact here — only a struct/offset rename
+could matter, and the single bridge TU compiles clean against current upstream.
 
 ## Build
 
-Open `FuegoReversed.sln`, build **Release / Win32** → `bin/FuegoReversed.asi`.
-Toolset **v145**, C++20. Drop the `.asi` in the GTA:SA folder via your ASI loader;
-progress is logged to `fuego_reversed.log`.
+Everything this depends on is **inside the repo** — no sibling checkouts, no
+hand-installed SDKs.
+
+1. **Clone with submodules** (the game layer + the packet-list wiki are pinned
+   submodules): `git clone --recurse-submodules …`, or in an existing clone
+   `git submodule update --init --recursive`.
+2. **Run the bootstrap once:** `scripts\bootstrap.cmd` (double-click or from a
+   terminal). It finds Visual Studio 2026, CMake (uses the one bundled with VS if
+   none is on PATH) and Conan (pip-installs it into a project-local cache if you
+   don't have it), then builds the `external/gta-reversed` submodule and produces
+   the game library + the generated `deps` props. Re-run it (or
+   `scripts\bootstrap.cmd -Clean`) only when the gta-reversed submodule moves.
+3. **Build the ASI:** the bootstrap builds it at the end, or open
+   `FuegoReversed.sln` and build **Release / Win32** → `bin/FuegoReversed.asi`.
+
+Toolset **v145**, C++20 (the one gta-reversed bridge TU is C++23, scoped to
+itself). Drop the `.asi` in the GTA:SA folder via your ASI loader; progress is
+logged to `fuego_reversed.log`.
+
+Prerequisites the bootstrap checks for: **Visual Studio 2026** with the *Desktop
+development with C++* workload (x86 toolset), **Python 3** (only if Conan isn't
+already installed), and **git**. First run downloads/builds the Conan packages and
+compiles gta-reversed, so it takes a while; later runs are incremental.

@@ -263,19 +263,29 @@ static void __cdecl cmd_destroyallcars( char * ) {
 	samp::chat( b );
 }
 
-// /.takedmgrpc <id> -- make the server think that player damaged you (troll).
+// /.takedmgrpc <id> <amount> <weapon> -- make the server think that player damaged you
+// for an explicit amount with an arbitrary weapon id (Fuego 1:1: illegal ids -> ban bait).
 static void __cdecl cmd_takedmgrpc( char *params ) {
 	traceLastFunc( "cmd_takedmgrpc" );
-	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /.takedmgrpc <player id>" ); return; }
-	rpc::take_damage( atoi( params ), 0, 3 );
+	int id = -1, amount = 0, weapon = 0;
+	if ( !params || sscanf( params, "%d %d %d", &id, &amount, &weapon ) < 3 ) {
+		samp::chat( "{FFFF00}/.takedmgrpc [PlayerID] [Amount] [WeaponID]" );
+		samp::chat( "{FFFFFF}Try illegal weapon ids such as 38 to get a player banned." );
+		return;
+	}
+	rpc::take_damage_amount( id, amount, weapon );
 	samp::chat( "{33FF33}[dmg] {FFFFFF}TakeDamage RPC sent." );
 }
 
 // /unlockveh -- unlock the car you're in (1:1 cmd_unlockveh).
 static void __cdecl cmd_unlockveh( char * ) { traceLastFunc( "cmd_unlockveh" ); veh::unlock_vehicle(); }
 
-// /attveh -- tow/attach (partial; see veh::attach_trailer).
-static void __cdecl cmd_attveh( char * ) { traceLastFunc( "cmd_attveh" ); veh::attach_trailer(); }
+// /attveh <vehicle id> -- tow that streamed vehicle to the one you're driving (1:1 cmd_attachveh).
+static void __cdecl cmd_attveh( char *params ) {
+	traceLastFunc( "cmd_attveh" );
+	if ( !params || !params[0] ) { samp::chat( "{FFFF00}USAGE: /attveh <vehicle id>" ); return; }
+	veh::attach_vehicle_id( atoi( params ) );
+}
 
 // /.sethp <hp> -- set the local player's health (1:1 cmd_sethpar, health only).
 static void __cdecl cmd_sethp( char *params ) {

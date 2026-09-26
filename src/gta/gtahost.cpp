@@ -21,6 +21,7 @@
 #include "ColPoint.h"          // CWorld::ProcessLineOfSight out-param (vehicle picker)
 #include "ModelInfo.h"         // CModelInfo::GetModelInfo -> the game's own model-info table
 #include "VehicleModelInfo.h"  // CVehicleModelInfo::m_szGameName (GXT key -> display name)
+#include "Bike.h"              // CBike::m_nWheelStatus (health-hack tyre protection)
 
 #include <cmath>
 
@@ -622,13 +623,16 @@ int local_weapon_type() {
 	return p ? (int) p->GetActiveWeapon().m_Type : -1;
 }
 
-void top_up_clip() {
-	traceLastFunc( "game::top_up_clip" );
+// Fuego cheat_handle_noreload: the moment the active weapon enters RELOADING, flip it
+// straight back to READY. Ammo counts are never touched (the HUD stays honest and the
+// server's ammo checks see normal numbers).
+void no_reload_tick() {
+	traceLastFunc( "game::no_reload_tick" );
 	CPlayerPed *p = find_player_ped();
 	if ( !p ) return;
 	CWeapon &w = p->GetActiveWeapon();
-	if ( w.m_AmmoInClip < 100 ) w.m_AmmoInClip = 1000; // never drops to a reload
-	if ( w.m_TotalAmmo  < 100 ) w.m_TotalAmmo  = 99999;
+	if ( w.m_State == WEAPONSTATE_RELOADING )
+		w.m_State = WEAPONSTATE_READY;
 }
 
 int player_weapon( int sampId ) {
@@ -680,27 +684,35 @@ void set_local_invulnerable( bool on ) {
 	traceLastFunc( "game::set_local_invulnerable" );
 	CPlayerPed *p = find_player_ped();
 	if ( !p ) return;
-	// Fuego's health hack sets the ped's damage-immunity flags (bullet/fire/collision/
-	// melee/explosion). Combined with the RPC_ClientCheck flag-strip, godmode is both
-	// effective locally and hidden from the server's invulnerability query.
+	// Fuego's health hack ORs 4|8|64|128 into the ped's immunity byte (+0x42, i.e.
+	// physical-flag bits 18/19/22/23) = bullet / fire / invulnerable / explosion proof.
+	// Exactly the ACTOR_FLAGS_INVULNERABLE mask the RPC_ClientCheck strip hides, so
+	// nothing extra leaks to the server's flag query. Collision/melee stay untouched.
 	p->physicalFlags.bBulletProof    = on;
 	p->physicalFlags.bFireProof      = on;
-	p->physicalFlags.bCollisionProof = on;
-	p->physicalFlags.bMeleeProof     = on;
+	p->physicalFlags.bInvulnerable   = on;
 	p->physicalFlags.bExplosionProof = on;
 }
 
-// Health hack in a vehicle: Fuego pins the CAR every frame too (cheat_handle_hp) so local
-// collision/explosion damage can't wreck it -- the ped flags don't cover the vehicle.
+// Health hack in a vehicle (Fuego cheat_handle_hp, shipped trailer_support = true): for our
+// car and every trailer it tows -- bCanBeDamaged off, clear the "frozen" physical bit
+// (flags &= ~2 on the +0x42 byte = bit 17), and keep all tyres intact (hp_tire_support).
+// Off: bCanBeDamaged back on (mod_sa's own else-branch).
 void set_local_vehicle_invulnerable( bool on ) {
-	CVehicle *v = local_vehicle_internal();
-	if ( !v ) return;
-	v->physicalFlags.bBulletProof    = on;
-	v->physicalFlags.bFireProof      = on;
-	v->physicalFlags.bCollisionProof = on;
-	v->physicalFlags.bMeleeProof     = on;
-	v->physicalFlags.bExplosionProof = on;
-	v->vehicleFlags.bCanBeDamaged = !on; // Fuego: bCanBeDamaged = false while pinned
+	for ( CVehicle *v = local_vehicle_internal(); v; v = v->m_pVehicleBeingTowed ) {
+		if ( IsBadReadPtr( v, sizeof( CVehicle ) ) ) break;
+		v->vehicleFlags.bCanBeDamaged = !on;
+		if ( !on ) continue;
+		v->m_nPhysicalFlags &= ~( 2u << 16 );
+		if ( v->IsAutomobile() ) {
+			CAutomobile *a = static_cast<CAutomobile *>( v );
+			for ( int w = 0; w < MAX_CARWHEELS; w++ )
+				a->m_damageManager.SetWheelStatus( (eCarWheel) w, WHEEL_STATUS_OK );
+		} else if ( v->IsBike() ) {
+			CBike *b = static_cast<CBike *>( v );
+			b->m_nWheelStatus[0] = b->m_nWheelStatus[1] = 0;
+		}
+	}
 }
 
 void make_player_controllable() {
@@ -937,3 +949,195 @@ void airbrake_move( float fwd, float right, float up ) {
 	}
 
 } // namespace game
+
+// ==== visuals accessors (fork V) ====
+namespace game {
+
+namespace {
+// mod_sa's VEHICLE_CLASS_MINI models (cheat_funcs.cpp vehicle_list): the RC toys plus the
+// small utility vehicles. Fuego anchors a player's tag on such a vehicle when they drive it.
+bool is_mini_class( int model ) {
+	switch ( model ) {
+		case 441: case 457: case 464: case 465: case 485: case 501: case 530:
+		case 564: case 571: case 572: case 574: case 583: case 594:
+			return true;
+		default:
+			return false;
+	}
+}
+void copy3( float out[3], const CVector &v ) { out[0] = v.x; out[1] = v.y; out[2] = v.z; }
+} // namespace
+
+int ped_pool_snapshot( PoolPed *out, int maxN, int &selfIndex ) {
+	traceLastFunc( "game::ped_pool_snapshot" );
+	selfIndex = -1;
+	CPedPool *pool = GetPedPool();
+	if ( !pool || !out || maxN <= 0 )
+		return 0;
+	CPlayerPed *self = find_player_ped();
+	const int size = (int) pool->GetSize();
+	int n = 0;
+	for ( int i = 0; i < size && n < maxN; i++ ) {
+		CPed *ped = pool->GetAt( (size_t) i );
+		if ( !ped )
+			continue;
+		if ( ped == self )
+			selfIndex = i;
+		PoolPed &e = out[n++];
+		e.ped       = ped;
+		e.poolIndex = i;
+		copy3( e.pedPos, ped->GetPosition() );
+		CVehicle *veh = ped->GetVehicleIfInOne();
+		if ( veh && is_mini_class( veh->m_nModelIndex ) && veh->GetDriver() == ped )
+			copy3( e.pos, veh->GetPosition() );
+		else
+			copy3( e.pos, ped->GetPosition() );
+	}
+	return n;
+}
+
+bool local_bone_pos( int bone, float out[3] ) {
+	traceLastFunc( "game::local_bone_pos" );
+	CPlayerPed *p = find_player_ped();
+	if ( !p )
+		return false;
+	copy3( out, p->GetBonePosition( (eBoneTag) bone, false ) );
+	return true;
+}
+
+bool ped_bone_pos( void *ped, int bone, float out[3] ) {
+	traceLastFunc( "game::ped_bone_pos" );
+	if ( !ped || IsBadReadPtr( ped, 4 ) )
+		return false;
+	copy3( out, reinterpret_cast<CPed *>( ped )->GetBonePosition( (eBoneTag) bone, false ) );
+	return true;
+}
+
+bool local_tag_origin( float out[3] ) {
+	CPlayerPed *p = find_player_ped();
+	if ( !p )
+		return false;
+	if ( CVehicle *v = p->GetVehicleIfInOne() )
+		copy3( out, v->GetPosition() );
+	else
+		copy3( out, p->GetPosition() );
+	return true;
+}
+
+bool active_cam_source( float out[3] ) {
+	copy3( out, TheCamera.GetActiveCam().m_vecSource );
+	return true;
+}
+
+bool entity_pos( void *entity, float out[3] ) {
+	if ( !entity || IsBadReadPtr( entity, sizeof( CEntity ) ) )
+		return false;
+	copy3( out, reinterpret_cast<CEntity *>( entity )->GetPosition() );
+	return true;
+}
+
+int ped_weapons( void *ped, int types[13], int ammo[13] ) {
+	if ( !ped || IsBadReadPtr( ped, 4 ) )
+		return 0;
+	CPed *p = reinterpret_cast<CPed *>( ped );
+	for ( int s = 0; s < 13; s++ ) {
+		CWeapon &w = p->GetWeaponInSlot( (size_t) s );
+		types[s] = (int) w.m_Type;
+		ammo[s]  = (int) w.m_TotalAmmo;
+	}
+	return 13;
+}
+
+} // namespace game
+// ==== end visuals accessors ====
+
+// ==== cheat/veh accessors (port pass) ====
+namespace game {
+
+// iTroll target finder (Fuego cheat_handle_itroll_targetfinder): the SA:MP player id of
+// the DRIVER (seat 0) of the nearest OTHER occupied, alive (hp >= 250, not burning)
+// streamed vehicle. -1 if none. Mirrors vehicle_find_nearest(ALIVE|OCCUPIED) + passengers[0].
+int itroll_target_driver() {
+	traceLastFunc( "game::itroll_target_driver" );
+	CPlayerPed *self = find_player_ped();
+	if ( !self ) return -1;
+	CVehicle *ownVeh = self->GetVehicleIfInOne();
+	CVector me = self->GetPosition();
+	samp::stVehiclePool *vp = samp::vehicle_pool();
+	if ( !vp ) return -1;
+
+	float best = -1.0f;
+	int   bestPlayer = -1;
+	for ( int v = 0; v < samp::SAMP_MAX_VEHICLES; v++ ) {
+		CVehicle *veh = samp_vehicle( v );
+		if ( !veh || veh == ownVeh ) continue;
+		// alive: Fuego VEHICLE_ALIVE = hp >= 250 and not currently burning.
+		if ( veh->m_fHealth < 250.0f ) continue;
+		if ( veh->IsAutomobile() && static_cast<CAutomobile *>( veh )->m_fBurnTimer > 0.0f ) continue;
+		// occupied: a driver present (seat 0). We want that driver as the troll target.
+		CPed *driver = veh->m_pDriver;
+		if ( !driver || IsBadReadPtr( driver, 4 ) || driver == self ) continue;
+		CVector vp2 = veh->GetPosition();
+		float dx = vp2.x - me.x, dy = vp2.y - me.y, dz = ( vp2.z - me.z ) + 2.0f; // Fuego's +2 z bias
+		float d = dx * dx + dy * dy + dz * dz;
+		if ( best < 0.0f || d < best ) {
+			// resolve the driver ped -> SA:MP player id via the player pool.
+			int pid = -1;
+			for ( int p = 0; p < samp::SAMP_MAX_PLAYERS; p++ ) {
+				samp::stRemotePlayer *rp = samp::remote_player( p );
+				if ( rp && rp->pPlayerData && rp->pPlayerData->pSAMP_Actor &&
+				     (void *) rp->pPlayerData->pSAMP_Actor->pGTA_Ped == (void *) driver ) { pid = p; break; }
+			}
+			if ( pid >= 0 ) { best = d; bestPlayer = pid; }
+		}
+	}
+	return bestPlayer;
+}
+
+// /attveh (Fuego cmd_attachveh 1:1): tow-link the target vehicle to the one we're driving
+// (target->SetTowLink(ourVehicle)). false if we're not in a vehicle or the target is bad.
+bool tow_to_local( int sampVid ) {
+	traceLastFunc( "game::tow_to_local" );
+	CVehicle *mine = local_vehicle_internal();
+	CVehicle *veh  = samp_vehicle( sampVid );
+	if ( !mine || !veh ) return false;
+	veh->SetTowLink( mine, true ); // virtual -> the game's real SetTowLink
+	return true;
+}
+
+// `1`-key car repair (Fuego cheat_handle_vehicle_repair_car): only when driving our own
+// car; per press +50 hp, and once a link is >= 945 hp do a full Fix() then cap it at 945.
+// Walks the trailer chain (shipped trailer_support = true).
+void repair_local_vehicle() {
+	traceLastFunc( "game::repair_local_vehicle" );
+	CPlayerPed *self = find_player_ped();
+	if ( !self ) return;
+	CVehicle *v = self->GetVehicleIfInOne();
+	if ( !v || v->m_pDriver != self ) return; // must be the driver of our own car
+	for ( CVehicle *t = v; t; t = t->m_pVehicleBeingTowed ) {
+		if ( IsBadReadPtr( t, sizeof( CVehicle ) ) ) break;
+		if ( t->m_fHealth >= 945.0f ) { t->Fix(); t->m_fHealth = 945.0f; }
+		else                          { t->m_fHealth += 50.0f; }
+	}
+}
+
+// Full unlock (Fuego clickUnlock / cmd_unlockveh): LockDoors(false) + SetScriptLocked(false)
+// + SetDoorsUndamageable(false), reproducing mod_sa's exact ul_doorstate transitions so the
+// door actually becomes openable (not just m_nDoorLock = 1).
+void unlock_vehicle_full( int sampVid ) {
+	traceLastFunc( "game::unlock_vehicle_full" );
+	CVehicle *v = samp_vehicle( sampVid );
+	if ( !v ) return;
+	auto locked = [&] { uint32_t s = (uint32_t) v->m_nDoorLock;
+		return s == 2 || s == 3 || s == 4 || s == 5 || s == 7; };
+	auto undmg  = [&] { uint32_t s = (uint32_t) v->m_nDoorLock; return s == 1 || s == 7; };
+	// LockDoors(false)
+	if ( locked() ) v->m_nDoorLock = (eCarLock) ( undmg() ? 1 : 0 );
+	// SetScriptLocked(false)
+	v->vehicleFlags.bIsLocked = false;
+	// SetDoorsUndamageable(false)
+	if ( undmg() ) v->m_nDoorLock = (eCarLock) ( locked() ? 2 : 0 );
+}
+
+} // namespace game
+// ==== end cheat/veh accessors ====

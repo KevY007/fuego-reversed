@@ -210,14 +210,17 @@ void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback
 			return;
 		} else if ( id == RPC_SetVehicleHealth && fx::g_set.enable_extra_godmode &&
 		            rpc->numberOfBitsOfData >= 48 ) {
-			// Fuego: only with "extra godmode" on, and only swallow a genuine DROP
-			// (fHealth < our vehicle's current health) -- lets legit heals through.
+			// Fuego 1:1: only with "extra godmode" on, only for OUR OWN vehicle (sId ==
+			// our current vehicle id -- else we'd swallow every other car's health too),
+			// and only a genuine DROP (fHealth < our vehicle's current health) so legit
+			// heals still get through.
 			BitStream bs( rpc->input, rpc->numberOfBitsOfData / 8, false );
 			short sId = 0; float fHealth = 0.f;
 			bs.Read( sId );
 			bs.Read( fHealth );
+			int myVid = game::local_vehicle_samp_id();
 			float cur = game::local_vehicle_health();
-			if ( cur >= 0.0f && fHealth < cur ) {
+			if ( myVid >= 0 && sId == (short) myVid && cur >= 0.0f && fHealth < cur ) {
 				status::set( "Health Hack: blocked vehicle-health change" );
 				return;
 			}

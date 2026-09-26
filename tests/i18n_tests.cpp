@@ -16,7 +16,7 @@ int main() {
     return g_fail ? 1 : 0;
 }
 // Stubs so it links before later tasks fill them in (each task replaces its stub).
-void test_charset(){} void test_detect(){}
+void test_detect(){}
 void test_cache(){}   void test_validate(){}
 
 #include "i18n/json_min.h"
@@ -119,4 +119,21 @@ void test_protect() {
     CHECK(!placeholders_intact(hallucinated, m.tokens.size()),
           "an out-of-range placeholder fails placeholders_intact");
     CHECK_EQ(unmask(hallucinated, m.tokens), std::string(""));
+}
+
+#include "i18n/charset.h"
+void test_charset() {
+    using namespace i18n::charset;
+    // 1251 round trip for a Cyrillic byte (0xEF = 'п' in cp1251)
+    std::string ru = "\xEF\xF0\xE8\xE2\xE5\xF2"; // "привет" in cp1251
+    std::wstring w = decode(ru, 1251);
+    CHECK(!w.empty(), "decode should not be empty");
+    CHECK_EQ(encode(w, 1251), ru);
+    // utf8 round trip
+    CHECK_EQ(from_utf8(to_utf8(w)), w);
+    CHECK_EQ(guess_codepage(ru), 1251);
+    CHECK_EQ(guess_codepage("hello world"), 1252);
+    // cap + % strip
+    CHECK(cap_and_sanitize("100% sure", 64).find('%') == std::string::npos, "% should be removed");
+    CHECK(cap_and_sanitize(std::string(200,'x'), 144).size() <= 144, "should truncate to maxBytes");
 }

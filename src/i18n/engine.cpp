@@ -78,7 +78,23 @@ void worker_loop() {
         }
 
         std::string disp;
-        bool ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), g_sysPrompt, disp);
+        bool ok = false;
+        try {
+            ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), g_sysPrompt, disp);
+        } catch (...) {
+            // Realistically only std::bad_alloc anywhere in this call graph
+            // (string/vector/wstring allocations along the pipeline). An
+            // exception escaping a std::thread's entry function calls
+            // std::terminate() and kills the whole game process, so this
+            // must never propagate -- treat it like any other pipeline
+            // failure (leave the original text showing) instead. Falling
+            // through still pushes a Result and erases the in-flight hash
+            // below, exactly like the ok==false path, so a throw can
+            // neither crash the process nor permanently dedup-block this
+            // source.
+            ok = false;
+            disp.clear();
+        }
 
         {
             std::lock_guard<std::mutex> lock(g_resultMutex);
@@ -152,6 +168,12 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt) {
     g_sysPrompt = systemPrompt;
     g_status.store("idle", std::memory_order_relaxed);
 
+    // Safe without g_jobMutex, unlike stop()'s flip: stop() above (if we
+    // were running) already joined every prior worker before returning, and
+    // the workers created below don't exist yet, so there is provably no
+    // thread that could be parked in cv.wait() reading g_running right now.
+    // Each new worker's first predicate check is ordered after this store
+    // by std::thread's constructor happens-before guarantee.
     g_running.store(true);
     g_workers.clear();
     g_workers.reserve(kWorkerCount);
@@ -161,7 +183,20 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt) {
 }
 
 void stop() {
-    if (!g_running.exchange(false)) return; // already stopped
+    {
+        // g_running must flip to false WHILE holding g_jobMutex: a worker's
+        // wait() predicate reads g_running under that same mutex, and
+        // condition_variable's unlock+block is only atomic with respect to
+        // another thread that also holds the mutex. Flipping the flag (and
+        // therefore publishing it) without the lock leaves a real window
+        // where a worker reads the stale "still running" value, decides to
+        // block, and hasn't yet fully parked as a CV waiter when
+        // notify_all() fires on another core -- notify_all() only wakes
+        // already-parked waiters (it queues no signal), so that worker
+        // would then wait forever and stop()'s join() below would hang.
+        std::lock_guard<std::mutex> lock(g_jobMutex);
+        if (!g_running.exchange(false)) return; // already stopped
+    }
     g_jobCv.notify_all();
     for (auto& t : g_workers) {
         if (t.joinable()) t.join();

@@ -31,10 +31,16 @@ AddEntryFn g_origAddEntry = nullptr;
 bool                  g_installed = false;
 std::atomic<uint64_t> g_seq{ 1 };
 
-// Phase 0 marker: a small leading glyph + a faint colour tint, so a landed
-// translation reads as machine-translated without shouting. (marker_style
-// in config is reserved for a Task 12 menu choice; Phase 0 has just this one.)
-constexpr char     kMarker[]    = "\xE2\x97\x86 "; // U+25C6 BLACK DIAMOND + space (UTF-8)
+// Phase 0 marker: a small leading marker + a faint colour tint, so a landed
+// translation reads as machine-translated without shouting. ASCII, not a
+// UTF-8 glyph: displayBytes are cp1252 bytes that SA:MP renders via
+// DrawTextA under the process's ANSI codepage (CP_ACP), so a multi-byte
+// UTF-8 marker (originally the U+25C6 diamond here) prints as mojibake --
+// each UTF-8 byte redecoded as its own cp1252 character -- instead of a
+// glyph. ">> " is pure ASCII, so it renders identically under any ANSI
+// codepage. (marker_style in config is reserved for a Task 12 menu choice;
+// Phase 0 has just this one.)
+constexpr char     kMarker[]    = ">> ";
 constexpr uint32_t kMarkerColor = 0xFFB7B7FFu;      // faint lavender (ARGB)
 
 // Called from i18n::engine::pump() on the main thread once a translation
@@ -42,23 +48,45 @@ constexpr uint32_t kMarkerColor = 0xFFB7B7FFu;      // faint lavender (ARGB)
 // hooked_add_entry() or the patched address itself -- otherwise the line we
 // print here would re-enter the detour and get queued for translation again.
 void apply_result( const i18n::engine::Result &r ) {
-	if ( !r.ok || r.displayBytes.empty() ) return; // leave whatever original already showed
-	if ( !g_origAddEntry ) return;
+	// Guards against an exception (realistically only std::bad_alloc, from
+	// the std::string work below) crossing this C-ABI seam: apply_result()
+	// runs from pump_tick() (below), itself a D3D EndScene callback invoked
+	// from inside SA:MP/D3D's own C call stack via render::on_frame() -- an
+	// escaping exception there is undefined behaviour, not a clean crash.
+	// Swallow it; the worst case is the translated line silently doesn't
+	// show (the original already did, from hooked_add_entry()).
+	try {
+		if ( !r.ok || r.displayBytes.empty() ) return; // leave whatever original already showed
+		if ( !g_origAddEntry ) return;
 
-	void *chat = samp::chat_ptr();
-	if ( !chat ) return; // left the server before the result landed
+		void *chat = samp::chat_ptr();
+		if ( !chat ) return; // left the server before the result landed
 
-	std::string marked;
-	marked.reserve( sizeof( kMarker ) + r.displayBytes.size() );
-	marked.append( kMarker );
-	marked.append( r.displayBytes );
+		std::string marked;
+		marked.reserve( sizeof( kMarker ) - 1 + r.displayBytes.size() );
+		marked.append( kMarker );
+		marked.append( r.displayBytes );
 
-	// CHAT_TYPE_DEBUG: a local-only line (no player prefix), the same type
-	// samp::chat() uses for our own overlay/status output -- and, since it's
-	// never CHAT_TYPE_CHAT/CHAT_TYPE_INFO, hooked_add_entry() would ignore it
-	// for translation even if this call somehow went through the patched
-	// address (it doesn't -- see above).
-	g_origAddEntry( chat, samp::CHAT_TYPE_DEBUG, marked.c_str(), nullptr, kMarkerColor, 0 );
+		// engine::process_one() already caps displayBytes to 144 bytes (the
+		// crash-safety limit for SA:MP's fixed chat-line buffer) on its own,
+		// but prepending kMarker here can push the COMBINED line back over
+		// that same cap. marker + displayBytes are cp1252/ASCII -- one byte
+		// per character -- so a plain byte-count truncate can't split a
+		// multi-byte sequence; that makes it safe here even though it
+		// wouldn't be for arbitrary UTF-8 (contrast
+		// charset::cap_and_sanitize(), which is UTF-8-boundary-aware).
+		constexpr size_t kMaxLine = 144;
+		if ( marked.size() > kMaxLine )
+			marked.resize( kMaxLine );
+
+		// CHAT_TYPE_DEBUG: a local-only line (no player prefix), the same type
+		// samp::chat() uses for our own overlay/status output -- and, since it's
+		// never CHAT_TYPE_CHAT/CHAT_TYPE_INFO, hooked_add_entry() would ignore it
+		// for translation even if this call somehow went through the patched
+		// address (it doesn't -- see above).
+		g_origAddEntry( chat, samp::CHAT_TYPE_DEBUG, marked.c_str(), nullptr, kMarkerColor, 0 );
+	} catch ( ... ) {
+	}
 }
 
 // The detour target: every call to the patched AddEntry address (SA:MP's own
@@ -82,21 +110,34 @@ void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const ch
                                    const char *prefix, uint32_t textColor, uint32_t prefixColor ) {
 	// Always show the original line immediately (decided UX: original now,
 	// translation appended when it lands), via the real AddEntry.
+	// Deliberately OUTSIDE, and before, the try/catch below: even if the
+	// submit work that follows throws, the original line must already be on
+	// screen.
 	if ( g_origAddEntry )
 		g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
 
-	// Only genuine incoming server chat/info lines are worth translating.
-	// Never CHAT_TYPE_DEBUG (our own overlay/status output, including the
-	// marked line apply_result() just showed above) and never empty text.
-	if ( type != samp::CHAT_TYPE_CHAT && type != samp::CHAT_TYPE_INFO ) return;
-	if ( !msg || !msg[0] ) return;
+	// Guards against an exception (realistically only std::bad_alloc, from
+	// the Job/std::string allocations below) crossing this C-ABI seam:
+	// hooked_add_entry() is the detour target, called directly from SA:MP's
+	// own code on the game thread -- an escaping exception there is
+	// undefined behaviour, not a clean crash. Swallow it; the only effect is
+	// that this one line doesn't get queued for translation (the original
+	// line already showed, above).
+	try {
+		// Only genuine incoming server chat/info lines are worth translating.
+		// Never CHAT_TYPE_DEBUG (our own overlay/status output, including the
+		// marked line apply_result() just showed above) and never empty text.
+		if ( type != samp::CHAT_TYPE_CHAT && type != samp::CHAT_TYPE_INFO ) return;
+		if ( !msg || !msg[0] ) return;
 
-	i18n::engine::Job job;
-	job.handle      = g_seq.fetch_add( 1, std::memory_order_relaxed );
-	job.surface     = 0; // Phase 0: Chat
-	job.sourceBytes = msg;
-	job.srcCodepage = i18n::config::get().source_cp; // 0 = auto-detect
-	i18n::engine::submit( job );
+		i18n::engine::Job job;
+		job.handle      = g_seq.fetch_add( 1, std::memory_order_relaxed );
+		job.surface     = 0; // Phase 0: Chat
+		job.sourceBytes = msg;
+		job.srcCodepage = i18n::config::get().source_cp; // 0 = auto-detect
+		i18n::engine::submit( job );
+	} catch ( ... ) {
+	}
 }
 
 // Registered via render::on_frame(); drains finished translations on the

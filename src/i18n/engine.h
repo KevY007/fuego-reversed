@@ -54,8 +54,17 @@ void stop();
 // pool just queues the job until/unless start() is called).
 void submit(const Job& job);
 
-// Installs the main-thread callback pump() delivers results to. Call once,
-// before the first pump(), from the same thread that will call pump().
+// Installs the main-thread callback pump() delivers results to. Set-once:
+// call exactly once, before the first call to pump() can happen -- in
+// practice, before render::install() wires up the frame callback (and so
+// starts invoking pump_tick() -> pump()) on the render/game thread. It does
+// NOT need to be called from that same thread: hooks::install() calls this
+// from the init thread, strictly before that same function goes on to call
+// render::install(); g_applyFn is a plain pointer written exactly once, and
+// that program-order "set_apply() before render::install()" ordering is what
+// publishes the write so it's visible by the time any frame callback can
+// first read it (published-before-use), with no separate synchronization
+// required.
 void set_apply(void (*fn)(const Result&));
 
 // Drains whatever results are ready and invokes the applier for each, one

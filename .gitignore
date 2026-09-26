@@ -44,3 +44,17 @@ Desktop.ini
 # project-local Conan cache + everything generated from the gta-reversed submodule
 /external/.conan2/
 /external/generated/
+
+# ---- i18n runtime files (never commit -- fuego_i18n.cfg is the BYOK config
+#      and can contain a plaintext api_key; fuego_i18n_tm.txt is the
+#      on-disk translation-memory cache written at runtime) ----
+/fuego_i18n.cfg
+/fuego_i18n_tm.txt
+
+# ---- i18n host test artifacts (written into the repo by tests/run_tests.cmd,
+#      not build output) ----
+tests/i18n_tests.exe
+tests/*.obj
+test_cfg.cfg
+test_tm.txt
+engine_test_tm.txt

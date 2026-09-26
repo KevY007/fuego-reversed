@@ -16,7 +16,15 @@ int main() {
     return g_fail ? 1 : 0;
 }
 // Stubs so it links before later tasks fill them in (each task replaces its stub).
-void test_validate(){}
+#include "i18n/validate.h"
+#include "i18n/protect.h"
+void test_validate() {
+    using namespace i18n::validate;
+    i18n::protect::Masked m = i18n::protect::mask("Kevin says: hola");
+    CHECK(result_ok(m.text, m.text, m.tokens.size()), "unchanged placeholders ok");
+    CHECK(!result_ok(m.text, "I think this means hello", m.tokens.size()), "lost placeholder");
+    CHECK(!result_ok(m.text, "", m.tokens.size()), "empty rejected");
+}
 
 #include "i18n/cache.h"
 void test_cache() {

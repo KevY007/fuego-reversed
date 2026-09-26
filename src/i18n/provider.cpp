@@ -1,6 +1,7 @@
 #include "i18n/provider.h"
 #include "i18n/breaker.h"
 #include "i18n/json_min.h"
+#include "i18n/url_util.h"
 
 #include <windows.h>
 #include <winhttp.h>
@@ -92,8 +93,11 @@ private:
                        const std::string& rollingCtx, std::vector<std::string>& out, std::string& err) {
         std::string body = build_request_body(units, systemPrompt, rollingCtx);
 
-        // baseUrl already ends in /v1; the endpoint path is /chat/completions.
-        std::wstring url = widen(cfg_.baseUrl + "/chat/completions");
+        // baseUrl should already end in /v1, but tolerate a stray trailing
+        // slash (a common config typo, e.g. "http://127.0.0.1:11434/v1/")
+        // by normalizing the seam through join_url instead of naive
+        // concatenation -- a doubled '/' 404s on many servers.
+        std::wstring url = widen(join_url(cfg_.baseUrl, "/chat/completions"));
 
         URL_COMPONENTS uc{};
         wchar_t hostBuf[256] = {};
@@ -115,7 +119,14 @@ private:
             err = "WinHttpOpen failed";
             return false;
         }
-        WinHttpSetTimeouts(hSession, cfg_.connectMs, cfg_.connectMs, cfg_.readMs, cfg_.readMs);
+        if (!WinHttpSetTimeouts(hSession, cfg_.connectMs, cfg_.connectMs, cfg_.readMs, cfg_.readMs)) {
+            // If this silently fails, WinHTTP falls back to its own (much
+            // longer) default timeouts -- a worker could then stall well past
+            // what the breaker's T assumes. Treat it like every other WinHTTP
+            // call here: a hard failure of translate().
+            err = "WinHttpSetTimeouts failed";
+            return false;
+        }
 
         WinHttpHandle hConnect(WinHttpConnect(hSession, hostBuf, uc.nPort, 0));
         if (!hConnect.h) {

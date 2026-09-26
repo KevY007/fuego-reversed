@@ -11,9 +11,11 @@ static int g_fail = 0, g_ran = 0;
 void test_charset();  void test_protect();  void test_detect();
 void test_cache();    void test_json();     void test_validate();
 void test_provider_breaker();
+void test_join_url();
 int main() {
     test_json(); test_charset(); test_protect(); test_detect(); test_cache(); test_validate();
     test_provider_breaker();
+    test_join_url();
     std::printf("\n%d checks, %d failures\n", g_ran, g_fail);
     return g_fail ? 1 : 0;
 }
@@ -246,4 +248,13 @@ void test_provider_breaker() {
     b.on_failure(now);
     b.on_failure(now);
     CHECK(b.allow(now), "only 2 failures after reset -- still below K, stays closed");
+}
+
+#include "i18n/url_util.h"
+void test_join_url() {
+    using namespace i18n;
+    // A baseUrl with a stray trailing slash (common config typo) must not
+    // produce a doubled '/' at the seam -- many servers 404 on "//".
+    CHECK_EQ(join_url("http://x/v1/", "/chat/completions"), std::string("http://x/v1/chat/completions"));
+    CHECK_EQ(join_url("http://x/v1", "/chat/completions"), std::string("http://x/v1/chat/completions"));
 }

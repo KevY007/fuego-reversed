@@ -35,7 +35,9 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>$(ImguiInclude);$(ImguiBindings);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- src: lets the i18n subsystem's own headers resolve their sibling includes
+           as "i18n/xxx.h" (as tests\run_tests.cmd's standalone `cl /I src` build already does). -->
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ImguiInclude);$(ImguiBindings);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
@@ -48,7 +50,7 @@
       <!-- bin\FuegoReversed.map: which object every symbol came from (crash triage,
            and auditing what the gta-reversed archive contributes to the link). -->
       <GenerateMapFile>true</GenerateMapFile>
-      <AdditionalDependencies>d3d9.lib;$(GtaLinkDeps);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d9.lib;winhttp.lib;$(GtaLinkDeps);%(AdditionalDependencies)</AdditionalDependencies>
       <!-- FORCE:MULTIPLE folds the identical PoolOf<>/Compress* defs that gtahost.obj
            and the lib's PCH both emit (non-inline functions in upstream headers). -->
       <AdditionalOptions>/FORCE:MULTIPLE /IGNORE:4006,4088 %(AdditionalOptions)</AdditionalOptions>
@@ -88,6 +90,40 @@
     <ClCompile Include="src\cheats\veh.cpp" />
     <ClCompile Include="src\cheats\server.cpp" />
     <ClCompile Include="src\cheats\chams.cpp" />
+    <!-- i18n: Phase 0 chat translation pipeline (lean C++20, no gta-reversed headers).
+         ObjectFileName is overridden because src\core\config.cpp already produces
+         config.obj: same basename in a different directory would otherwise silently
+         clobber one .obj with the other (MSB8027) and drop symbols at link time. -->
+    <ClCompile Include="src\i18n\json_min.cpp">
+      <ObjectFileName>$(IntDir)i18n_json_min.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\charset.cpp">
+      <ObjectFileName>$(IntDir)i18n_charset.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\protect.cpp">
+      <ObjectFileName>$(IntDir)i18n_protect.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\detect.cpp">
+      <ObjectFileName>$(IntDir)i18n_detect.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\cache.cpp">
+      <ObjectFileName>$(IntDir)i18n_cache.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\validate.cpp">
+      <ObjectFileName>$(IntDir)i18n_validate.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\provider.cpp">
+      <ObjectFileName>$(IntDir)i18n_provider.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\engine.cpp">
+      <ObjectFileName>$(IntDir)i18n_engine.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\config.cpp">
+      <ObjectFileName>$(IntDir)i18n_config.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\i18n\hooks.cpp">
+      <ObjectFileName>$(IntDir)i18n_hooks.obj</ObjectFileName>
+    </ClCompile>
     <!-- gta-reversed bridge: the ONE TU that sees gta-reversed's headers. Compiled
          exactly like upstream compiled gta_reversed.lib (language mode, defines,
          include roots, charset/conformance flags; all from gta_deps.props). -->
@@ -129,6 +165,16 @@
     <ClInclude Include="src\cheats\cheats.h" />
     <ClInclude Include="src\gta\gtahost.h" />
     <ClInclude Include="src\gta\gta_reversed.h" />
+    <ClInclude Include="src\i18n\json_min.h" />
+    <ClInclude Include="src\i18n\charset.h" />
+    <ClInclude Include="src\i18n\protect.h" />
+    <ClInclude Include="src\i18n\detect.h" />
+    <ClInclude Include="src\i18n\cache.h" />
+    <ClInclude Include="src\i18n\validate.h" />
+    <ClInclude Include="src\i18n\provider.h" />
+    <ClInclude Include="src\i18n\engine.h" />
+    <ClInclude Include="src\i18n\config.h" />
+    <ClInclude Include="src\i18n\hooks.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

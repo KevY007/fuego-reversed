@@ -19,6 +19,11 @@
 #include "../menu/menu.h"
 #include "../cheats/cheats.h"
 #include "../cheats/friends.h"
+#include "../i18n/config.h"
+#include "../i18n/cache.h"
+#include "../i18n/provider.h"
+#include "../i18n/engine.h"
+#include "../i18n/hooks.h"
 
 #include <windows.h>
 
@@ -77,6 +82,20 @@ void bring_up_subsystems() {
 		Sleep( 100 );
 	Log( render::installed() ? "[init] overlay online (F2 for menu)."
 	                         : "[init] WARNING: render hook failed; menu unavailable." );
+
+	// --- i18n: Phase 0 inbound chat translation (inert unless enabled) ---
+	i18n::config::load();
+	i18n::cache::load( "fuego_i18n_tm.txt" );
+	if ( i18n::config::get().inbound_chat ) {
+		i18n::ProviderConfig pc;
+		auto &s   = i18n::config::get();
+		pc.baseUrl = s.base_url;
+		pc.apiKey  = s.api_key;
+		pc.model   = s.model;
+		i18n::engine::start( pc, i18n::config::build_system_prompt( s.target_lang ) );
+		i18n::hooks::install();
+		Log( "[i18n] inbound chat translation ENABLED (target_lang=%d, model=%s).", s.target_lang, s.model.c_str() );
+	}
 
 	Log( "[init] core online." );
 }

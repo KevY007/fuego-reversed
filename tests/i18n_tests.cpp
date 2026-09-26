@@ -16,7 +16,7 @@ int main() {
     return g_fail ? 1 : 0;
 }
 // Stubs so it links before later tasks fill them in (each task replaces its stub).
-void test_charset(){} void test_protect(){} void test_detect(){}
+void test_charset(){} void test_detect(){}
 void test_cache(){}   void test_validate(){}
 
 #include "i18n/json_min.h"
@@ -62,4 +62,25 @@ void test_json() {
     CHECK(parse_units("[{\"text\":\"z\",\"id\":0}]", u3), "parse_units with reordered fields");
     CHECK_EQ((int)u3.size(), 1);
     CHECK_EQ(u3[0].text, std::string("z"));
+}
+
+#include "i18n/protect.h"
+void test_protect() {
+    using namespace i18n::protect;
+    Masked m = mask("Kevin says: type /car alpha {FF0000}now");
+    CHECK(m.translatable, "message with surviving prose should be translatable");
+    CHECK(m.text.find("/car") == std::string::npos, "command masked out");    // command masked out
+    CHECK(m.text.find("{FF0000}") == std::string::npos, "colour masked out"); // colour masked out
+    CHECK(m.text.find("Kevin") == std::string::npos, "name masked out");      // name masked out
+    // round trip: a faithful translation keeps the placeholders
+    std::string translated = m.text; // pretend the model returned it unchanged
+    CHECK(placeholders_intact(translated, m.tokens.size()), "faithful echo keeps placeholders intact");
+    std::string back = unmask(translated, m.tokens);
+    CHECK(back.find("/car") != std::string::npos, "unmask restores command");
+    CHECK(back.find("{FF0000}") != std::string::npos, "unmask restores colour");
+    // a dropped placeholder is rejected
+    CHECK_EQ(unmask("no placeholders here", m.tokens), std::string(""));
+    // pure command / numbers => not translatable (skip, no API call)
+    CHECK(!mask("/quit").translatable, "pure command is not translatable");
+    CHECK(!mask("$5000").translatable, "pure money amount is not translatable");
 }

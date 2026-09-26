@@ -9,6 +9,8 @@
 #include "../cheats/visuals.h"
 #include "../cheats/veh.h"
 #include "../core/config.h"
+#include "../i18n/config.h"
+#include "../i18n/engine.h"
 
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
@@ -174,6 +176,57 @@ void draw_ui() {
 			                    "WINDOWED at 2560x1440 in its own Display menu, then enable both "
 			                    "boxes above. Windowed mode presents at the desktop's refresh, so "
 			                    "you get the full rate -- GTA's fullscreen mode list is capped at 60Hz." );
+			ImGui::EndTabItem();
+		}
+		// ---------------- Translator ----------------
+		if ( ImGui::BeginTabItem( "Translator" ) ) {
+			auto &s = i18n::config::get();
+			ImGui::TextWrapped( "Translate incoming server chat. Runs against a local Ollama or any OpenAI-compatible endpoint you configure." );
+			ImGui::Checkbox( "Enable inbound chat translation", &s.inbound_chat );
+			ImGui::TextDisabled( "Applies on next game launch." );
+			ImGui::Separator();
+
+			// Endpoint buffer
+			static char endpoint_buf[256] = "";
+			static bool endpoint_init = false;
+			if ( !endpoint_init ) {
+				endpoint_init = true;
+				strncpy_s( endpoint_buf, sizeof endpoint_buf, s.base_url.c_str(), _TRUNCATE );
+			}
+			ImGui::InputText( "Endpoint (base URL)", endpoint_buf, sizeof endpoint_buf );
+			s.base_url = endpoint_buf;
+
+			// Model buffer
+			static char model_buf[256] = "";
+			static bool model_init = false;
+			if ( !model_init ) {
+				model_init = true;
+				strncpy_s( model_buf, sizeof model_buf, s.model.c_str(), _TRUNCATE );
+			}
+			ImGui::InputText( "Model", model_buf, sizeof model_buf );
+			s.model = model_buf;
+
+			// API key buffer
+			static char api_key_buf[256] = "";
+			static bool api_key_init = false;
+			if ( !api_key_init ) {
+				api_key_init = true;
+				strncpy_s( api_key_buf, sizeof api_key_buf, s.api_key.c_str(), _TRUNCATE );
+			}
+			ImGui::InputText( "API key (blank for local)", api_key_buf, sizeof api_key_buf, ImGuiInputTextFlags_Password );
+			s.api_key = api_key_buf;
+
+			ImGui::SliderInt( "Source codepage (0 = auto)", &s.source_cp, 0, 1258 );
+			ImGui::SliderInt( "Target language (1033 = English)", &s.target_lang, 0, 10000 );
+
+			const char* marker_styles[] = { "Glyph + tint", "Tint only", "Prefix tag" };
+			ImGui::Combo( "Marker style", &s.marker_style, marker_styles, 3 );
+
+			if ( ImGui::Button( "Save translator config" ) ) i18n::config::save();
+			ImGui::SameLine(); ImGui::TextDisabled( "-> fuego_i18n.cfg" );
+
+			ImGui::Separator();
+			ImGui::Text( "Status: %s", i18n::engine::status() );
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();

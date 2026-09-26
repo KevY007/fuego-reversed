@@ -106,6 +106,8 @@ void bring_up_subsystems() {
 		Sleep( 100 );
 	Log( render::installed() ? "[init] overlay online (F2 for menu)."
 	                         : "[init] WARNING: render hook failed; menu unavailable." );
+	if ( render::installed() )
+		render::set_max_fullscreen_refresh( fx::g_set.fullscreen_max_hz ); // restore saved preference
 
 	Log( "[init] core online." );
 }

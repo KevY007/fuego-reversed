@@ -13,6 +13,7 @@
 #include "../cheats/status.h"
 #include "../cheats/cheats.h"
 #include "../cheats/server.h"
+#include "../i18n/capture.h"   // debug: log incoming dialog/label/textdraw/gametext RPCs
 #include "../hook/CDetour.h"
 
 #include <windows.h>
@@ -131,6 +132,10 @@ bool Rewrite_SetSpawnInfo( RPCParameters *rpc ) {
 // Incoming RPC dispatch interception. Runs the ConnectionRejected auto-detect
 // (always) and, while spoofing, the skin rewrites. Then SA:MP's original handler.
 void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback )( RPCParameters * ) ) {
+	// Read-only capture for building the dialog/label/textdraw/gametext surfaces
+	// (no-op unless config.debug_capture is on; never modifies the packet).
+	i18n::capture::on_incoming_rpc( id, rpc );
+
 	if ( rpc != nullptr && rpc->numberOfBitsOfData >= 8 ) {
 		// wrong-version reject -> tell the user to enable compat manually
 		if ( id == RPC_CONNECTION_REJECTED && !compat::in_037_mode() ) {

@@ -36,4 +36,11 @@ HWND              window(); // game window; null before the first frame
 	void hide_overlay_for( unsigned ms );
 	bool overlay_hidden();
 
+// When on, the Reset hook rewrites D3DPRESENT_PARAMETERS.FullScreen_RefreshRateInHz
+// to the highest rate the monitor supports at the current resolution (exclusive
+// fullscreen only). Applies on the next device reset. Safe: it only edits the
+// present params GTA passes to its OWN Reset, so RenderWare recreates resources
+// normally.
+void set_max_fullscreen_refresh( bool on );
+
 } // namespace render

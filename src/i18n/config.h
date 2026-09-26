@@ -34,6 +34,12 @@ struct Settings {
     // is the SERVER's language to translate into. ---
     bool outbound_enabled = false;
     int outbound_target_lang = 1049; // default Russian (classic "I speak EN, RU server")
+
+    // Debug: log raw bytes (+ decoded plain fields) of incoming dialog/label/
+    // textdraw/gametext RPCs to fuego_reversed.log, so their exact wire format
+    // can be verified against a real server before those surfaces are built.
+    // Read-only; never modifies packets. Default OFF.
+    bool debug_capture = false;
 };
 
 Settings& get();

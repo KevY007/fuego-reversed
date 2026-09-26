@@ -268,6 +268,13 @@ void draw_ui() {
 		if ( ImGui::BeginTabItem( "Display" ) ) {
 			ImGui::Checkbox( "Uncap FPS (frame limiter off)", &g_set.uncap_fps );
 			ImGui::Checkbox( "Borderless window (fill screen)", &g_set.borderless );
+			if ( ImGui::Checkbox( "Exclusive fullscreen: max refresh rate", &g_set.fullscreen_max_hz ) )
+				render::set_max_fullscreen_refresh( g_set.fullscreen_max_hz );
+			ImGui::SameLine();
+			HelpMarker( "Forces GTA's EXCLUSIVE fullscreen to your monitor's HIGHEST refresh at the current "
+			            "resolution (GTA hardcodes the lowest >=60Hz). No borderless needed. Applies on the "
+			            "next device reset -- after enabling, re-select your resolution in GTA's Display menu "
+			            "once (or Alt+Tab out and back)." );
 			ImGui::SeparatorText( "Overlay" );
 			ImGui::Checkbox( "Cheat state text (top-right)", &g_set.status_text );
 			ImGui::Checkbox( "Active-cheat watermark (top-left)", &g_set.show_active_list );
@@ -426,6 +433,12 @@ void draw_ui() {
 					ImGui::TextWrapped( "result: %s", g_selfResult.c_str() );
 				}
 			}
+
+			ImGui::SeparatorText( "Debug (helps build dialogs/labels/textdraws)" );
+			ImGui::Checkbox( "Log dialog/label/textdraw/gametext packets", &s.debug_capture );
+			ImGui::SameLine();
+			HelpMarker( "Read-only. Enable, join a server, trigger a dialog/3D label/textdraw/gametext, "
+			            "then share fuego_reversed.log. Never modifies packets. (Saved with the config.)" );
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();

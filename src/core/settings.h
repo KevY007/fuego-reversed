@@ -116,6 +116,11 @@ struct Settings {
 	// ============ DISPLAY ============
 	bool  uncap_fps = false;         // force GTA's frame limiter (0xBA6794) off every frame
 	bool  borderless = false;        // borderless-window the game window
+	// Force EXCLUSIVE fullscreen to the highest refresh the monitor supports at the
+	// current resolution (GTA hardcodes the lowest >=60). Applied in the D3D Reset
+	// hook; takes effect on the next device reset (change res in GTA's Display menu,
+	// or Alt+Tab).
+	bool  fullscreen_max_hz = false;
 };
 
 extern Settings g_set;

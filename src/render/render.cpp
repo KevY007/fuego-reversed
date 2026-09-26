@@ -24,6 +24,29 @@ HWND              g_window = nullptr;
 WNDPROC           g_origWndProc = nullptr;
 
 DWORD             g_overlayHideUntil = 0; // GetTickCount() deadline for the F8 screenshot hide
+bool              g_maxFullscreenHz  = false; // force highest refresh in exclusive fullscreen
+
+// Highest refresh the adapter supports at the reset's target resolution, for the
+// present params' back-buffer format (falls back to the desktop rate, then 0).
+UINT best_fullscreen_refresh( IDirect3DDevice9 *dev, const D3DPRESENT_PARAMETERS *pp ) {
+	IDirect3D9 *d3d = nullptr;
+	if ( FAILED( dev->GetDirect3D( &d3d ) ) || !d3d ) return 0;
+	D3DDISPLAYMODE desktop = {};
+	d3d->GetAdapterDisplayMode( D3DADAPTER_DEFAULT, &desktop );
+	D3DFORMAT fmt = pp->BackBufferFormat;
+	if ( fmt == D3DFMT_UNKNOWN ) fmt = desktop.Format;
+	const UINT w = pp->BackBufferWidth, h = pp->BackBufferHeight;
+	UINT best = 0;
+	const UINT cnt = d3d->GetAdapterModeCount( D3DADAPTER_DEFAULT, fmt );
+	for ( UINT i = 0; i < cnt; ++i ) {
+		D3DDISPLAYMODE m = {};
+		if ( SUCCEEDED( d3d->EnumAdapterModes( D3DADAPTER_DEFAULT, fmt, i, &m ) ) )
+			if ( m.Width == w && m.Height == h && m.RefreshRate > best ) best = m.RefreshRate;
+	}
+	if ( best == 0 ) best = desktop.RefreshRate; // fallback: desktop refresh
+	d3d->Release();
+	return best;
+}
 
 LRESULT CALLBACK hkWndProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp ) {
 	bool consumed = false;
@@ -57,6 +80,17 @@ HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
 }
 
 HRESULT __stdcall hkReset( IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp ) {
+	// Force the highest refresh for exclusive fullscreen (GTA hardcodes lowest >=60).
+	// We only edit the params GTA passes to its own Reset, so RenderWare's normal
+	// device-reset resource recreation still runs.
+	if ( g_maxFullscreenHz && pp && pp->Windowed == FALSE ) {
+		UINT hz = best_fullscreen_refresh( dev, pp );
+		if ( hz > 0 && hz != pp->FullScreen_RefreshRateInHz ) {
+			Log( "[render] fullscreen refresh: %u -> %u Hz (%ux%u).",
+			     pp->FullScreen_RefreshRateInHz, hz, pp->BackBufferWidth, pp->BackBufferHeight );
+			pp->FullScreen_RefreshRateInHz = hz;
+		}
+	}
 	for ( auto fn : resetCbs() ) fn( dev, true );   // pre-reset: release resources
 	HRESULT hr = g_origReset( dev, pp );
 	for ( auto fn : resetCbs() ) fn( dev, false );  // post-reset: recreate
@@ -99,6 +133,11 @@ HWND window() { return g_window; }
 void hide_overlay_for( unsigned ms ) { g_overlayHideUntil = GetTickCount() + ms; }
 // Wrap-safe (signed delta); the sentinel 0 never counts as "hidden".
 bool overlay_hidden() { return g_overlayHideUntil && (int) ( g_overlayHideUntil - GetTickCount() ) > 0; }
+
+void set_max_fullscreen_refresh( bool on ) {
+	g_maxFullscreenHz = on;
+	Log( "[render] max fullscreen refresh %s (applies on next device reset).", on ? "ON" : "OFF" );
+}
 
 bool install() {
 	if ( g_installed ) return true;

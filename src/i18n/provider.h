@@ -19,12 +19,13 @@ struct ProviderConfig {
     // can take a few seconds on CPU / a small GPU. 2.5s was far too short and made
     // every call time out. Overridable per-config (menu: Response timeout).
     int readMs = 30000;
-    // Sampling. Hy-MT2's recommended params: temp 0.7, top_p 0.6. IMPORTANT: at
-    // temperature 0 (greedy) Hy-MT2 runs away/loops (verified), so never send 0.
-    // maxTokens caps output -> bounds latency and stops any runaway generation.
-    // (top_k / repeat_penalty aren't honoured by the OpenAI /v1 endpoint, so we
-    // rely on temp + top_p + the maxTokens cap.)
-    double temperature = 0.7;
+    // Sampling. temp 0.3 is the sweet spot found in live testing: Hy-MT2 stays
+    // coherent and NEVER loops (its runaway only happens at temperature 0/greedy),
+    // while general models (gemma3, ...) are far more accurate + consistent at 0.3
+    // than at 0.7 (which made gemma echo the source / drift). Configurable via the
+    // menu (config.translate_temp). maxTokens caps output -> bounds latency + stops
+    // any runaway. (top_k / repeat_penalty aren't honoured by the OpenAI /v1 endpoint.)
+    double temperature = 0.3;
     double topP = 0.6;
     int maxTokens = 512;
 };

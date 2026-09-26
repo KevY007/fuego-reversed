@@ -208,6 +208,7 @@ void apply_config() {
 	pc.model     = s.model;
 	pc.connectMs = 2000;
 	pc.readMs    = s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000; // local models cold-load slowly
+	pc.temperature = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0; // 30 -> 0.30
 
 	int dispCp = i18n::config::display_codepage( s.target_lang, s.roman_output );
 	i18n::engine::start( pc,

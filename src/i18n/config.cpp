@@ -98,6 +98,8 @@ void from_text(const std::string& text) {
                 g_settings.marker_style = std::stoi(value);
             } else if (key == "read_timeout_ms") {
                 g_settings.read_timeout_ms = std::stoi(value);
+            } else if (key == "translate_temp") {
+                g_settings.translate_temp = std::stoi(value);
             } else if (key == "roman_output") {
                 g_settings.roman_output = (value == "true" || value == "1");
             } else if (key == "outbound_enabled") {
@@ -128,6 +130,7 @@ std::string to_text() {
     out << "model=" << escape(g_settings.model) << "\n";
     out << "marker_style=" << g_settings.marker_style << "\n";
     out << "read_timeout_ms=" << g_settings.read_timeout_ms << "\n";
+    out << "translate_temp=" << g_settings.translate_temp << "\n";
     out << "roman_output=" << (g_settings.roman_output ? "true" : "false") << "\n";
     out << "outbound_enabled=" << (g_settings.outbound_enabled ? "true" : "false") << "\n";
     out << "outbound_target_lang=" << g_settings.outbound_target_lang << "\n";
@@ -230,9 +233,10 @@ std::string build_system_prompt(int targetLang, bool roman) {
         "Translate naturally, matching the casual tone of game chat.";
 
     if (roman) {
-        p += " Write the translation in " + langName + " but using ONLY Latin/Roman letters "
-             "(romanized / transliterated the way people type online, e.g. Roman Urdu \"aap kaise ho\", "
-             "Hinglish, Arabizi) -- do NOT use the native script.";
+        p += " IMPORTANT: translate the MEANING into " + langName + ", then write that translation using "
+             "ONLY Latin letters a-z, spaces and punctuation -- a phonetic romanization (Roman Urdu / "
+             "Hinglish / Arabizi). Do NOT keep the source words untranslated, and NEVER output any "
+             "native-script character.";
     }
     return p;
 }

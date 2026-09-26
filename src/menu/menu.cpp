@@ -89,6 +89,7 @@ void run_selftest_async() {
 	pc.apiKey  = s.api_key;
 	pc.model   = s.model;
 	pc.readMs  = s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000;
+	pc.temperature = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0;
 	std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output );
 
 	std::thread( [pc, prompt]() {
@@ -411,6 +412,10 @@ void draw_ui() {
 			            "scripts SA:MP's chat font can't draw; harmless for Latin languages." );
 
 			ImGui::SliderInt( "Source codepage (0 = auto)", &s.source_cp, 0, 1258 );
+			ImGui::SliderInt( "Temperature (x100)", &s.translate_temp, 0, 100 );
+			ImGui::SameLine();
+			HelpMarker( "Sampling temperature x100 (30 = 0.30). 0.30 works well for both Hy-MT2 and general "
+			            "models. Higher = more creative/varied; too low (0) can make Hy-MT2 loop. Applies on Save." );
 
 			const char* marker_styles[] = { "Glyph + tint", "Tint only", "Prefix tag" };
 			ImGui::Combo( "Marker style", &s.marker_style, marker_styles, 3 );

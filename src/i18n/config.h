@@ -20,6 +20,9 @@ struct Settings {
     // on the first call (seconds to tens of seconds), so this needs headroom;
     // 30s is a safe default. Menu exposes it as "Response timeout".
     int read_timeout_ms = 30000;
+    // Sampling temperature as a percent (30 = 0.30). 0.3 works well for both the
+    // Hy-MT2 MT models and general models (gemma3/qwen). Menu: "Temperature".
+    int translate_temp = 30;
     // Write the target language phonetically in the Latin/Roman alphabet
     // (Roman Urdu, Hinglish, Arabizi, ...) instead of its native script. This
     // is REQUIRED for languages whose script SA:MP's cp1251/cp1252 font can't

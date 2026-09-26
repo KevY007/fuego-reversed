@@ -92,8 +92,16 @@ hand-installed SDKs.
    don't have it), then builds the `external/gta-reversed` submodule and produces
    the game library + the generated `deps` props. Re-run it (or
    `scripts\bootstrap.cmd -Clean`) only when the gta-reversed submodule moves.
-3. **Build the ASI:** the bootstrap builds it at the end, or open
-   `FuegoReversed.sln` and build **Release / Win32** → `bin/FuegoReversed.asi`.
+3. **Build the ASI:** the bootstrap builds it at the end. For later incremental
+   builds after editing source, run **`scripts\build.cmd`** (one command; it finds
+   MSBuild itself and rebuilds `bin/FuegoReversed.asi` — no dependency re-check).
+
+**No IDE required.** The `.sln`/`.vcxproj` are the build definition, but the whole
+project builds headless from the command line via `scripts\build.cmd` (or
+`scripts\bootstrap.cmd` for a from-scratch build) — Visual Studio's IDE is optional.
+If you *do* want the IDE, opening `FuegoReversed.sln` and building **Release / Win32**
+works too. (The project builds via MSBuild directly; CMake is used only to build the
+gta-reversed submodule during bootstrap.)
 
 Toolset **v145**, C++20 (the one gta-reversed bridge TU is C++23, scoped to
 itself). Drop the `.asi` in the GTA:SA folder via your ASI loader; progress is

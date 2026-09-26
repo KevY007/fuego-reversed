@@ -27,13 +27,11 @@ Win32/
 *.lastbuildstate
 *.exp
 *.res
+*.map
 
 # ---- Build output binaries ----
 *.asi
-
-# ---- Vendored imgui demo apps + prebuilt libs (the build only uses imgui core + the
-#      dx9/win32 backends, not the examples) ----
-vendor/imgui/examples/
+*.exe
 
 # ---- OS cruft ----
 Thumbs.db

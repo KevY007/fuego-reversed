@@ -10,8 +10,10 @@ static int g_fail = 0, g_ran = 0;
 // Forward-declare per-module test entry points; each later task defines one.
 void test_charset();  void test_protect();  void test_detect();
 void test_cache();    void test_json();     void test_validate();
+void test_provider_breaker();
 int main() {
     test_json(); test_charset(); test_protect(); test_detect(); test_cache(); test_validate();
+    test_provider_breaker();
     std::printf("\n%d checks, %d failures\n", g_ran, g_fail);
     return g_fail ? 1 : 0;
 }
@@ -214,4 +216,34 @@ void test_charset() {
 
     // "привет" (hello in Russian) has many high bytes, should return 1251
     CHECK_EQ(guess_codepage(ru), 1251);
+}
+
+#include "i18n/breaker.h"
+void test_provider_breaker() {
+    using namespace i18n;
+    // K=3 consecutive failures trips the breaker for T=15000ms, using a fake
+    // clock (no real sleeping, no network) so this drives entirely in-process.
+    Breaker b; // defaults: K=3, T=15000
+    unsigned long now = 1000;
+
+    CHECK(b.allow(now), "breaker starts closed");
+    b.on_failure(now); // failure 1
+    CHECK(b.allow(now), "still allowed after 1 failure");
+    b.on_failure(now); // failure 2
+    CHECK(b.allow(now), "still allowed after 2 failures");
+    b.on_failure(now); // failure 3 -> trips the breaker
+    CHECK(!b.allow(now), "4th allow() short-circuits after 3 consecutive failures");
+
+    // Still open just before T ms have elapsed.
+    CHECK(!b.allow(now + 14999), "still open just under T ms later");
+
+    // T ms elapse -> half-open, allow() returns true again.
+    CHECK(b.allow(now + 15000), "allow() true again after T ms elapse");
+
+    // A success resets the failure counter and closes the circuit.
+    b.on_success();
+    CHECK(b.allow(now), "closed immediately after a success");
+    b.on_failure(now);
+    b.on_failure(now);
+    CHECK(b.allow(now), "only 2 failures after reset -- still below K, stays closed");
 }

@@ -1,4 +1,7 @@
 #include "i18n/protect.h"
+#include "i18n/glossary_data.h"
+
+#include <algorithm>
 
 namespace i18n::protect {
 
@@ -72,6 +75,57 @@ size_t match_ci_literal(const std::string& s, size_t pos, const char* lit) {
         if (a != b) return 0;
     }
     return i;
+}
+
+// ---- Glossary canonicalisation ---------------------------------------------
+// Case-insensitive, whole-word rewrite of known GTA:SA proper nouns (vehicle
+// model names, San Andreas place names) back to canonical spelling. ASCII-only:
+// to_lower() only touches 'A'-'Z', so non-ASCII bytes compare unequal to
+// anything and are always copied through verbatim by the caller.
+char to_lower(unsigned char c) {
+    return is_upper(char(c)) ? char(c - 'A' + 'a') : char(c);
+}
+
+// Canonical terms bucketed by lowercase first letter, each bucket sorted by
+// descending length. Trying candidates longest-first within a bucket means a
+// left-to-right scan naturally prefers the longest term that matches at a
+// given position (e.g. "Los Santos International" over "Los Santos").
+struct GlossaryIndex {
+    std::vector<const std::string*> buckets[26];
+};
+
+const GlossaryIndex& glossary_index() {
+    static const GlossaryIndex index = [] {
+        GlossaryIndex built;
+        for (const std::string& term : glossary_terms()) {
+            if (term.empty()) continue;
+            char lower = to_lower(static_cast<unsigned char>(term[0]));
+            if (lower < 'a' || lower > 'z') continue;
+            built.buckets[static_cast<size_t>(lower - 'a')].push_back(&term);
+        }
+        for (auto& bucket : built.buckets) {
+            std::sort(bucket.begin(), bucket.end(),
+                      [](const std::string* a, const std::string* b) {
+                          return a->size() > b->size();
+                      });
+        }
+        return built;
+    }();
+    return index;
+}
+
+// Case-insensitive ASCII comparison of text[pos, pos+term.size()) against
+// term. False (without reading out of bounds) if term doesn't fit at pos.
+bool match_ci_term(const std::string& text, size_t pos, const std::string& term) {
+    const size_t len = term.size();
+    if (pos + len > text.size()) return false;
+    for (size_t k = 0; k < len; ++k) {
+        if (to_lower(static_cast<unsigned char>(text[pos + k])) !=
+            to_lower(static_cast<unsigned char>(term[k]))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -374,8 +428,39 @@ std::string unmask(const std::string& translated, const std::vector<std::string>
 }
 
 std::string apply_glossary(const std::string& text, int /*tgtLang*/) {
-    // Phase 0 stub: no glossary table yet (lands in Phase 3+). Identity passthrough.
-    return text;
+    // Canonical Latin spellings don't depend on the target language, so
+    // tgtLang is unused -- one table serves every language.
+    const GlossaryIndex& index = glossary_index();
+    const size_t n = text.size();
+    std::string out;
+    out.reserve(n);
+
+    size_t i = 0;
+    while (i < n) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        const char lower = to_lower(c);
+        bool matched = false;
+
+        if (lower >= 'a' && lower <= 'z' && (i == 0 || !is_alnum(text[i - 1]))) {
+            for (const std::string* termPtr : index.buckets[static_cast<size_t>(lower - 'a')]) {
+                const std::string& term = *termPtr;
+                const size_t end = i + term.size();
+                if (end > n || !match_ci_term(text, i, term)) continue;
+                if (end < n && is_alnum(text[end])) continue; // not a whole-word match
+                out += term; // rewrite to canonical spelling
+                i = end;
+                matched = true;
+                break;
+            }
+        }
+
+        if (!matched) {
+            out.push_back(text[i]);
+            ++i;
+        }
+    }
+
+    return out;
 }
 
 } // namespace i18n::protect

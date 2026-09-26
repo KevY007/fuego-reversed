@@ -124,6 +124,11 @@ void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const ch
 	// that this one line doesn't get queued for translation (the original
 	// line already showed, above).
 	try {
+		// Runtime enable check: the seam is always wired (install() is one-time
+		// at startup, race-free), but we only queue work while translation is
+		// switched on. apply_config() toggles this live from the menu.
+		if ( !i18n::config::get().inbound_chat ) return;
+
 		// Only genuine incoming server chat/info lines are worth translating.
 		// Never CHAT_TYPE_DEBUG (our own overlay/status output, including the
 		// marked line apply_result() just showed above) and never empty text.
@@ -150,7 +155,6 @@ void pump_tick( IDirect3DDevice9 * ) {
 
 void install() {
 	if ( g_installed ) return;
-	if ( !i18n::config::get().inbound_chat ) return; // inert unless enabled
 
 	const uint32_t base = samp::base();
 	if ( !base ) {
@@ -164,7 +168,7 @@ void install() {
 		(BYTE *)hooked_add_entry,
 		DETOUR_TYPE_JMP );
 	if ( !trampoline ) {
-		Log( "[i18n] hooks::install: AddEntry detour failed -- inbound translation disabled." );
+		Log( "[i18n] hooks::install: AddEntry detour failed -- inbound translation unavailable." );
 		return;
 	}
 	g_origAddEntry = reinterpret_cast<AddEntryFn>( trampoline );
@@ -173,7 +177,28 @@ void install() {
 	i18n::engine::set_apply( &apply_result );
 
 	g_installed = true;
-	Log( "[i18n] hooks installed: AddEntry detour + main-thread pump active." );
+	Log( "[i18n] hooks installed: AddEntry detour + main-thread pump active (idle until enabled)." );
+}
+
+void apply_config() {
+	auto &s = i18n::config::get();
+	if ( !s.inbound_chat ) {
+		i18n::engine::stop();
+		Log( "[i18n] translation disabled (engine stopped)." );
+		return;
+	}
+
+	i18n::ProviderConfig pc;
+	pc.baseUrl = s.base_url;
+	pc.apiKey  = s.api_key;
+	pc.model   = s.model;
+
+	int dispCp = i18n::config::display_codepage( s.target_lang, s.roman_output );
+	i18n::engine::start( pc,
+	                     i18n::config::build_system_prompt( s.target_lang, s.roman_output ),
+	                     s.target_lang, dispCp );
+	Log( "[i18n] translation ENABLED (target_lang=%d, roman=%d, cp=%d, model=%s).",
+	     s.target_lang, (int)s.roman_output, dispCp, s.model.c_str() );
 }
 
 } // namespace i18n::hooks

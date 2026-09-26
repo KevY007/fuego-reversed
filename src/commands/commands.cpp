@@ -6,6 +6,7 @@
 #include "../core/memory.h"
 #include "../core/logger.h"
 #include "../core/settings.h"
+#include "../core/config.h"
 #include "../core/trace.h"
 #include "../compat/compat.h"
 #include "../gta/gtahost.h"
@@ -45,6 +46,7 @@ void add( const char *name, Handler handler, bool hidden ) {
 
 static void __cdecl cmd_compat( char * ) {
 	compat::toggle_mode();
+	cfg::save(); // persist the /compat preference so it survives restarts
 	samp::chat( compat::in_037_mode()
 		? "{FF0000}[COMPAT] {FFFFFF}Now joining as {FF0000}0.3.7{FFFFFF} -- reconnect to apply."
 		: "{FF0000}[COMPAT] {FFFFFF}Now joining as {FF0000}0.3.DL{FFFFFF}." );

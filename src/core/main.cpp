@@ -10,6 +10,7 @@
 #include "logger.h"
 #include "crashlog.h"
 #include "config.h"
+#include "settings.h"
 #include "input.h"
 #include "../samp/samp.h"
 #include "../net/net.h"
@@ -60,6 +61,7 @@ void bring_up_subsystems() {
 	// The game's main thread starts walking the net/render callback lists the moment
 	// net::install() / render::install() swap our hooks in; appending to those lists
 	// afterwards (from this thread) would race with that iteration.
+	compat::set_037_mode( fx::g_set.compat_037 ); // restore the saved /compat preference
 	compat::install();  // 0.3.7 layer (inert until /compat) + the incoming RPC-dispatch hook
 	input::install();   // first frame/WndProc user: hotkey snapshot for everyone after it
 	menu::install();    // in-house ImGui menu
@@ -77,18 +79,13 @@ void bring_up_subsystems() {
 	// samp::base()/is_in_game() are already guaranteed by this point (the
 	// polling loops earlier in this function), and neither engine::start()
 	// nor hooks::install() needs net:: or render:: to be installed first.
-	i18n::config::load();
+	// i18n settings are loaded as part of the UNIFIED cfg::load() (init_thread,
+	// below) -- one config file, one Save button. Here we just load the on-disk
+	// translation-memory cache, wire the chat seam ONCE (race-free, before
+	// render::install()), then start the worker engine iff translation is on.
 	i18n::cache::load( "fuego_i18n_tm.txt" );
-	if ( i18n::config::get().inbound_chat ) {
-		i18n::ProviderConfig pc;
-		auto &s   = i18n::config::get();
-		pc.baseUrl = s.base_url;
-		pc.apiKey  = s.api_key;
-		pc.model   = s.model;
-		i18n::engine::start( pc, i18n::config::build_system_prompt( s.target_lang ) );
-		i18n::hooks::install();
-		Log( "[i18n] inbound chat translation ENABLED (target_lang=%d, model=%s).", s.target_lang, s.model.c_str() );
-	}
+	i18n::hooks::install();
+	i18n::hooks::apply_config();
 
 	// --- networking / RakNet hook (accurate) ---
 	// Poll until SA:MP's RakClient interface is live, then swap in our hook.

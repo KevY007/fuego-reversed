@@ -5,6 +5,7 @@
 
 #include <windows.h>
 #include <winhttp.h>
+#include <algorithm>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -33,6 +34,38 @@ struct WinHttpHandle {
     WinHttpHandle& operator=(const WinHttpHandle&) = delete;
     operator HINTERNET() const { return h; }
 };
+
+// Extracts model ids from an OpenAI-style /models reply
+// ({"data":[{"id":"..."},...]}). A targeted scan for "id" string values --
+// robust enough for the /models shape (the only "id" keys there are the model
+// ids) without pulling in a full JSON parser.
+void parse_model_ids(const std::string& body, std::vector<std::string>& out) {
+    const std::string key = "\"id\"";
+    auto is_ws = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    size_t pos = 0;
+    while ((pos = body.find(key, pos)) != std::string::npos) {
+        pos += key.size();
+        while (pos < body.size() && is_ws(body[pos])) ++pos;
+        if (pos >= body.size() || body[pos] != ':') continue;
+        ++pos;
+        while (pos < body.size() && is_ws(body[pos])) ++pos;
+        if (pos >= body.size() || body[pos] != '"') continue;
+        ++pos; // opening quote
+        std::string id;
+        while (pos < body.size() && body[pos] != '"') {
+            if (body[pos] == '\\' && pos + 1 < body.size()) {
+                char n = body[pos + 1];
+                if (n == '"' || n == '\\' || n == '/') { id += n; pos += 2; continue; }
+                if (n == 'n') { id += '\n'; pos += 2; continue; }
+                if (n == 't') { id += '\t'; pos += 2; continue; }
+            }
+            id += body[pos];
+            ++pos;
+        }
+        if (!id.empty()) out.push_back(id);
+        if (pos < body.size()) ++pos; // step past the closing quote
+    }
+}
 
 // ---- provider ---------------------------------------------------------
 
@@ -224,6 +257,105 @@ private:
 
 std::unique_ptr<IProvider> make_openai_compatible(const ProviderConfig& config) {
     return std::make_unique<OpenAiCompatibleProvider>(config);
+}
+
+bool list_models(const ProviderConfig& config, std::vector<std::string>& out, std::string& err) {
+    out.clear();
+    err.clear();
+
+    // baseUrl already ends in /v1; GET /v1/models is the OpenAI-standard list
+    // endpoint (Ollama, OpenAI, DeepSeek, Groq, OpenRouter, LM Studio, ... and
+    // Anthropic via its OpenAI-compat base URL all expose it in the same shape).
+    std::wstring url = widen(join_url(config.baseUrl, "/models"));
+
+    URL_COMPONENTS uc{};
+    wchar_t hostBuf[256] = {};
+    wchar_t pathBuf[2048] = {};
+    uc.dwStructSize = sizeof(uc);
+    uc.lpszHostName = hostBuf;
+    uc.dwHostNameLength = 256;
+    uc.lpszUrlPath = pathBuf;
+    uc.dwUrlPathLength = 2048;
+    if (!WinHttpCrackUrl(url.c_str(), (DWORD)url.size(), 0, &uc)) {
+        err = "invalid baseUrl";
+        return false;
+    }
+    bool https = (uc.nScheme == INTERNET_SCHEME_HTTPS);
+
+    WinHttpHandle hSession(WinHttpOpen(L"fuego-i18n/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+    if (!hSession.h) {
+        err = "WinHttpOpen failed";
+        return false;
+    }
+    // A menu convenience (off the frame path), so slightly more generous than a
+    // translate call but still bounded: 1s connect, 4s read.
+    WinHttpSetTimeouts(hSession, 1000, 1000, 4000, 4000);
+
+    WinHttpHandle hConnect(WinHttpConnect(hSession, hostBuf, uc.nPort, 0));
+    if (!hConnect.h) {
+        err = "WinHttpConnect failed";
+        return false;
+    }
+
+    DWORD reqFlags = https ? WINHTTP_FLAG_SECURE : 0;
+    WinHttpHandle hRequest(WinHttpOpenRequest(hConnect, L"GET", pathBuf, nullptr, WINHTTP_NO_REFERER,
+                                               WINHTTP_DEFAULT_ACCEPT_TYPES, reqFlags));
+    if (!hRequest.h) {
+        err = "WinHttpOpenRequest failed";
+        return false;
+    }
+
+    std::wstring headers = L"Accept: application/json\r\n";
+    if (!config.apiKey.empty()) {
+        headers += L"Authorization: Bearer " + widen(config.apiKey) + L"\r\n";
+    }
+
+    if (!WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.size(),
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+        err = "WinHttpSendRequest failed";
+        return false;
+    }
+    if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+        err = "WinHttpReceiveResponse failed";
+        return false;
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+    if (statusCode != 200) {
+        err = "HTTP status " + std::to_string(statusCode);
+        return false;
+    }
+
+    std::string responseBody;
+    for (;;) {
+        DWORD avail = 0;
+        if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
+            err = "WinHttpQueryDataAvailable failed";
+            return false;
+        }
+        if (avail == 0) break;
+        std::string chunk(avail, '\0');
+        DWORD read = 0;
+        if (!WinHttpReadData(hRequest, chunk.data(), avail, &read)) {
+            err = "WinHttpReadData failed";
+            return false;
+        }
+        chunk.resize(read);
+        responseBody += chunk;
+    }
+
+    parse_model_ids(responseBody, out);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    if (out.empty()) {
+        err = "no models found in reply";
+        return false;
+    }
+    return true;
 }
 
 } // namespace i18n

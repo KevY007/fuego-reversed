@@ -17,6 +17,7 @@ struct Settings {
 	// ================= MAIN =================
 	bool  no_big_hacks = true;       // "Disable Unsafe/Big Hacks" (noBigHacks; shipped ON)
 	bool  cheat_panic = false;       // master hide-everything (our own)
+	bool  compat_037 = false;        // persisted /compat preference (join as 0.3.7); restored on startup
 
 	// ============ WEAPON FUNCTIONS ============
 	int   shot_repeater = 0;         // 0..100

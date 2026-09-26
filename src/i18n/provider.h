@@ -36,4 +36,11 @@ struct IProvider {
 // endpoint. Implemented with WinHTTP in provider.cpp.
 std::unique_ptr<IProvider> make_openai_compatible(const ProviderConfig& config);
 
+// Fetch the list of model ids the endpoint advertises via GET <baseUrl>/models
+// (the OpenAI-compatible endpoint every target here exposes -- Ollama, OpenAI,
+// DeepSeek, ... -- returning {"data":[{"id":"..."},...]}). Fills `out` with the
+// ids and returns true; on any failure returns false and sets `err`. Blocking
+// (WinHTTP) -- call it off the main thread. Used by the menu's model dropdown.
+bool list_models(const ProviderConfig& config, std::vector<std::string>& out, std::string& err);
+
 } // namespace i18n

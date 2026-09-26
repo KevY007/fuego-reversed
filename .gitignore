@@ -43,9 +43,13 @@ Desktop.ini
 /external/.conan2/
 /external/generated/
 
-# ---- i18n runtime files (never commit -- fuego_i18n.cfg is the BYOK config
-#      and can contain a plaintext api_key; fuego_i18n_tm.txt is the
-#      on-disk translation-memory cache written at runtime) ----
+# ---- runtime config / cache (never commit) ----
+#  fuego_reversed.cfg is the UNIFIED config (cheats + /compat + translator). It
+#  can contain a plaintext api_key (BYOK), so it must never be committed.
+#  fuego_i18n.cfg is the legacy standalone translator config (still used by
+#  tests / any standalone save). fuego_i18n_tm.txt is the on-disk
+#  translation-memory cache written at runtime.
+/fuego_reversed.cfg
 /fuego_i18n.cfg
 /fuego_i18n_tm.txt
 

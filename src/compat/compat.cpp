@@ -343,6 +343,7 @@ bool in_037_mode() { return g_join.ForceCompat == VER_037; }
 void set_037_mode( bool on ) {
 	g_join.ForceCompat    = on ? VER_037 : VER_03DL;
 	g_join.ForceCompatStr = on ? STR_037 : STR_03DL;
+	fx::g_set.compat_037  = on; // keep the persisted preference in sync (menu / /compat / startup)
 	Log( "[compat] mode = %s", on ? STR_037 : STR_03DL );
 }
 

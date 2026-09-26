@@ -12,12 +12,19 @@
 #include "../core/config.h"
 #include "../i18n/config.h"
 #include "../i18n/engine.h"
+#include "../i18n/provider.h" // list_models (model dropdown) + ProviderConfig
+#include "../i18n/hooks.h"    // apply_config (live-apply translator settings)
 
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
 #include "imgui_impl_win32.h"
 
 #include <d3d9.h>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <vector>
+#include <string>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
 
@@ -25,6 +32,55 @@ namespace {
 
 bool g_init = false;
 bool g_open = false;
+
+// --- translator model dropdown: async fetch of the endpoint's model list -----
+// list_models() is a blocking WinHTTP call, so it runs on a detached worker;
+// the render thread reads results under g_modelMtx. State: 0 idle, 1 fetching,
+// 2 done, 3 error.
+std::mutex               g_modelMtx;
+std::vector<std::string> g_models;
+std::atomic<int>         g_modelState{ 0 };
+std::string              g_modelErr;
+
+void fetch_models_async() {
+	if ( g_modelState.load() == 1 ) return; // a fetch is already in flight
+	g_modelState.store( 1 );
+
+	// Snapshot the endpoint/key now (the user may keep typing while it runs).
+	i18n::ProviderConfig pc;
+	auto &s = i18n::config::get();
+	pc.baseUrl = s.base_url;
+	pc.apiKey  = s.api_key;
+	pc.model   = s.model;
+
+	std::thread( [pc]() {
+		std::vector<std::string> out;
+		std::string err;
+		bool ok = i18n::list_models( pc, out, err );
+		std::lock_guard<std::mutex> lk( g_modelMtx );
+		if ( ok ) {
+			g_models = std::move( out );
+			g_modelErr.clear();
+			g_modelState.store( 2 );
+		} else {
+			g_modelErr = err;
+			g_modelState.store( 3 );
+		}
+	} ).detach();
+}
+
+// Small "(?)" hover-help marker (ImGui demo idiom; the built-in demo helper
+// isn't linked into a stripped build, so define our own).
+void HelpMarker( const char* desc ) {
+	ImGui::TextDisabled( "(?)" );
+	if ( ImGui::IsItemHovered() ) {
+		ImGui::BeginTooltip();
+		ImGui::PushTextWrapPos( ImGui::GetFontSize() * 28.0f );
+		ImGui::TextUnformatted( desc );
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
+	}
+}
 
 void style() {
 	ImGui::StyleColorsDark();
@@ -42,10 +98,13 @@ void style() {
 
 void draw_ui() {
 	using namespace fx;
-	ImGui::SetNextWindowSize( ImVec2( 620, 640 ), ImGuiCond_FirstUseEver );
+	ImGui::SetNextWindowSize( ImVec2( 900, 680 ), ImGuiCond_FirstUseEver );
+	ImGui::SetNextWindowSizeConstraints( ImVec2( 640, 480 ), ImVec2( 4000, 4000 ) );
 	ImGui::Begin( "Fuego Reversed", &g_open, ImGuiWindowFlags_NoCollapse );
 
-	if ( ImGui::BeginTabBar( "tabs" ) ) {
+	// Scroll (don't shrink) tabs that overflow + a popup button to jump to any tab.
+	if ( ImGui::BeginTabBar( "tabs",
+	         ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_TabListPopupButton ) ) {
 		// ---------------- Weapon Functions (Fuego order) ----------------
 		if ( ImGui::BeginTabItem( "Weapon Functions" ) ) {
 			ImGui::SliderInt( "Shot Repeater", &g_set.shot_repeater, 0, 100 );
@@ -186,49 +245,101 @@ void draw_ui() {
 		// ---------------- Translator ----------------
 		if ( ImGui::BeginTabItem( "Translator" ) ) {
 			auto &s = i18n::config::get();
-			ImGui::TextWrapped( "Translate incoming server chat. Runs against a local Ollama or any OpenAI-compatible endpoint you configure." );
+
+			// Auto-populate the model dropdown the first time the tab is opened,
+			// so the user doesn't have to click Refresh to see installed models.
+			static bool auto_fetched = false;
+			if ( !auto_fetched ) { auto_fetched = true; fetch_models_async(); }
+
+			ImGui::TextWrapped( "Translate incoming server chat into your language. Runs against a local "
+			                    "Ollama (default) or any OpenAI-compatible endpoint. Everything here saves to "
+			                    "the main config and applies when you hit Save config -- no restart." );
 			ImGui::Checkbox( "Enable inbound chat translation", &s.inbound_chat );
-			ImGui::TextDisabled( "Applies on next game launch." );
 			ImGui::Separator();
 
-			// Endpoint buffer
+			// Endpoint
 			static char endpoint_buf[256] = "";
 			static bool endpoint_init = false;
-			if ( !endpoint_init ) {
-				endpoint_init = true;
-				strncpy_s( endpoint_buf, sizeof endpoint_buf, s.base_url.c_str(), _TRUNCATE );
-			}
-			ImGui::InputText( "Endpoint (base URL)", endpoint_buf, sizeof endpoint_buf );
+			if ( !endpoint_init ) { endpoint_init = true; strncpy_s( endpoint_buf, sizeof endpoint_buf, s.base_url.c_str(), _TRUNCATE ); }
+			ImGui::InputText( "Endpoint (base URL, ends in /v1)", endpoint_buf, sizeof endpoint_buf );
 			s.base_url = endpoint_buf;
 
-			// Model buffer
-			static char model_buf[256] = "";
-			static bool model_init = false;
-			if ( !model_init ) {
-				model_init = true;
-				strncpy_s( model_buf, sizeof model_buf, s.model.c_str(), _TRUNCATE );
-			}
-			ImGui::InputText( "Model", model_buf, sizeof model_buf );
-			s.model = model_buf;
-
-			// API key buffer
+			// API key (cloud endpoints; blank for local Ollama)
 			static char api_key_buf[256] = "";
 			static bool api_key_init = false;
-			if ( !api_key_init ) {
-				api_key_init = true;
-				strncpy_s( api_key_buf, sizeof api_key_buf, s.api_key.c_str(), _TRUNCATE );
-			}
-			ImGui::InputText( "API key (blank for local)", api_key_buf, sizeof api_key_buf, ImGuiInputTextFlags_Password );
+			if ( !api_key_init ) { api_key_init = true; strncpy_s( api_key_buf, sizeof api_key_buf, s.api_key.c_str(), _TRUNCATE ); }
+			ImGui::InputText( "API key (blank for local Ollama)", api_key_buf, sizeof api_key_buf, ImGuiInputTextFlags_Password );
 			s.api_key = api_key_buf;
 
+			// Model: a live dropdown of what the endpoint ACTUALLY serves (so you
+			// can't pick one that isn't installed) + a manual-override text field.
+			static char model_buf[256] = "";
+			static bool model_init = false;
+			if ( !model_init ) { model_init = true; strncpy_s( model_buf, sizeof model_buf, s.model.c_str(), _TRUNCATE ); }
+
+			if ( ImGui::Button( "Refresh models" ) ) fetch_models_async();
+			ImGui::SameLine();
+			int mst = g_modelState.load();
+			if ( mst == 1 )      ImGui::TextDisabled( "fetching..." );
+			else if ( mst == 3 ) { std::lock_guard<std::mutex> lk( g_modelMtx ); ImGui::TextDisabled( "fetch failed (%s)", g_modelErr.c_str() ); }
+			else if ( mst == 2 ) { std::lock_guard<std::mutex> lk( g_modelMtx ); ImGui::TextDisabled( "%d installed", (int) g_models.size() ); }
+
+			{
+				std::lock_guard<std::mutex> lk( g_modelMtx );
+				const char* preview = s.model.empty() ? "(pick a model)" : s.model.c_str();
+				if ( ImGui::BeginCombo( "Installed models", preview ) ) {
+					for ( const auto &m : g_models ) {
+						bool sel = ( m == s.model );
+						if ( ImGui::Selectable( m.c_str(), sel ) ) {
+							s.model = m;
+							strncpy_s( model_buf, sizeof model_buf, m.c_str(), _TRUNCATE );
+						}
+						if ( sel ) ImGui::SetItemDefaultFocus();
+					}
+					if ( g_models.empty() )
+						ImGui::TextDisabled( "none found -- click Refresh, or type below" );
+					ImGui::EndCombo();
+				}
+			}
+			ImGui::InputText( "Model (or type manually)", model_buf, sizeof model_buf );
+			s.model = model_buf;
+
+			ImGui::TextDisabled( "Recommended local model for 2-3GB VRAM (or CPU):" );
+			ImGui::SameLine();
+			if ( ImGui::SmallButton( "copy pull cmd" ) )
+				ImGui::SetClipboardText( "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M" );
+			ImGui::TextDisabled( "  hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M  (bigger GPU -> ...Hy-MT2-7B-GGUF:Q4_K_M)" );
+			ImGui::TextDisabled( "  Claude/OpenAI etc. work too -- for Claude use https://api.anthropic.com/v1/ + your key" );
+
+			ImGui::Separator();
+
+			// Target language dropdown (names, not raw LCID numbers).
+			{
+				const auto &langs = i18n::config::language_options();
+				int cur = -1;
+				for ( size_t i = 0; i < langs.size(); ++i )
+					if ( langs[i].code == s.target_lang ) { cur = (int) i; break; }
+				const char* preview = ( cur >= 0 ) ? langs[cur].name : "(custom)";
+				if ( ImGui::BeginCombo( "Target language", preview ) ) {
+					for ( size_t i = 0; i < langs.size(); ++i ) {
+						bool sel = ( (int) i == cur );
+						if ( ImGui::Selectable( langs[i].name, sel ) ) s.target_lang = langs[i].code;
+						if ( sel ) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+			}
+
+			ImGui::Checkbox( "Romanized output (Latin script)", &s.roman_output );
+			ImGui::SameLine();
+			HelpMarker( "Write the target language phonetically in the Roman/Latin alphabet "
+			            "(Roman Urdu, Hinglish, Arabizi...). REQUIRED for Urdu/Arabic/Hindi and other "
+			            "scripts SA:MP's chat font can't draw; harmless for Latin languages." );
+
 			ImGui::SliderInt( "Source codepage (0 = auto)", &s.source_cp, 0, 1258 );
-			ImGui::SliderInt( "Target language (1033 = English)", &s.target_lang, 0, 10000 );
 
 			const char* marker_styles[] = { "Glyph + tint", "Tint only", "Prefix tag" };
 			ImGui::Combo( "Marker style", &s.marker_style, marker_styles, 3 );
-
-			if ( ImGui::Button( "Save translator config" ) ) i18n::config::save();
-			ImGui::SameLine(); ImGui::TextDisabled( "-> fuego_i18n.cfg" );
 
 			ImGui::Separator();
 			ImGui::Text( "Status: %s", i18n::engine::status() );
@@ -238,11 +349,12 @@ void draw_ui() {
 	}
 
 	ImGui::Separator();
-	if ( ImGui::Button( "Save config" ) ) cfg::save();
+	if ( ImGui::Button( "Save config" ) ) {
+		cfg::save();                 // unified: cheats + /compat + translator -> fuego_reversed.cfg
+		i18n::hooks::apply_config(); // apply translator changes live (start/stop/reconfigure the engine)
+	}
 	ImGui::SameLine();
-	if ( ImGui::Button( "Load config" ) ) cfg::load();
-	ImGui::SameLine();
-	ImGui::TextDisabled( "F2 to toggle" );
+	ImGui::TextDisabled( "one file (fuego_reversed.cfg), loads on startup.  F2 to toggle." );
 	ImGui::End();
 }
 
@@ -283,9 +395,14 @@ void on_frame( IDirect3DDevice9 *dev ) {
 		// (Otherwise ImGui SetCursor()s the arrow every frame -> cursor stuck on.)
 		io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 		// Crisp TTF instead of the upscaled bitmap font (fall back gracefully).
-		ImFont *f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\segoeui.ttf", 18.0f );
-		if ( !f ) f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\tahoma.ttf", 17.0f );
-		if ( !f ) { io.Fonts->AddFontDefault(); io.FontGlobalScale = 1.35f; }
+		// Oversampling + a larger pixel size = sharper, less "low-res" text.
+		ImFontConfig fcfg;
+		fcfg.OversampleH = 3;
+		fcfg.OversampleV = 2;
+		fcfg.PixelSnapH  = true;
+		ImFont *f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\segoeui.ttf", 20.0f, &fcfg );
+		if ( !f ) f = io.Fonts->AddFontFromFileTTF( "C:\\Windows\\Fonts\\tahoma.ttf", 19.0f, &fcfg );
+		if ( !f ) { io.Fonts->AddFontDefault(); io.FontGlobalScale = 1.4f; }
 		visuals::init_fonts(); // overlay (ESP/nametag) fonts, after the default menu font
 		style();
 		ImGui_ImplWin32_Init( render::window() );

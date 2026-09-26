@@ -3,9 +3,11 @@
 #include "settings.h"
 #include "logger.h"
 #include "trace.h"
+#include "../i18n/config.h"   // unified config: translator settings share this file
 
 #include <cstdio>
 #include <cstdint>
+#include <string>
 
 namespace {
 const char    *kPath  = "fuego_reversed.cfg";
@@ -22,8 +24,13 @@ void save() {
 	fwrite( &magic, 4, 1, f );
 	fwrite( &size, 4, 1, f );
 	fwrite( &fx::g_set, sizeof( fx::Settings ), 1, f );
+	// Unified config: the translator settings (text key=value) live in the SAME
+	// file, right after the fixed-size binary block. This can include an
+	// api_key, which is why fuego_reversed.cfg is gitignored.
+	std::string i18nText = i18n::config::to_text();
+	fwrite( i18nText.data(), 1, i18nText.size(), f );
 	fclose( f );
-	Log( "[cfg] saved (%u bytes).", size );
+	Log( "[cfg] saved (%u binary + %u text bytes).", size, (unsigned) i18nText.size() );
 }
 
 void load() {
@@ -38,6 +45,15 @@ void load() {
 			fx::g_set = tmp;
 			fx::g_set.silent_aim_target = -1;   // transient
 			fx::g_set.cheat_panic       = false; // don't persist panic
+			// Unified config: whatever follows the binary block is the
+			// translator text section (key=value lines) -> hand it to i18n.
+			std::string i18nText;
+			char buf[1024];
+			size_t n;
+			while ( ( n = fread( buf, 1, sizeof buf, f ) ) > 0 )
+				i18nText.append( buf, n );
+			if ( !i18nText.empty() )
+				i18n::config::from_text( i18nText );
 			Log( "[cfg] loaded." );
 		}
 	} else {

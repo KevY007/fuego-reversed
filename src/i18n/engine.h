@@ -23,6 +23,10 @@ struct Job {
     int surface;
     std::string sourceBytes;
     int srcCodepage; // 0 = auto-detect via charset::guess_codepage
+    // Recent chat lines (UTF-8, already labeled) to send as background context
+    // so the model keeps conversational relevancy. Filled by submit() from a
+    // main-thread ring buffer; leave empty and submit() will populate it.
+    std::string rollingCtx;
 };
 
 struct Result {
@@ -33,10 +37,13 @@ struct Result {
 };
 
 // Starts the worker pool against the given provider config + cacheable
-// system prompt. Safe to call again later (e.g. settings changed): any
-// previously running engine is stopped first, so callers don't need to
-// call stop() themselves before a restart.
-void start(const ProviderConfig& cfg, const std::string& systemPrompt);
+// system prompt. targetLang keys the cache + drives the "already target
+// language" skip; displayCp is the Windows codepage finished text is encoded
+// in for SA:MP's chat font (see config::display_codepage). Safe to call again
+// later (e.g. settings changed): any previously running engine is stopped
+// first, so callers don't need to call stop() themselves before a restart.
+void start(const ProviderConfig& cfg, const std::string& systemPrompt,
+           int targetLang = 1033, int displayCp = 1252);
 
 // Signals shutdown, joins every worker thread, and clears both queues and
 // the in-flight set. A job a worker has already popped finishes normally
@@ -84,7 +91,9 @@ void pump();
 // true, `displayOut` holds the finished, capped, display-codepage-encoded
 // text, and the cache has been updated.
 bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
-                  const std::string& sysPrompt, std::string& displayOut);
+                  const std::string& sysPrompt, std::string& displayOut,
+                  int targetLang = 1033, int displayCp = 1252,
+                  const std::string& rollingCtx = "");
 
 // Short human-readable status for the menu (Task 12), e.g. "local ok" or
 // "offline - retrying". Reflects the outcome of the most recent provider

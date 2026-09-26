@@ -40,6 +40,8 @@ std::string g_profile;
 // worker threads need no extra synchronization to read them safely.
 std::unique_ptr<IProvider> g_provider;
 std::string g_sysPrompt;
+int g_targetLang = 1033;  // written only by start() (same publication rules as g_sysPrompt)
+int g_displayCp  = 1252;
 std::vector<std::thread> g_workers;
 std::atomic<bool> g_running{false};
 
@@ -48,6 +50,12 @@ std::mutex g_jobMutex;
 std::condition_variable g_jobCv;
 std::deque<Job> g_jobs;
 std::unordered_set<size_t> g_inFlight; // hash(sourceBytes) queued or being worked on
+
+// Rolling context: the last few incoming lines (UTF-8), so each translation
+// can see the recent conversation and stay relevant. Written and read only
+// under g_jobMutex, from submit() (main thread), so it stays in chat order.
+constexpr size_t kCtxLines = 4;
+std::deque<std::string> g_recentCtx;
 
 // Result queue: guarded by its own mutex, separate from g_jobMutex, so a
 // worker finishing a job and the main thread pumping results never block
@@ -80,7 +88,8 @@ void worker_loop() {
         std::string disp;
         bool ok = false;
         try {
-            ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), g_sysPrompt, disp);
+            ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), g_sysPrompt, disp,
+                             g_targetLang, g_displayCp, job.rollingCtx);
         } catch (...) {
             // Realistically only std::bad_alloc anywhere in this call graph
             // (string/vector/wstring allocations along the pipeline). An
@@ -110,30 +119,32 @@ void worker_loop() {
 } // namespace
 
 bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
-                  const std::string& sysPrompt, std::string& displayOut) {
+                  const std::string& sysPrompt, std::string& displayOut,
+                  int targetLang, int displayCp, const std::string& rollingCtx) {
     // 1-2: pick the source codepage and decode to a wide string.
     int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
     std::wstring w = charset::decode(srcBytes, cp2);
 
     // 3: skip anything not worth translating (empty, digits/punct-only, or
-    // already the target language).
-    if (!detect::worth_translating(w, /*targetIsEnglish=*/true)) return false;
+    // already the target language -- only cheaply detectable for English).
+    if (!detect::worth_translating(w, /*targetIsEnglish=*/targetLang == 1033)) return false;
 
-    // 4: cache lookup keyed on the normalized (UTF-8) source text.
+    // 4: cache lookup keyed on the normalized (UTF-8) source text + target.
     std::string normSrc = charset::to_utf8(w);
-    uint64_t k = cache::key(normSrc, cp2, 1033 /*English*/, g_profile);
+    uint64_t k = cache::key(normSrc, cp2, targetLang, g_profile);
     if (cache::get(k, displayOut)) return true;
 
     // 5: mask non-translatable spans (commands, colours, names, coords, ...).
     protect::Masked m = protect::mask(normSrc);
     if (!m.translatable) return false;
 
-    // 6: translate the masked text. No provider, a network failure, or an
-    // empty reply all mean "can't trust this" -- leave the original text.
+    // 6: translate the masked text, passing recent chat as background context.
+    // No provider, a network failure, or an empty reply all mean "can't trust
+    // this" -- leave the original text.
     if (!prov) return false;
     std::vector<std::string> out;
     std::string err;
-    bool callOk = prov->translate({ m.text }, sysPrompt, /*rollingCtx=*/"", out, err);
+    bool callOk = prov->translate({ m.text }, sysPrompt, rollingCtx, out, err);
     g_status.store(callOk ? "local ok" : "offline - retrying", std::memory_order_relaxed);
     if (!callOk || out.empty()) return false;
 
@@ -148,17 +159,19 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     std::string un = protect::unmask(out[0], m.tokens);
     if (un.empty() && !m.tokens.empty()) return false;
 
-    // 9: glossary pass (Phase 0 stub -- returns un unchanged; real table in Phase 3).
-    un = protect::apply_glossary(un, 1033);
+    // 9: glossary pass -- canonicalises GTA:SA vehicle + San Andreas place
+    // names so they never come back mistranslated or misspelled.
+    un = protect::apply_glossary(un, targetLang);
 
     // 10: encode for display, cap to the chat line limit, remember it.
     displayOut = charset::cap_and_sanitize(
-        charset::encode(charset::from_utf8(un), 1252 /*English display*/), 144);
+        charset::encode(charset::from_utf8(un), displayCp), 144);
     cache::put(k, displayOut);
     return true;
 }
 
-void start(const ProviderConfig& cfg, const std::string& systemPrompt) {
+void start(const ProviderConfig& cfg, const std::string& systemPrompt,
+           int targetLang, int displayCp) {
     if (g_running.load()) {
         stop(); // restart cleanly rather than leaking the previous pool
     }
@@ -166,6 +179,8 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt) {
     g_provider = make_openai_compatible(cfg);
     g_profile = cfg.model;
     g_sysPrompt = systemPrompt;
+    g_targetLang = targetLang;
+    g_displayCp = displayCp;
     g_status.store("idle", std::memory_order_relaxed);
 
     // Safe without g_jobMutex, unlike stop()'s flip: stop() above (if we
@@ -207,6 +222,7 @@ void stop() {
         std::lock_guard<std::mutex> lock(g_jobMutex);
         g_jobs.clear();
         g_inFlight.clear();
+        g_recentCtx.clear();
     }
     {
         std::lock_guard<std::mutex> lock(g_resultMutex);
@@ -217,9 +233,35 @@ void stop() {
 
 void submit(const Job& job) {
     size_t h = std::hash<std::string>{}(job.sourceBytes);
+
+    // Decode this line to UTF-8 once, outside the lock, so it's JSON-safe to
+    // reuse as future context (raw cp1251/cp1252 bytes would corrupt the
+    // request body). Short chat strings -> negligible cost on the game thread.
+    int cp = (job.srcCodepage != 0) ? job.srcCodepage : charset::guess_codepage(job.sourceBytes);
+    std::string utf8Line = charset::to_utf8(charset::decode(job.sourceBytes, cp));
+
+    Job j = job;
     std::lock_guard<std::mutex> lock(g_jobMutex);
     if (!g_inFlight.insert(h).second) return; // identical source already queued/in-flight: dedup
-    g_jobs.push_back(job);
+
+    // Attach the recent conversation (oldest -> newest) as background context
+    // for this job, BEFORE recording the current line so a line is never its
+    // own context.
+    if (!g_recentCtx.empty()) {
+        std::string ctx = "Recent chat (context only, do NOT translate):\n";
+        for (const std::string& line : g_recentCtx) {
+            ctx += "- ";
+            ctx += line;
+            ctx += "\n";
+        }
+        j.rollingCtx = std::move(ctx);
+    }
+
+    // Remember this line for the next few jobs' context.
+    g_recentCtx.push_back(std::move(utf8Line));
+    if (g_recentCtx.size() > kCtxLines) g_recentCtx.pop_front();
+
+    g_jobs.push_back(std::move(j));
     g_jobCv.notify_one();
 }
 

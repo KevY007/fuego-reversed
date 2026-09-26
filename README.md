@@ -28,7 +28,7 @@ src/
   cheats/   net-seam + per-frame cheat driver + visuals         [done]
   commands/ /fuego_cmds custom commands                         [done]
   gta/      bridge to the gta-reversed game layer               [done]
-  i18n/     in-game translation layer                           [planned]
+  i18n/     in-game translation layer (chat)                    [done]
 ```
 
 **Modern conventions:** every game/SA:MP call goes through typed `mem::thiscall<>` /
@@ -57,6 +57,15 @@ and the samp-packet-list wiki.
 - [x] **gta-reversed game layer — LINKED.** Built from the `external/gta-reversed`
   submodule by `scripts/bootstrap.ps1` into `gta_reversed.lib` and linked in; the
   bridge (`src/gta/gtahost.cpp`) drives the real game through it.
+- [x] **Translation layer (chat).** Detours `CChat::AddEntry` and translates
+  incoming server chat into the player's language via a local Ollama (default)
+  or any OpenAI-compatible endpoint. Async worker pool + main-thread pump (never
+  stalls a frame); placeholder-masking of names/IDs/commands/colours, a GTA:SA
+  vehicle + San Andreas place-name glossary, rolling context (last few lines),
+  translation-memory cache, and an optional **romanized** mode (Roman Urdu,
+  Hinglish, Arabizi) for scripts SA:MP's font can't draw. Menu tab picks the
+  model (auto-fetched from the endpoint), language, and toggles; all settings
+  live in the one unified config and apply live on Save. BYOK — never commit a key.
 
 **Working in-game** (loads, hooks SA:MP, chat, menu, compat, cheats). Builds green.
 

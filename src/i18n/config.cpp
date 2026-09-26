@@ -12,15 +12,13 @@ Settings& get() {
     return g_settings;
 }
 
-// Helper: trim leading/trailing whitespace
+// Helper: trim leading/trailing whitespace (incl. a stray '\r' from CRLF files)
 static std::string trim(const std::string& s) {
-    auto start = s.begin();
-    while (start != s.end() && std::isspace(*start)) ++start;
-    auto end = s.end();
-    do {
-        --end;
-    } while (std::distance(start, end) > 0 && std::isspace(*end));
-    return std::string(start, end + 1);
+    size_t start = 0;
+    while (start < s.size() && std::isspace((unsigned char)s[start])) ++start;
+    size_t end = s.size();
+    while (end > start && std::isspace((unsigned char)s[end - 1])) --end;
+    return s.substr(start, end - start);
 }
 
 // Helper: unescape special characters
@@ -70,46 +68,63 @@ static std::string escape(const std::string& s) {
     return result;
 }
 
-void load(const char* path) {
-    std::ifstream file(path);
-    if (!file) {
-        return;  // file not found, keep defaults
-    }
-
+void from_text(const std::string& text) {
+    std::istringstream in(text);
     std::string line;
-    while (std::getline(file, line)) {
-        // Trim and skip blank lines
+    while (std::getline(in, line)) {
         line = trim(line);
-        if (line.empty()) continue;
+        if (line.empty() || line[0] == '#') continue;
 
-        // Skip comments
-        if (line[0] == '#') continue;
-
-        // Find '=' separator
         size_t eq_pos = line.find('=');
-        if (eq_pos == std::string::npos) continue;  // malformed, skip
+        if (eq_pos == std::string::npos) continue;
 
         std::string key = trim(line.substr(0, eq_pos));
         std::string value = trim(line.substr(eq_pos + 1));
 
-        // Parse based on key
-        if (key == "inbound_chat") {
-            g_settings.inbound_chat = (value == "true" || value == "1");
-        } else if (key == "target_lang") {
-            g_settings.target_lang = std::stoi(value);
-        } else if (key == "source_cp") {
-            g_settings.source_cp = std::stoi(value);
-        } else if (key == "base_url") {
-            g_settings.base_url = unescape(value);
-        } else if (key == "api_key") {
-            g_settings.api_key = unescape(value);
-        } else if (key == "model") {
-            g_settings.model = unescape(value);
-        } else if (key == "marker_style") {
-            g_settings.marker_style = std::stoi(value);
+        try {
+            if (key == "inbound_chat") {
+                g_settings.inbound_chat = (value == "true" || value == "1");
+            } else if (key == "target_lang") {
+                g_settings.target_lang = std::stoi(value);
+            } else if (key == "source_cp") {
+                g_settings.source_cp = std::stoi(value);
+            } else if (key == "base_url") {
+                g_settings.base_url = unescape(value);
+            } else if (key == "api_key") {
+                g_settings.api_key = unescape(value);
+            } else if (key == "model") {
+                g_settings.model = unescape(value);
+            } else if (key == "marker_style") {
+                g_settings.marker_style = std::stoi(value);
+            } else if (key == "roman_output") {
+                g_settings.roman_output = (value == "true" || value == "1");
+            }
+            // unknown keys are silently ignored
+        } catch (...) {
+            // a malformed integer value leaves that field at its default
         }
-        // unknown keys are silently ignored
     }
+}
+
+std::string to_text() {
+    std::ostringstream out;
+    out << "inbound_chat=" << (g_settings.inbound_chat ? "true" : "false") << "\n";
+    out << "target_lang=" << g_settings.target_lang << "\n";
+    out << "source_cp=" << g_settings.source_cp << "\n";
+    out << "base_url=" << escape(g_settings.base_url) << "\n";
+    out << "api_key=" << escape(g_settings.api_key) << "\n";
+    out << "model=" << escape(g_settings.model) << "\n";
+    out << "marker_style=" << g_settings.marker_style << "\n";
+    out << "roman_output=" << (g_settings.roman_output ? "true" : "false") << "\n";
+    return out.str();
+}
+
+void load(const char* path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return;  // file not found, keep defaults
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    from_text(ss.str());
 }
 
 void load() {
@@ -117,48 +132,93 @@ void load() {
 }
 
 void save(const char* path) {
-    std::ofstream file(path);
-    file << "inbound_chat=" << (g_settings.inbound_chat ? "true" : "false") << "\n";
-    file << "target_lang=" << g_settings.target_lang << "\n";
-    file << "source_cp=" << g_settings.source_cp << "\n";
-    file << "base_url=" << escape(g_settings.base_url) << "\n";
-    file << "api_key=" << escape(g_settings.api_key) << "\n";
-    file << "model=" << escape(g_settings.model) << "\n";
-    file << "marker_style=" << g_settings.marker_style << "\n";
+    std::ofstream file(path, std::ios::binary);
+    if (!file) return;
+    file << to_text();
 }
 
 void save() {
     save("fuego_i18n.cfg");
 }
 
-std::string build_system_prompt(int targetLang) {
-    std::string langName;
+const std::vector<LangOption>& language_options() {
+    // Codes are Windows LCIDs so they line up with the source-codepage world;
+    // the exact value only matters as a stable key for build_system_prompt()
+    // and display_codepage(). Roman-only scripts (Urdu/Arabic/Hindi/...) are
+    // included because roman_output makes them usable in SA:MP's Latin font.
+    static const std::vector<LangOption> opts = {
+        {1033, "English"},
+        {1034, "Spanish"},
+        {1046, "Portuguese (Brazil)"},
+        {1036, "French"},
+        {1031, "German"},
+        {1040, "Italian"},
+        {1049, "Russian"},
+        {1058, "Ukrainian"},
+        {1045, "Polish"},
+        {1048, "Romanian"},
+        {1055, "Turkish"},
+        {1057, "Indonesian"},
+        {1066, "Vietnamese"},
+        {1025, "Arabic"},
+        {1056, "Urdu"},
+        {1081, "Hindi"},
+        {2052, "Chinese (Simplified)"},
+        {1041, "Japanese"},
+        {1042, "Korean"},
+        {1032, "Greek"},
+        {1043, "Dutch"},
+        {1029, "Czech"},
+        {1038, "Hungarian"},
+        {1037, "Hebrew"},
+        {1054, "Thai"},
+    };
+    return opts;
+}
 
-    // Map common language codes to names
-    if (targetLang == 1033) {
-        langName = "English";
-    } else if (targetLang == 1031) {
-        langName = "German";
-    } else if (targetLang == 1036) {
-        langName = "French";
-    } else if (targetLang == 1040) {
-        langName = "Italian";
-    } else if (targetLang == 1034) {
-        langName = "Spanish";
-    } else if (targetLang == 1049) {
-        langName = "Russian";
-    } else {
-        langName = "the configured language";
+int display_codepage(int targetLang, bool roman) {
+    if (roman) return 1252;              // Latin romanization
+    switch (targetLang) {
+        case 1049: // Russian
+        case 1058: // Ukrainian
+        case 1026: // Bulgarian
+        case 1059: // Belarusian
+        case 1071: // Macedonian
+            return 1251;                 // Cyrillic
+        default:
+            return 1252;                 // Western/Latin (best effort)
+    }
+}
+
+std::string build_system_prompt(int targetLang, bool roman) {
+    std::string langName = "the configured language";
+    for (const auto& o : language_options()) {
+        if (o.code == targetLang) { langName = o.name; break; }
     }
 
-    return std::string(
-        "You are a professional translator. Translate the following SA-MP chat messages to ") +
-        langName + ".\n\n"
+    std::string p =
+        "You are a professional translator for SA-MP (San Andreas Multiplayer) in-game chat. "
+        "Translate each message into " + langName + ".\n\n"
+        "You may be shown a few recent chat lines labeled as context BEFORE the JSON array. "
+        "Use them only to understand meaning and keep terminology consistent -- translate ONLY "
+        "the items in the JSON array, never the context lines.\n\n"
         "CRITICAL RULES:\n"
-        "1. Keep placeholder markers like \\x01..\\x02 verbatim — do not translate or remove them.\n"
-        "2. Do NOT translate player names, server commands (e.g. /help), or color codes.\n"
-        "3. Output ONLY a JSON array of objects: [{\"id\":0,\"text\":\"translated text\"}, ...]\n"
-        "4. Preserve the exact structure and do not add any extra text.\n";
+        "1. Keep placeholder markers like \\x01..\\x02 EXACTLY as they appear -- never translate, "
+        "reorder, or remove them.\n"
+        "2. NEVER translate these -- copy them through verbatim: player names/nicknames, player IDs, "
+        "server commands (e.g. /help, /car), colour codes, GTA:SA vehicle names (e.g. Infernus, "
+        "Sultan, NRG-500), and San Andreas place/zone names (e.g. Grove Street, Idlewood, Los Santos).\n"
+        "3. Preserve numbers, money amounts, coordinates and times exactly.\n"
+        "4. Translate naturally, matching the casual tone of game chat -- not word-for-word.\n"
+        "5. Output ONLY a JSON array of objects: [{\"id\":0,\"text\":\"translated text\"}, ...]. "
+        "No extra text, no explanations.\n";
+
+    if (roman) {
+        p += "6. Write the translation in the ROMAN (Latin) alphabet -- a natural phonetic "
+             "romanization of " + langName + " the way people type it online (e.g. Roman Urdu, "
+             "Hinglish, Arabizi), NOT the native script.\n";
+    }
+    return p;
 }
 
 }

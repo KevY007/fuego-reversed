@@ -16,7 +16,26 @@ int main() {
     return g_fail ? 1 : 0;
 }
 // Stubs so it links before later tasks fill them in (each task replaces its stub).
-void test_cache(){}   void test_validate(){}
+void test_validate(){}
+
+#include "i18n/cache.h"
+void test_cache() {
+    using namespace i18n::cache;
+    save_path("test_tm.txt"); // isolate
+    uint64_t k = key("привет", 1251, 1033, "ollama:hy-mt2");
+    std::string out;
+    CHECK(!get(k, out), "cache miss on first query");
+    put(k, "hello");
+    CHECK(get(k, out), "cache hit after put");
+    CHECK_EQ(out, std::string("hello"));
+    uint64_t k2 = key("привет", 1251, 1033, "openai:gpt");
+    CHECK(!get(k2, out), "different provider profile => different key");
+    // persistence: reload from disk into a fresh map
+    clear_for_test();
+    load("test_tm.txt");
+    CHECK(get(k, out), "cache hit after reload");
+    CHECK_EQ(out, std::string("hello"));
+}
 
 #include "i18n/detect.h"
 void test_detect() {

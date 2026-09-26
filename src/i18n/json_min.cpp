@@ -1,5 +1,6 @@
 #include "i18n/json_min.h"
 #include <cctype>
+#include <cstdio>
 
 namespace i18n::json {
 
@@ -50,11 +51,45 @@ static size_t skip_ws(const std::string& s, size_t pos) {
     return pos;
 }
 
+// Helper to append UTF-8 bytes for a code point
+static void append_utf8(std::string& out, int codepoint) {
+    if (codepoint <= 0x7F) {
+        // 1 byte
+        out += (char)codepoint;
+    } else if (codepoint <= 0x7FF) {
+        // 2 bytes
+        out += (char)(0xC0 | (codepoint >> 6));
+        out += (char)(0x80 | (codepoint & 0x3F));
+    } else if (codepoint <= 0xFFFF) {
+        // 3 bytes
+        out += (char)(0xE0 | (codepoint >> 12));
+        out += (char)(0x80 | ((codepoint >> 6) & 0x3F));
+        out += (char)(0x80 | (codepoint & 0x3F));
+    } else if (codepoint <= 0x10FFFF) {
+        // 4 bytes
+        out += (char)(0xF0 | (codepoint >> 18));
+        out += (char)(0x80 | ((codepoint >> 12) & 0x3F));
+        out += (char)(0x80 | ((codepoint >> 6) & 0x3F));
+        out += (char)(0x80 | (codepoint & 0x3F));
+    } else {
+        // Invalid code point, emit replacement character U+FFFD
+        out += (char)0xEF;
+        out += (char)0xBF;
+        out += (char)0xBD;
+    }
+}
+
 // Helper to unescape a JSON string value (assumes we're positioned after the opening quote)
 static bool unescape_string(const std::string& s, size_t& pos, std::string& out) {
     out.clear();
+    int pending_high_surrogate = -1;  // -1 means none pending
+
     while (pos < s.size()) {
         if (s[pos] == '"') {
+            // If we have a pending high surrogate, emit replacement character
+            if (pending_high_surrogate != -1) {
+                append_utf8(out, 0xFFFD);
+            }
             ++pos;
             return true;
         } else if (s[pos] == '\\' && pos + 1 < s.size()) {
@@ -81,9 +116,36 @@ static bool unescape_string(const std::string& s, size_t& pos, std::string& out)
                         else return false;
                     }
                     ++pos;
-                    // For simplicity, only handle ASCII codes (0-127)
-                    if (code >= 0 && code <= 127) {
-                        out += (char)code;
+
+                    // Handle surrogate pairs
+                    if (code >= 0xD800 && code <= 0xDBFF) {
+                        // High surrogate
+                        if (pending_high_surrogate != -1) {
+                            // Previous high surrogate without matching low - emit replacement
+                            append_utf8(out, 0xFFFD);
+                        }
+                        pending_high_surrogate = code;
+                    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+                        // Low surrogate
+                        if (pending_high_surrogate != -1) {
+                            // Combine high and low surrogate
+                            int high = pending_high_surrogate;
+                            int low = code;
+                            int codepoint = 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+                            append_utf8(out, codepoint);
+                            pending_high_surrogate = -1;
+                        } else {
+                            // Lone low surrogate - emit replacement
+                            append_utf8(out, 0xFFFD);
+                        }
+                    } else {
+                        // Regular code point (non-surrogate)
+                        if (pending_high_surrogate != -1) {
+                            // High surrogate without matching low - emit replacement
+                            append_utf8(out, 0xFFFD);
+                            pending_high_surrogate = -1;
+                        }
+                        append_utf8(out, code);
                     }
                     break;
                 }
@@ -91,6 +153,11 @@ static bool unescape_string(const std::string& s, size_t& pos, std::string& out)
                     return false;
             }
         } else {
+            if (pending_high_surrogate != -1) {
+                // High surrogate without matching low - emit replacement
+                append_utf8(out, 0xFFFD);
+                pending_high_surrogate = -1;
+            }
             out += s[pos];
             ++pos;
         }
@@ -121,7 +188,7 @@ bool parse_units(const std::string& body, std::vector<Unit>& out) {
 
         Unit unit;
         unit.id = -1;
-        bool has_id = false, has_text = false;
+        bool has_id = false, has_text = false, has_field = false;
 
         while (true) {
             pos = skip_ws(body, pos);
@@ -132,8 +199,8 @@ bool parse_units(const std::string& body, std::vector<Unit>& out) {
                 break;
             }
 
-            // Expect ','
-            if (has_id || has_text) {
+            // Expect ',' if we've already consumed a field
+            if (has_field) {
                 if (pos >= body.size() || body[pos] != ',') return false;
                 ++pos;
                 pos = skip_ws(body, pos);
@@ -152,6 +219,9 @@ bool parse_units(const std::string& body, std::vector<Unit>& out) {
             if (pos >= body.size() || body[pos] != ':') return false;
             ++pos;
             pos = skip_ws(body, pos);
+
+            // Mark that we've consumed a field
+            has_field = true;
 
             // Parse value
             if (key == "id") {

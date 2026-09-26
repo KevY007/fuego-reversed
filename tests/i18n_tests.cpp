@@ -22,6 +22,7 @@ void test_cache(){}   void test_validate(){}
 #include "i18n/json_min.h"
 void test_json() {
     using namespace i18n::json;
+    // Original tests
     CHECK_EQ(escape("a\"b\\c\n"), std::string("a\\\"b\\\\c\\n"));
     CHECK_EQ(build_units({"hi","yo"}), std::string("[{\"id\":0,\"text\":\"hi\"},{\"id\":1,\"text\":\"yo\"}]"));
     std::vector<Unit> u;
@@ -32,4 +33,33 @@ void test_json() {
     std::string content;
     CHECK(extract_message_content("{\"choices\":[{\"message\":{\"content\":\"[{\\\"id\\\":0,\\\"text\\\":\\\"hi\\\"}]\"}}]}", content), "extract_message_content should succeed");
     CHECK(content.find("hi") != std::string::npos, "extracted content should contain 'hi'");
+
+    // UTF-8 encoding tests: \uXXXX should decode to proper UTF-8 bytes
+    // Cyrillic 'п' (U+043F) should encode as 2 UTF-8 bytes: 0xD0 0xBF
+    std::string cyrillic_text;
+    CHECK(extract_message_content("{\"choices\":[{\"message\":{\"content\":\"\\u043f\"}}]}", cyrillic_text), "extract Cyrillic \\u escape");
+    CHECK_EQ((int)cyrillic_text.size(), 2);
+    CHECK_EQ((unsigned char)cyrillic_text[0], (unsigned char)0xd0);
+    CHECK_EQ((unsigned char)cyrillic_text[1], (unsigned char)0xbf);
+
+    // Emoji surrogate pair: U+1F600 (😀) is \ud83d\ude00 in JSON
+    std::string emoji_text;
+    CHECK(extract_message_content("{\"choices\":[{\"message\":{\"content\":\"\\ud83d\\ude00\"}}]}", emoji_text), "extract emoji surrogate pair");
+    CHECK_EQ((int)emoji_text.size(), 4);
+    CHECK_EQ((unsigned char)emoji_text[0], (unsigned char)0xf0);
+    CHECK_EQ((unsigned char)emoji_text[1], (unsigned char)0x9f);
+    CHECK_EQ((unsigned char)emoji_text[2], (unsigned char)0x98);
+    CHECK_EQ((unsigned char)emoji_text[3], (unsigned char)0x80);
+
+    // Parse_units with unknown first field should succeed
+    std::vector<Unit> u2;
+    CHECK(parse_units("[{\"x\":1,\"id\":0,\"text\":\"y\"}]", u2), "parse_units with unknown first field");
+    CHECK_EQ((int)u2.size(), 1);
+    CHECK_EQ(u2[0].text, std::string("y"));
+
+    // Parse_units with reordered fields
+    std::vector<Unit> u3;
+    CHECK(parse_units("[{\"text\":\"z\",\"id\":0}]", u3), "parse_units with reordered fields");
+    CHECK_EQ((int)u3.size(), 1);
+    CHECK_EQ(u3[0].text, std::string("z"));
 }

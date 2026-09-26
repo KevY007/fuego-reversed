@@ -83,4 +83,40 @@ void test_protect() {
     // pure command / numbers => not translatable (skip, no API call)
     CHECK(!mask("/quit").translatable, "pure command is not translatable");
     CHECK(!mask("$5000").translatable, "pure money amount is not translatable");
+
+    // --- Review fix regressions ---------------------------------------
+
+    // CRITICAL 1: a roleplay command's narrative remainder must stay
+    // translatable -- only the command word itself is data.
+    Masked meMsg = mask("/me smiles warmly");
+    CHECK(meMsg.text.find("/me") == std::string::npos, "/me command is masked out");
+    CHECK(meMsg.text.find("smiles") != std::string::npos, "narrative word 'smiles' survives translatable");
+    CHECK(meMsg.text.find("warmly") != std::string::npos, "narrative word 'warmly' survives translatable");
+    CHECK(meMsg.translatable, "roleplay narration after /me is translatable");
+
+    // CRITICAL 2a: a speech-verb prefix ("Name says:") still masks the name
+    // and still round-trips.
+    Masked saysMsg = mask("Kevin says: hola");
+    CHECK(saysMsg.text.find("Kevin") == std::string::npos, "speech-verb prefix still masks the name");
+    CHECK(placeholders_intact(saysMsg.text, saysMsg.tokens.size()), "speech-verb prefix message round trips");
+    CHECK(unmask(saysMsg.text, saysMsg.tokens).find("Kevin") != std::string::npos,
+          "unmask restores the speaker name");
+
+    // CRITICAL 2b: an ordinary lead word followed by ':' but with NO speech
+    // verb (e.g. a system/log-style message) must NOT be masked as a name.
+    Masked warnMsg = mask("Warning: server restarting in 5 minutes");
+    CHECK(warnMsg.text.find("Warning") != std::string::npos,
+          "plain lead word without a speech verb is not masked as a name");
+
+    // IMPORTANT 3: an out-of-range/hallucinated placeholder (index equal to
+    // tokens.size(), i.e. never handed out by mask()) must be rejected, not
+    // silently copied through as raw control bytes.
+    std::string outOfRange;
+    outOfRange.push_back('\x01');
+    outOfRange += std::to_string(m.tokens.size());
+    outOfRange.push_back('\x02');
+    std::string hallucinated = m.text + outOfRange;
+    CHECK(!placeholders_intact(hallucinated, m.tokens.size()),
+          "an out-of-range placeholder fails placeholders_intact");
+    CHECK_EQ(unmask(hallucinated, m.tokens), std::string(""));
 }

@@ -57,6 +57,23 @@ bool looks_like_plate(const std::string& s, size_t start, size_t end) {
     return hasDigit && hasAlpha;
 }
 
+// Case-insensitive match of a NUL-terminated ASCII literal against s starting
+// at pos. Returns the literal's length on a full match, 0 otherwise (0 is
+// unambiguous: every verb literal used below is non-empty).
+size_t match_ci_literal(const std::string& s, size_t pos, const char* lit) {
+    size_t i = 0;
+    for (; lit[i] != '\0'; ++i) {
+        size_t sp = pos + i;
+        if (sp >= s.size()) return 0;
+        char a = s[sp];
+        char b = lit[i];
+        if (is_upper(a)) a = char(a - 'A' + 'a');
+        if (is_upper(b)) b = char(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return i;
+}
+
 } // namespace
 
 Masked mask(const std::string& src) {
@@ -74,29 +91,20 @@ Masked mask(const std::string& src) {
         const char c = src[i];
         bool matched = false;
 
-        // Leading "/command" (only at a word boundary, so "w/o" mid-sentence
-        // isn't mistaken for one) plus one following argument-looking token,
-        // e.g. "/car alpha".
+        // Leading "/command" only (only at a word boundary, so "w/o"
+        // mid-sentence isn't mistaken for one). Deliberately does NOT swallow
+        // following words: roleplay commands like /me, /do, /b, /ooc, /low,
+        // /s, /w carry narrative text as their "argument" that MUST still be
+        // translated, e.g. "/me smiles warmly" -- only "/me" is data, "smiles
+        // warmly" is prose. A following {colour}/~x~/number arg is already
+        // masked by its own rule below; a following plain word is simply left
+        // translatable, which is the safe default.
         if (c == '/' && i + 1 < n && is_alpha(src[i + 1]) &&
             (i == 0 || is_space(src[i - 1]))) {
             size_t j = i + 1;
             while (j < n && is_word_char(src[j])) ++j;
-            size_t end = j;
-            if (j < n && src[j] == ' ') {
-                size_t k = j + 1;
-                if (k < n) {
-                    char argc = src[k];
-                    // Don't swallow a following span that has its own, more
-                    // specific handler (colour/key code, another command, money).
-                    if (argc != '{' && argc != '~' && argc != '/' && argc != '$') {
-                        size_t k2 = k;
-                        while (k2 < n && !is_space(src[k2])) ++k2;
-                        if (k2 > k) end = k2;
-                    }
-                }
-            }
-            emit(i, end);
-            i = end;
+            emit(i, j);
+            i = j;
             matched = true;
         }
 
@@ -168,8 +176,8 @@ Masked mask(const std::string& src) {
             matched = true;
         }
 
-        // Name_Surname / Name[ID] / Name (ID) / leading "Name:" or
-        // "Name says:" chat prefix / ALLCAPS+digit plate-ish code.
+        // Name_Surname / Name[ID] / Name (ID) / leading "Name says:"-style
+        // speech-verb chat prefix / ALLCAPS+digit plate-ish code.
         if (!matched && is_upper(c)) {
             size_t nameEnd = scan_name(src, i);
             if (nameEnd > i) {
@@ -197,18 +205,37 @@ Masked mask(const std::string& src) {
                         matched = true;
                     }
                 }
-                // Chat speaker prefix ("Kevin says: ..." / "Kevin: ...") is
-                // only recognised at the very start of the message, so an
-                // ordinary capitalised word elsewhere in a sentence (which
-                // matches none of the shapes above) is left alone and stays
-                // translatable.
-                if (!matched && i == 0) {
-                    bool colonPrefix = nameEnd < n && src[nameEnd] == ':';
-                    bool saysPrefix = nameEnd + 6 <= n && src.compare(nameEnd, 6, " says:") == 0;
-                    if (colonPrefix || saysPrefix) {
-                        emit(i, nameEnd);
-                        i = nameEnd;
-                        matched = true;
+                // Chat speaker prefix ("Kevin says: ..." / "Kevin shouts:
+                // ...") is only recognised at the very start of the message,
+                // and only when a known speech verb (optionally with a
+                // bracketed qualifier like "[low]") leads into a colon --
+                // NOT on a bare "Name:". That distinction matters: a plain
+                // lead word followed by ':' is extremely common as ordinary
+                // prose ("Warning: server restarting", "Note:", "Server:",
+                // "Error:", "Tip:") and must stay translatable, whereas a
+                // verb-qualified prefix is specifically how this game's chat
+                // narrates who is speaking.
+                if (!matched && i == 0 && nameEnd < n && src[nameEnd] == ' ') {
+                    static const char* kSpeechVerbs[] = {
+                        "says", "shouts", "whispers", "yells", "exclaims", "asks"
+                    };
+                    for (const char* verb : kSpeechVerbs) {
+                        size_t verbLen = match_ci_literal(src, nameEnd + 1, verb);
+                        if (verbLen == 0) continue;
+                        size_t p = nameEnd + 1 + verbLen;
+                        if (p < n && is_alpha(src[p])) continue; // e.g. "sayshi" isn't the verb "says"
+                        // optional bracketed qualifier before the colon, e.g. "says [low]:"
+                        if (p + 1 < n && src[p] == ' ' && src[p + 1] == '[') {
+                            size_t q = p + 2;
+                            while (q < n && src[q] != ']' && src[q] != '\n') ++q;
+                            if (q < n && src[q] == ']') p = q + 1;
+                        }
+                        if (p < n && src[p] == ':') {
+                            emit(i, nameEnd);
+                            i = nameEnd;
+                            matched = true;
+                        }
+                        break; // the verb text matched (or didn't); no other verb can start here
                     }
                 }
                 if (!matched && looks_like_plate(src, i, nameEnd)) {
@@ -286,6 +313,29 @@ bool placeholders_intact(const std::string& translated, size_t n) {
         }
         if (count != 1) return false;
     }
+    // Reject any well-formed "\x01<digits>\x02" placeholder whose index is
+    // out of range too -- a model can hallucinate/corrupt an index that was
+    // never handed out, and that must fail just like a missing one does, so
+    // unmask() (which gates on this function) never has to decide what to do
+    // with a token that doesn't exist.
+    for (size_t i = 0; i < translated.size(); ) {
+        if (translated[i] == '\x01') {
+            size_t j = i + 1;
+            size_t k = 0;
+            bool anyDigit = false;
+            while (j < translated.size() && is_digit(translated[j])) {
+                k = k * 10 + static_cast<size_t>(translated[j] - '0');
+                ++j;
+                anyDigit = true;
+            }
+            if (anyDigit && j < translated.size() && translated[j] == '\x02') {
+                if (k >= n) return false;
+                i = j + 1;
+                continue;
+            }
+        }
+        ++i;
+    }
     return true;
 }
 
@@ -306,7 +356,12 @@ std::string unmask(const std::string& translated, const std::vector<std::string>
                 ++j;
                 anyDigit = true;
             }
-            if (anyDigit && j < n && translated[j] == '\x02' && k < tokens.size()) {
+            if (anyDigit && j < n && translated[j] == '\x02') {
+                // Well-formed placeholder syntax. placeholders_intact() above
+                // already guarantees k < tokens.size(); this check is defence
+                // in depth so an out-of-range index can never fall through to
+                // the raw-byte copy below and leak \x01/\x02 into the output.
+                if (k >= tokens.size()) return std::string();
                 out += tokens[k];
                 i = j + 1;
                 continue;

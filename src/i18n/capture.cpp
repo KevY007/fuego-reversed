@@ -41,8 +41,14 @@ void on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
     if (!i18n::config::get().debug_capture) return;
     if (!rpc || !rpc->input || rpc->numberOfBitsOfData < 8) return;
 
-    // Only the server-text surfaces we intend to translate.
-    if (id != 61 && id != 36 && id != 134 && id != 105 && id != 73 && id != 93 && id != 120) return;
+    // Server->client surfaces that carry player-visible natural-language text.
+    //  61 ShowDialog, 36 Create3DTextLabel, 134 ShowTextDraw, 105 TextDrawSetString,
+    //  73 ShowGameText, 93 SendClientMessage, 59 ChatBubble, 76 InitMenu (title/
+    //  headers/items), 84 SetPlayerObjectMaterialText (billboard/sign text).
+    // (Deliberately NOT captured: names, anim libs, plate codes, shop ids, URLs,
+    //  fonts, killfeed icons -- identifiers, not prose.)
+    if (id != 61 && id != 36 && id != 134 && id != 105 && id != 73 &&
+        id != 93 && id != 59 && id != 76 && id != 84) return;
 
     const unsigned char* p = rpc->input;
     const int nbytes = (int)((rpc->numberOfBitsOfData + 7) / 8);
@@ -55,7 +61,9 @@ void on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
         id == 105 ? "TextDrawSetString" :
         id == 73  ? "ShowGameText" :
         id == 93  ? "ClientMessage" :
-        id == 120 ? "SetObjectMaterial(Text)" : "?";
+        id == 59  ? "ChatBubble" :
+        id == 76  ? "InitMenu" :
+        id == 84  ? "ObjectMaterialText" : "?";
 
     Log("[capture] RPC %u (%s) bits=%u bytes=%d hex=%s",
         (unsigned)id, name, rpc->numberOfBitsOfData, nbytes, hex(p, nbytes).c_str());
@@ -102,6 +110,21 @@ void on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
         int avail = nbytes - 12; int show = (len < (uint32_t)avail) ? (int)len : avail;
         if (show > 0) Log("[capture]   gametext style=%u time=%u len=%u text='%s'",
                          style, time, len, ascii(p + 12, show).c_str());
+    } else if (id == 59 && nbytes >= 15) {
+        // u16 playerid, u32 color, f drawDist, u32 expire, u8 textLen, char[] text (plain)
+        uint16_t pid = rd16(p);
+        int len = p[14];
+        int avail = nbytes - 15; if (len > avail) len = avail;
+        if (len > 0) Log("[capture]   chatbubble playerid=%u len=%d text='%s'",
+                         pid, len, ascii(p + 15, len).c_str());
+    } else if (id == 76 && nbytes >= 9) {
+        // u8 MenuID, u32 bColumns, u32 TitleLength, char[] Title, ... (headers/items
+        // follow; the full hex has them -- log the title as a convenience).
+        uint8_t menu = p[0];
+        uint32_t tlen = rd32(p + 5);
+        int avail = nbytes - 9; int show = (tlen < (uint32_t)avail) ? (int)tlen : avail;
+        if (show > 0) Log("[capture]   menu id=%u title='%s' (headers/items in hex above)",
+                         menu, ascii(p + 9, show).c_str());
     }
 }
 

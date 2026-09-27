@@ -190,6 +190,66 @@ std::vector<uint8_t> assemble_dialog(const DialogPlan& d, const std::vector<std:
     return out;
 }
 
+namespace {
+
+// SA:MP's list line reader copies at most 0x100 bytes (255 + NUL) per item and
+// parses the REST of a longer line as another item; the tablist cell reader copies
+// at most 0x80 bytes (127 + NUL) per cell and spills the rest into the next column.
+constexpr size_t kLineBudget = 255;
+constexpr size_t kCellBudget = 127;
+
+bool blank_line(const std::string& s) {
+    for (char c : s)
+        if (c != ' ' && c != '\t' && c != '\r') return false;
+    return true;
+}
+
+// Items a line of `len` bytes becomes when each item copies at most `cut` bytes
+// (0 for an empty line, which SA:MP skips).
+size_t line_items(size_t len, size_t cut) { return (len + cut - 1) / cut; }
+
+} // namespace
+
+std::vector<std::string> fit_list_budgets(const DialogPlan& d, std::vector<std::string> cores) {
+    if ((d.style != 2 && d.style != 4 && d.style != 5) || !d.haveBody) return cores;
+    const bool cells = (d.style != 2);
+    auto core = [&](size_t k) -> const std::string& { return k < cores.size() ? cores[k] : d.units[k].core; };
+
+    size_t first = 3;                            // first unit of the current line (line 0 = style 5's header)
+    while (first < d.units.size()) {
+        size_t end = first;                      // one past the line's last unit
+        while (end < d.units.size()) {
+            const size_t sep = end - 3;          // bodySeps[sep] follows unit `end`
+            ++end;
+            if (sep >= d.bodySeps.size() || d.bodySeps[sep] == '\n') break;
+        }
+        // The exact bytes SA:MP's reader sees for this line, original vs translated.
+        std::string o, t;
+        bool cellOver = false;
+        for (size_t k = first; k < end; ++k) {
+            const std::string oc = unit_text(d.units[k], d.units[k].core);
+            const std::string tc = unit_text(d.units[k], core(k));
+            if (k > first) { o += '\t'; t += '\t'; }
+            o += oc;
+            t += tc;
+            if (cells && tc.size() > kCellBudget && oc.size() <= kCellBudget) cellOver = true;
+        }
+        // An original already over the line budget is cut natively too: keep a
+        // translation only if it's cut into the SAME number of items (under either
+        // reading of the 0x100 copy), else every row below it would shift.
+        const bool itemsDiffer = o.size() > kLineBudget &&
+            (line_items(t.size(), kLineBudget) != line_items(o.size(), kLineBudget) ||
+             line_items(t.size(), kLineBudget + 1) != line_items(o.size(), kLineBudget + 1));
+        const bool revert = (blank_line(t) && !blank_line(o)) ||
+                            (t.size() > kLineBudget && o.size() <= kLineBudget) ||
+                            itemsDiffer || cellOver;
+        if (revert)
+            for (size_t k = first; k < end && k < cores.size(); ++k) cores[k] = d.units[k].core;
+        first = end;
+    }
+    return cores;
+}
+
 std::string strip_colors(const std::string& s) {
     std::string o;
     o.reserve(s.size());
@@ -207,10 +267,13 @@ bool remap_list_response(int style, const std::vector<std::string>& orig,
     const size_t firstDataRow = (style == 5 ? 1u : 0u); // style 5's row 0 is the header, never a list item
     const size_t row = (size_t)listItem + firstDataRow;
     if (row >= orig.size()) return false;
-    // Unverified whether SA:MP counts a blank list line as an item -- never risk a
-    // shifted index: refuse to remap if any DATA row before the picked one is blank.
+    // SA:MP skips an EMPTY list line (no item) and cuts a line longer than its
+    // 255-byte reader into several items (verified in samp.dll's disassembly), so
+    // either one before the picked row means listItem no longer names row `row`:
+    // refuse to remap rather than send a different row's text.
     for (size_t i = firstDataRow; i < row; ++i)
-        if (orig[i].empty()) return false;
+        if (orig[i].empty() || trans[i].empty() || orig[i].size() > kLineBudget || trans[i].size() > kLineBudget)
+            return false;
     auto first_col = [](const std::string& s) {
         size_t t = s.find('\t');
         return t == std::string::npos ? s : s.substr(0, t);
@@ -293,7 +356,7 @@ bool rebuild_dialog(const uint8_t* p, size_t n, const Translator& tr, std::vecto
     // Every translatable unit must resolve, or the caller passes the original through.
     for (size_t k = 0; k < d.units.size(); ++k)
         if (d.units[k].translate && !tr(d.units[k].core, cores[k])) return false;
-    out = assemble_dialog(d, cores);
+    out = assemble_dialog(d, fit_list_budgets(d, cores));
     return true;
 }
 

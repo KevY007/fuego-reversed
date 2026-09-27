@@ -57,6 +57,60 @@ static const char* kLabel1024 =
     "A4562B158AC562B1F29E76498AC3B9F5FC84B19EFAC1C749083E86AB598A6F061EA27AA2A89F21A6CEDCC2"
     "E8C7B8E85632D45A80";
 
+// A synthetic RPC 61 payload (u16 id, u8 style, 3 x u8-length strings, Huffman body).
+static std::vector<uint8_t> make_dialog(uint16_t id, uint8_t style, const std::string& title,
+                                        const std::string& b1, const std::string& b2, const std::string& body) {
+    std::vector<uint8_t> v;
+    v.push_back((uint8_t)(id & 0xFF));
+    v.push_back((uint8_t)(id >> 8));
+    v.push_back(style);
+    for (const std::string* s : { &title, &b1, &b2 }) {
+        v.push_back((uint8_t)s->size());
+        v.insert(v.end(), s->begin(), s->end());
+    }
+    std::vector<uint8_t> enc = i18n::huffman::encode_string(body);
+    v.insert(v.end(), enc.begin(), enc.end());
+    return v;
+}
+
+// Every unit the translator knows gets its translation; the rest keep their core.
+static std::vector<std::string> translate_cores(const i18n::surfaces::DialogPlan& d,
+                                                const i18n::surfaces::Translator& tr) {
+    std::vector<std::string> c = i18n::surfaces::original_cores(d);
+    for (size_t k = 0; k < d.units.size(); ++k) {
+        std::string t;
+        if (d.units[k].translate && tr(d.units[k].core, t)) c[k] = t;
+    }
+    return c;
+}
+
+static std::vector<std::string> split_on(const std::string& s, char sep) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    for (size_t i = 0; i <= s.size(); ++i)
+        if (i == s.size() || s[i] == sep) { out.push_back(s.substr(start, i - start)); start = i + 1; }
+    return out;
+}
+
+// SA:MP's LIST/TABLIST builders, per line of the body: an EMPTY line makes no item;
+// a line longer than the reader's 255-byte copy is cut and the rest parsed as
+// ANOTHER item. Returns the items each '\n' line becomes (the index structure).
+static std::vector<size_t> native_line_items(const std::string& body) {
+    std::vector<size_t> v;
+    for (const std::string& line : split_on(body, '\n')) v.push_back((line.size() + 254) / 255);
+    return v;
+}
+static size_t native_items(const std::string& body) {
+    size_t n = 0;
+    for (size_t k : native_line_items(body)) n += k;
+    return n;
+}
+static size_t longest(const std::vector<std::string>& v) {
+    size_t m = 0;
+    for (const std::string& s : v) if (s.size() > m) m = s.size();
+    return m;
+}
+
 int main() {
     using namespace i18n::surfaces;
 
@@ -320,6 +374,134 @@ int main() {
     check(!should_translate_input("john@mail.com"), "should_translate_input: email (single token) -> false");
     check(should_translate_input("hello there"), "should_translate_input: a real phrase -> true");
     check(should_translate_input("deposit\tmoney"), "should_translate_input: tab-separated phrase -> true");
+
+    // ---- C1: a translation must never change a list's ITEM COUNT / row indices ----
+    {   // Real LIST (291): one row translates to 300 bytes, another to "".
+        std::vector<uint8_t> orig = hex(kDlgBankList);
+        DialogPlan d;
+        plan_dialog(orig.data(), orig.size(), d);
+        Translator tr = [](const std::string& src, std::string& out) {
+            if (src == "Account Balance") out = "Saldo de cuenta";
+            else if (src == "Withdraw") out = std::string(300, 'W');   // longer than the 255-byte line reader
+            else if (src == "Deposit") out = "";                        // an empty line is no item at all
+            else if (src == "Recent Transactions") out = "Transacciones recientes";
+            else return false;
+            return true;
+        };
+        const std::vector<std::string> cores = translate_cores(d, tr);
+        const std::string origBody = assemble_body(d, original_cores(d));
+        check(native_line_items(assemble_body(d, cores)) != native_line_items(origBody),
+              "C1 fixture: unfitted, the translation really shifts SA:MP's items");
+        const std::vector<std::string> fit = fit_list_budgets(d, cores);
+        check(fit.size() == cores.size(), "C1 list: same number of cores");
+        check(fit[4] == "Withdraw", "C1 list: the 300-byte row is reverted to its original");
+        check(fit[5] == "Deposit", "C1 list: the empty row is reverted to its original");
+        bool othersKept = true;
+        for (size_t k = 0; k < fit.size(); ++k)
+            if (k != 4 && k != 5 && fit[k] != cores[k]) othersKept = false;
+        check(othersKept, "C1 list: every other translated row is kept");
+        const std::string body = assemble_body(d, fit);
+        check(native_items(body) == native_items(origBody), "C1 list: same item count as the original, the SA:MP way");
+        check(native_line_items(body) == native_line_items(origBody), "C1 list: every row keeps its native index");
+        check(longest(split_on(body, '\n')) <= 255, "C1 list: every line fits the 255-byte line reader");
+    }
+    {   // Real TABLIST_HEADERS (416): a 200-byte cell fits the line but not the 127-byte cell reader.
+        std::vector<uint8_t> orig = hex(kDlgGps);
+        DialogPlan d;
+        plan_dialog(orig.data(), orig.size(), d);
+        Translator tr = [](const std::string& src, std::string& out) {
+            if (src == "Destination") out = "Destino";
+            else if (src == "Las Venturas Bank") out = std::string(200, 'L');
+            else if (src == "Palomino Creek Bank") out = "Banco de Palomino Creek";
+            else return false;
+            return true;
+        };
+        const std::vector<std::string> cores = translate_cores(d, tr);
+        const std::vector<std::string> fit = fit_list_budgets(d, cores);
+        check(fit[5] == "Las Venturas Bank" && fit[6] == "12m", "C1 tablist: the line with a 200-byte cell is reverted");
+        check(fit[3] == "Destino", "C1 tablist: the header's translated cell is kept");
+        check(fit[7] == "Banco de Palomino Creek", "C1 tablist: the next row's translation is kept");
+        const std::string body = assemble_body(d, fit);
+        const std::string origBody = assemble_body(d, original_cores(d));
+        check(native_line_items(body) == native_line_items(origBody), "C1 tablist: every row keeps its native index");
+        size_t widest = 0;
+        for (const std::string& line : split_on(body, '\n'))
+            if (longest(split_on(line, '\t')) > widest) widest = longest(split_on(line, '\t'));
+        check(widest <= 127, "C1 tablist: every cell fits the 127-byte cell reader");
+    }
+    {   // Real TABLIST_HEADERS (1006): the style-5 HEADER line is budgeted too.
+        std::vector<uint8_t> orig = hex(kDlgSpawn);
+        DialogPlan d;
+        plan_dialog(orig.data(), orig.size(), d);
+        check(d.units.size() > 4 && d.units[3].core == "Zone", "1006 header cell is 'Zone'");
+        Translator tr = [](const std::string& src, std::string& out) {
+            if (src == "Zone") out = std::string(300, 'Z');
+            else if (src == "Las Venturas Airport") out = "Aeropuerto de Las Venturas";
+            else return false;
+            return true;
+        };
+        const std::vector<std::string> cores = translate_cores(d, tr);
+        const std::vector<std::string> fit = fit_list_budgets(d, cores);
+        check(fit[3] == "Zone", "C1 header: an oversized header line is reverted");
+        check(fit[4] == "Aeropuerto de Las Venturas", "C1 header: the first data row's translation is kept");
+    }
+    {   // An ORIGINAL line already longer than 255 bytes is not reverted just for being long.
+        std::string longRow;
+        while (longRow.size() < 300) longRow += "Please read the server rules ";
+        const size_t origLen = longRow.size();                                  // 319: two native items
+        std::vector<uint8_t> pkt = make_dialog(7, 2, "Rules", "OK", "", longRow + "\nWithdraw");
+        DialogPlan d;
+        check(plan_dialog(pkt.data(), pkt.size(), d) && d.units.size() == 5, "long-row fixture parses");
+        std::string sameItems(origLen + 10, 'r');                              // 329: still two items
+        std::vector<std::string> cores = original_cores(d);
+        cores[3] = sameItems;
+        cores[4] = "Retirar";
+        std::vector<std::string> fit = fit_list_budgets(d, cores);
+        check(fit[3] == sameItems && fit[4] == "Retirar",
+              "C1 long original: a translation cut into the same number of items is kept");
+        check(native_line_items(assemble_body(d, fit)) == native_line_items(assemble_body(d, original_cores(d))),
+              "C1 long original: row indices stay native");
+        cores[3] = std::string(600, 'r');                                       // three items
+        fit = fit_list_budgets(d, cores);
+        check(fit[3] == d.units[3].core && fit[4] == "Retirar",
+              "C1 long original: a translation cut into MORE items is reverted");
+        cores[3] = std::string(100, 'r');                                       // one item
+        fit = fit_list_budgets(d, cores);
+        check(fit[3] == d.units[3].core, "C1 long original: a translation cut into FEWER items is reverted");
+    }
+    {   // Whitespace-only translation of a non-blank row -> reverted; other styles are untouched.
+        std::vector<uint8_t> pkt = make_dialog(8, 2, "Menu", "OK", "", "Withdraw\nDeposit");
+        DialogPlan d;
+        plan_dialog(pkt.data(), pkt.size(), d);
+        std::vector<std::string> cores = original_cores(d);
+        cores[3] = "   ";
+        check(fit_list_budgets(d, cores)[3] == "Withdraw", "C1: a whitespace-only translation is reverted");
+
+        std::vector<uint8_t> msg = make_dialog(9, 0, "Info", "OK", "", "Hello there friend\nSecond line here");
+        DialogPlan m;
+        plan_dialog(msg.data(), msg.size(), m);
+        std::vector<std::string> mc = original_cores(m);
+        mc[3] = std::string(300, 'h');
+        mc[4] = "";
+        check(fit_list_budgets(m, mc) == mc, "C1: a MSGBOX (style 0) is never touched");
+
+        std::vector<uint8_t> tab = make_dialog(10, 4, "Shop", "Buy", "Close", "Big Burger\t$5\nSmall Fries\t$2");
+        DialogPlan t;
+        plan_dialog(tab.data(), tab.size(), t);
+        std::vector<std::string> tc = original_cores(t);
+        tc[3] = std::string(150, 'b');
+        tc[5] = "Patatas";
+        std::vector<std::string> tf = fit_list_budgets(t, tc);
+        check(tf[3] == "Big Burger" && tf[5] == "Patatas", "C1: a TABLIST (style 4) cell over 127 bytes is reverted");
+    }
+    {   // remap: a data row before the picked one that isn't exactly ONE native item
+        // (longer than the 255-byte reader) shifts SA:MP's indices -> never remap.
+        std::vector<std::string> orig  = { std::string(300, 'a'), "Bank B", "Bank C" };
+        std::vector<std::string> trans = { std::string(300, 'x'), "Banco", "Banco" };
+        std::string out;
+        check(!remap_list_response(2, orig, trans, 2, "Banco", out),
+              "remap: a >255-byte row before the pick shifts the index -> no remap (never a wrong row)");
+    }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -206,9 +206,12 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
     const std::vector<uint8_t> original(p, p + n);
 
     // Nothing to wait for and nothing ahead of it: SA:MP shows it right now.
+    // fit_list_budgets (here and at every other assembly): a translated list line
+    // must never change the item count SA:MP builds, or every pick below it would
+    // go out with a shifted listitem.
     if (g_dlgq.empty() && missing.empty()) {
         if (anyTranslated) {
-            std::vector<uint8_t> pkt = assemble_dialog(d, cores);
+            std::vector<uint8_t> pkt = assemble_dialog(d, fit_list_budgets(d, cores));
             commit(rpc, pkt);
             note_shown(original, &pkt);
         } else {
@@ -230,7 +233,7 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         return false;
     }
     if (missing.empty()) { // ready now (cached / close / password) -- waits for its turn
-        g_dlgq.resolve(seq, anyTranslated ? assemble_dialog(d, cores) : std::vector<uint8_t>{});
+        g_dlgq.resolve(seq, anyTranslated ? assemble_dialog(d, fit_list_budgets(d, cores)) : std::vector<uint8_t>{});
         return true;
     }
 
@@ -445,7 +448,7 @@ void on_part_result(const i18n::engine::Result& r) {
     PendingDialog& pd = it->second;
     if (r.ok && !r.displayBytes.empty() && unit < pd.cores.size()) pd.cores[unit] = r.displayBytes;
     if (--pd.outstanding > 0) return;
-    g_dlgq.resolve(seq, assemble_dialog(pd.plan, pd.cores));
+    g_dlgq.resolve(seq, assemble_dialog(pd.plan, fit_list_budgets(pd.plan, pd.cores)));
     g_pendingDialogs.erase(it);
 }
 

@@ -86,6 +86,23 @@ std::string assemble_body(const DialogPlan& plan, const std::vector<std::string>
 // entry falls back to the original core).
 std::vector<uint8_t> assemble_dialog(const DialogPlan& plan, const std::vector<std::string>& cores);
 
+// LIST/TABLIST only (styles 2, 4, 5; any other style returns cores unchanged):
+// revert every body LINE whose translation would change SA:MP's item structure
+// back to its ORIGINAL units, so the item count and every row index stay native.
+// samp.dll 0.3.DL's builders (LIST 0x1006F630, TABLIST 0x1006F730) make one item
+// per '\n' line, skip EMPTY lines, cut a line at the reader's 0x100-byte copy (the
+// rest becomes ANOTHER item) and a tablist cell at 0x80 bytes (the rest spills into
+// the next column). Measured as the bytes SA:MP sees (unit_text incl. prefixes,
+// suffixes and '\t' separators), a line -- the style-5 header line included -- is
+// reverted when its translation:
+//  - is empty or whitespace-only, but the original line wasn't;
+//  - is longer than 255 bytes, but the original line wasn't;
+//  - (original already longer than 255 bytes) is cut into a different number of
+//    items than the original;
+//  - (styles 4/5) has a cell longer than 127 bytes, but that original cell wasn't.
+// Apply right before EVERY assemble_dialog of a translated dialog.
+std::vector<std::string> fit_list_budgets(const DialogPlan& plan, std::vector<std::string> cores);
+
 // Remove {RRGGBB} colour codes (SA:MP strips them from a list row's response text).
 std::string strip_colors(const std::string& s);
 
@@ -94,7 +111,9 @@ std::string strip_colors(const std::string& s);
 // would have produced for the same row: find which derivation (whole row / first
 // column, colour-stripped or raw) turns trans[row] into `resp` and apply it to
 // orig[row]. row = listItem (+1 for TABLIST_HEADERS, whose row 0 is the header).
-// False if out of range or nothing matches (the caller then sends `resp` unchanged).
+// False if out of range, if a row before the picked one isn't exactly one native
+// item (empty, or longer than 255 bytes -- listItem would then name another row),
+// or if nothing matches (the caller then sends `resp` unchanged).
 bool remap_list_response(int style, const std::vector<std::string>& orig,
                          const std::vector<std::string>& trans, int listItem,
                          const std::string& resp, std::string& out);
@@ -120,7 +139,8 @@ bool never_translated(const DialogPlan& d);
 // Rebuild a ShowDialog (RPC 61) packet translating it UNIT BY UNIT (plan_dialog):
 // `tr` receives each translatable unit's bare core. Returns true and fills `out`
 // only if EVERY translatable unit resolved via `tr` (so the caller shows the
-// original until all units are cached). Returns false otherwise.
+// original until all units are cached). Returns false otherwise. List lines are
+// kept within SA:MP's item structure (fit_list_budgets).
 bool rebuild_dialog(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
 
 // Rebuild a Create3DTextLabel (RPC 36) packet with translated text. 27-byte fixed

@@ -5,6 +5,7 @@
 #include "outbound.h"
 #include "lab.h"
 #include "names.h"
+#include "chatbuf.h"
 
 #include "../samp/samp.h"
 #include "../samp/addresses.h"
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace i18n::hooks {
 
@@ -35,58 +37,45 @@ AddEntryFn g_origAddEntry = nullptr;
 bool                  g_installed = false;
 std::atomic<uint64_t> g_seq{ 1 };
 
-// The original AddEntry call's formatting, kept while its translation is in
-// flight so apply_result() can re-emit the finished line with the SAME
-// type/prefix/colours. That REPLACES the line we swallowed in hooked_add_entry()
-// rather than adding a second (marked) line on top of it -- the previous
-// "original now + translation appended" design showed every line twice.
-// Main-thread only (SA:MP calls AddEntry and the pump both run on the game
-// thread), so no lock is needed -- same reasoning as outbound's pending map.
-struct PendingLine {
-	int         type = 0;
-	std::string msg;             // original text -> shown if translation declines/fails
-	std::string prefix;
-	bool        hasPrefix = false;
-	uint32_t    textColor = 0;
-	uint32_t    prefixColor = 0;
+// A line shown in its ORIGINAL form while its translation is in flight: the exact
+// chat entries it became (AddEntry may have wrapped it into several), identified by
+// SystemTime + text, so the translation can be written back over THOSE rows in
+// place when it lands -- lines above/below never move (Option A). Main thread only
+// (SA:MP calls AddEntry and the pump both run on the game thread).
+struct PendingFlip {
+	std::vector<i18n::chatbuf::Piece> pieces;
 };
-std::unordered_map<uint64_t, PendingLine> g_pendingLines;
+std::unordered_map<uint64_t, PendingFlip> g_pendingFlips;
 
-// Called from i18n::engine::pump() on the main thread once a translation
-// lands. MUST go through the trampoline (g_origAddEntry), never through
-// hooked_add_entry() or the patched address itself -- otherwise the line we
-// print here would re-enter the detour and get queued for translation again.
+// Called from i18n::engine::pump() on the main thread once a translation lands.
+// Routes each result by surface. Nothing here may call the patched AddEntry.
 void apply_result( const i18n::engine::Result &r ) {
-	// Outbound translations (surface 1) are SENT to the server, not shown in the
-	// local chat window -- route them to the outbound module.
+	// Outbound chat (surface 1) is SENT to the server, not shown.
 	if ( r.surface == 1 ) { i18n::outbound::on_result( r ); return; }
+	// Surface 2: translation-memory fill for labels/HUD -- already cached by
+	// process_one(); nothing to show.
+	if ( r.surface != 0 ) return;
 
-	// Surface >= 2: non-chat cache-fill jobs (dialogs/labels/textdraws). process_one
-	// already stored the result in the translation-memory cache; nothing to display
-	// here -- the surface re-emits it from cache on the packet's next arrival.
-	if ( r.surface >= 2 ) return;
-
-	// Inbound: emit the finished line exactly ONCE, with the original sender's
-	// type/prefix/colours -- REPLACING the line hooked_add_entry() swallowed
-	// (never a second line on top). Guarded try/catch: apply_result() runs from
-	// pump_tick() inside SA:MP/D3D's C call stack, where an escaping exception is
-	// UB, not a clean crash.
+	// Inbound chat (surface 0): overwrite the rows the original line became with the
+	// translation, in place. Declined/failed -> the original simply stays. Guarded:
+	// this runs inside SA:MP/D3D's C call stack, where an escaping exception is UB.
 	try {
-		auto it = g_pendingLines.find( r.handle );
-		if ( it == g_pendingLines.end() ) return; // no record -> nothing to emit
-		PendingLine pl = std::move( it->second );
-		g_pendingLines.erase( it );
+		auto it = g_pendingFlips.find( r.handle );
+		if ( it == g_pendingFlips.end() ) return;
+		PendingFlip pf = std::move( it->second );
+		g_pendingFlips.erase( it );
+		if ( !r.ok || r.displayBytes.empty() ) return;
 
-		if ( !g_origAddEntry ) return;
-		void *chat = samp::chat_ptr();
+		uint8_t *chat = static_cast<uint8_t *>( samp::chat_ptr() );
 		if ( !chat ) return; // left the server before the result landed
+		int first = i18n::chatbuf::find_block( chat, pf.pieces );
+		if ( first < 0 ) return; // scrolled off (or cleared) before the translation came back
 
-		// Translated text if we have it; otherwise the original (translation
-		// declined -- e.g. already target language / nothing translatable -- or
-		// failed). Either way the line appears once, in its native formatting.
-		const std::string &text = ( r.ok && !r.displayBytes.empty() ) ? r.displayBytes : pl.msg;
-		const char *prefix = pl.hasPrefix ? pl.prefix.c_str() : nullptr;
-		g_origAddEntry( chat, pl.type, text.c_str(), prefix, pl.textColor, pl.prefixColor );
+		size_t width = 72; // SA:MP's own wrap width -- wider if the original rows were
+		for ( const auto &p : pf.pieces )
+			if ( p.text.size() > width ) width = p.text.size(); // (no std::max: windows.h defines max)
+		i18n::chatbuf::write_block( chat, first,
+		                            i18n::chatbuf::wrap_to( r.displayBytes, (int) pf.pieces.size(), width ) );
 	} catch ( ... ) {
 	}
 }
@@ -102,18 +91,14 @@ void apply_result( const i18n::engine::Result &r ) {
 //
 // Re-entrancy: this function shows the original line via the trampoline
 // (g_origAddEntry), never via the patched address -- so it cannot re-enter
-// itself. apply_result() above (the only other caller of AddEntry we add)
-// also only ever uses the trampoline. That means BOTH "show original" and
-// "show translated" bypass the patch entirely: hooked_add_entry() only ever
-// runs for genuine external calls to the real AddEntry address, never for
-// lines we ourselves are displaying -- no loop, and a translated line is
-// never itself resubmitted for translation.
+// itself. apply_result() above no longer calls AddEntry at all -- a landed
+// translation is written directly into the chat buffer's rows instead. That
+// means BOTH "show original" and "show translated" bypass the patch entirely:
+// hooked_add_entry() only ever runs for genuine external calls to the real
+// AddEntry address, never for lines we ourselves are displaying -- no loop,
+// and a translated line is never itself resubmitted for translation.
 void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const char *msg,
                                    const char *prefix, uint32_t textColor, uint32_t prefixColor ) {
-	// Decide whether to translate this line. If we will, we must NOT show the
-	// original now -- we swallow it and apply_result() emits the finished line
-	// once (translated, or original on failure). Showing it here too is exactly
-	// the "double text" bug. Never CHAT_TYPE_DEBUG (our own / re-emitted lines).
 	bool doTranslate = false;
 	try {
 		if ( i18n::config::get().inbound_chat && msg && msg[0] &&
@@ -122,39 +107,47 @@ void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const ch
 	} catch ( ... ) {}
 
 	if ( !doTranslate ) {
-		// Not translating -> show the line immediately, unchanged, via the real
-		// AddEntry (the trampoline, never the patched address -> no re-entry).
-		if ( g_origAddEntry )
-			g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
+		if ( g_origAddEntry ) g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
 		return;
 	}
 
-	// Translating: SWALLOW the original (do not show it now), remember its
-	// formatting, and queue the job. Guarded: an escaping exception across this
-	// C-ABI detour seam is UB. If queueing throws, fall back to showing the
-	// original so the line is never lost.
+	// Option A: the line ALWAYS shows immediately (live chat, exact order + timing).
+	// `shown` guards the catch below so a line is never lost and never shown twice.
+	bool shown = false;
 	try {
-		uint64_t h = g_seq.fetch_add( 1, std::memory_order_relaxed );
+		auto &s = i18n::config::get();
 
-		PendingLine pl;
-		pl.type        = type;
-		pl.msg         = msg;
-		pl.hasPrefix   = ( prefix != nullptr );
-		if ( prefix ) pl.prefix = prefix;
-		pl.textColor   = textColor;
-		pl.prefixColor = prefixColor;
-		g_pendingLines[h] = std::move( pl );
+		// Translation-memory hit: show it ALREADY translated -- SA:MP wraps it with its
+		// own rules, and there is nothing to flip later.
+		std::string cached;
+		if ( i18n::engine::cache_lookup( msg, s.source_cp, s.target_lang, cached ) && !cached.empty() ) {
+			g_origAddEntry( self, type, cached.c_str(), prefix, textColor, prefixColor );
+			shown = true;
+			return;
+		}
+
+		// Miss: show the original now and remember exactly which rows it became.
+		const uint8_t *chat = static_cast<const uint8_t *>( self );
+		std::vector<uint8_t> snap = i18n::chatbuf::snapshot_newest( chat );
+		g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
+		shown = true;
+
+		int n = i18n::chatbuf::added_since( chat, snap );
+		if ( n <= 0 || n > 4 ) return; // can't tell which rows it became -> leave it as is
+
+		if ( g_pendingFlips.size() > 256 ) g_pendingFlips.clear(); // results that never came back
+		uint64_t h = g_seq.fetch_add( 1, std::memory_order_relaxed );
+		g_pendingFlips[h].pieces = i18n::chatbuf::read_newest( chat, n );
 
 		i18n::engine::Job job;
 		job.handle      = h;
-		job.surface     = 0; // inbound chat display
+		job.surface     = 0; // inbound chat -> apply_result flips the rows in place
 		job.sourceBytes = msg;
-		job.srcCodepage = i18n::config::get().source_cp; // 0 = auto-detect
-		job.noDedup     = true; // every swallowed line must produce exactly one shown line
+		job.srcCodepage = s.source_cp; // 0 = auto-detect
+		job.noDedup     = true;        // every shown line gets its own flip
 		i18n::engine::submit( job );
 	} catch ( ... ) {
-		if ( g_origAddEntry )
-			g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
+		if ( !shown && g_origAddEntry ) g_origAddEntry( self, type, msg, prefix, textColor, prefixColor );
 	}
 }
 

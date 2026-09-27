@@ -145,6 +145,9 @@
     <ClCompile Include="src\i18n\names.cpp">
       <ObjectFileName>$(IntDir)i18n_names.obj</ObjectFileName>
     </ClCompile>
+    <ClCompile Include="src\i18n\chatbuf.cpp">
+      <ObjectFileName>$(IntDir)i18n_chatbuf.obj</ObjectFileName>
+    </ClCompile>
     <!-- gta-reversed bridge: the ONE TU that sees gta-reversed's headers. Compiled
          exactly like upstream compiled gta_reversed.lib (language mode, defines,
          include roots, charset/conformance flags; all from gta_deps.props). -->

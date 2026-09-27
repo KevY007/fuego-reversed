@@ -27,12 +27,15 @@ namespace i18n::cache {
 
     /// One-time move of the TM from an old file name to a new one, leaving one file
     /// and no leftovers. Call before load(newPath). An old file WITH the v2 header
-    /// holds good entries: it is renamed to newPath (only if newPath doesn't exist
-    /// yet). An old file WITHOUT it (master's -- its entries were damaged by the old
-    /// cap bug), or one left behind when newPath already exists, is deleted; so is
-    /// "<oldPath>.v1.bak" (only ever held those damaged entries). No-op when there is
-    /// nothing old. Returns what it did, for the caller to log.
-    struct Migration { bool moved = false; bool removedOld = false; bool removedBak = false; };
+    /// holds good entries: it is renamed to newPath, or -- when newPath already exists
+    /// (e.g. an earlier rename failed and load() then started a fresh file) -- MERGED
+    /// into it (the new file's entry wins on a clash) and deleted only after the
+    /// merged file is safely in place. An old file WITHOUT the header (master's --
+    /// its entries were damaged by the old cap bug) is deleted; so is
+    /// "<oldPath>.v1.bak" (only ever held those damaged entries). If a rename or
+    /// merge fails, the old file stays and the next start tries again. No-op when
+    /// there is nothing old. Returns what it did, for the caller to log.
+    struct Migration { bool moved = false; bool merged = false; bool removedOld = false; bool removedBak = false; };
     Migration migrate_legacy(const char* oldPath, const char* newPath);
 
     /// Clear in-memory map (test-only)

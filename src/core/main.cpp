@@ -86,12 +86,14 @@ void bring_up_subsystems() {
 	// translation-memory cache, wire the chat seam ONCE (race-free, before
 	// render::install()), then start the worker engine iff translation is on.
 	// The translation memory is ONE file next to fuego_reversed.cfg/.log. The first
-	// start after the rename moves a good old fuego_i18n_tm.txt over (or removes a
-	// damaged pre-v2 one and its .v1.bak), so no old file is left behind.
+	// start after the rename moves (or merges) a good old fuego_i18n_tm.txt over, or
+	// removes a damaged pre-v2 one and its .v1.bak, so no old file is left behind.
 	{
 		const i18n::cache::Migration m = i18n::cache::migrate_legacy( "fuego_i18n_tm.txt", "fuego_reversed_memory.txt" );
 		if ( m.moved )
 			Log( "[i18n] translation memory moved: fuego_i18n_tm.txt -> fuego_reversed_memory.txt." );
+		if ( m.merged )
+			Log( "[i18n] translation memory: merged the old fuego_i18n_tm.txt into fuego_reversed_memory.txt." );
 		if ( m.removedOld || m.removedBak )
 			Log( "[i18n] removed the old translation-memory file(s) from an earlier version "
 			     "(translations are re-learned automatically)." );

@@ -3,6 +3,7 @@
 #include <mutex>
 #include <fstream>
 #include <sstream>
+#include <iterator>
 #include <cstdlib>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -202,6 +203,25 @@ namespace i18n::cache {
         g_save_path = path;
     }
 
+    // True if the file's first line is the v2 header.
+    static bool has_v2_header(const char* path) {
+        std::ifstream ifs(path);
+        std::string line;
+        if (!std::getline(ifs, line)) return false;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        return line == TM_HEADER;
+    }
+
+    // Everything after the header line, ending in a newline ("" if unreadable/empty).
+    static std::string entries_of(const char* path) {
+        std::ifstream ifs(path, std::ios::binary);
+        std::string all((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        const size_t nl = all.find('\n');
+        std::string body = (nl == std::string::npos) ? std::string() : all.substr(nl + 1);
+        if (!body.empty() && body.back() != '\n') body += '\n';
+        return body;
+    }
+
     Migration migrate_legacy(const char* oldPath, const char* newPath) {
         std::lock_guard<std::mutex> lock(g_mutex);
         Migration m;
@@ -210,20 +230,40 @@ namespace i18n::cache {
             m.removedBak = DeleteFileA(bak.c_str()) != 0;
         if (GetFileAttributesA(oldPath) == INVALID_FILE_ATTRIBUTES) return m;
 
-        bool v2 = false;
+        if (!has_v2_header(oldPath)) { // pre-v2: entries damaged by the old cap bug
+            m.removedOld = DeleteFileA(oldPath) != 0;
+            return m;
+        }
+        if (GetFileAttributesA(newPath) == INVALID_FILE_ATTRIBUTES) {
+            // On failure both files stay as they are; the next start merges them.
+            m.moved = MoveFileExA(oldPath, newPath, 0) != 0; // no REPLACE: newPath is free
+            return m;
+        }
+        // Both exist -- e.g. an earlier rename failed and load() then started a fresh
+        // new file. Never choose one and lose the other: merge. Old entries first,
+        // then the new file's, so on a clash the NEW entry wins (load() keeps the last
+        // line per key). Written to a temp file and swapped in; the old file is
+        // deleted only after that swap succeeded.
+        if (!has_v2_header(newPath)) return m; // not a v2 TM: leave both; load() handles newPath
+        const std::string merged = std::string(TM_HEADER) + "\n" + entries_of(oldPath) + entries_of(newPath);
+        const std::string tmp = std::string(newPath) + ".tmp";
         {
-            std::ifstream ifs(oldPath);
-            std::string line;
-            if (std::getline(ifs, line)) {
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                v2 = (line == TM_HEADER);
+            std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+            if (!ofs.is_open()) return m;
+            ofs << merged;
+            ofs.flush();
+            if (!ofs.good()) {
+                ofs.close();
+                DeleteFileA(tmp.c_str());
+                return m;
             }
         }
-        const bool newExists = GetFileAttributesA(newPath) != INVALID_FILE_ATTRIBUTES;
-        if (v2 && !newExists)
-            m.moved = MoveFileExA(oldPath, newPath, 0) != 0; // no REPLACE: newPath is free
-        else
-            m.removedOld = DeleteFileA(oldPath) != 0;
+        if (!MoveFileExA(tmp.c_str(), newPath, MOVEFILE_REPLACE_EXISTING)) {
+            DeleteFileA(tmp.c_str());
+            return m;
+        }
+        m.merged = true;
+        DeleteFileA(oldPath);
         return m;
     }
 

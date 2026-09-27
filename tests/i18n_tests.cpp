@@ -154,13 +154,30 @@ void test_cache() {
     CHECK(m2.removedOld && m2.removedBak && !m2.moved, "migrate: a pre-v2 old TM and its .v1.bak are removed");
     CHECK(!exists(OLDP) && !exists(OLDBAK.c_str()) && !exists(NEWP), "migrate: nothing old is left, nothing new is made");
 
-    // The new file already exists: it is never touched; the old one is removed.
+    // Both exist (e.g. an earlier move failed and load() then created a fresh new
+    // file): the old v2 entries are MERGED in, never lost; the new file's entries win
+    // on a clash; the old file is removed only after the merge is safely written.
     reset_mig();
-    write_raw(NEWP, "#fuego-tm 2\n789\tkept\n");
-    write_raw(OLDP, good);
+    write_raw(NEWP, "#fuego-tm 2\n789\tkept\n123\tnewer\n");
+    write_raw(OLDP, "#fuego-tm 2\n123\thello\n456\tworld\n");
     Migration m3 = migrate_legacy(OLDP, NEWP);
-    CHECK(m3.removedOld && !m3.moved && slurp(NEWP) == "#fuego-tm 2\n789\tkept\n",
-          "migrate: an existing new TM wins; the old file is removed");
+    CHECK(m3.merged && !m3.moved && !exists(OLDP), "migrate: an old v2 TM is merged into an existing new one");
+    clear_for_test();
+    load(NEWP);
+    std::string v;
+    CHECK(get(456, v) && v == "world", "migrate: an old-only entry survives the merge");
+    CHECK(get(789, v) && v == "kept", "migrate: a new-only entry survives the merge");
+    CHECK(get(123, v) && v == "newer", "migrate: on a clash the NEW file's entry wins");
+
+    // The failed-move scenario end to end: the new file holds only the header.
+    reset_mig();
+    write_raw(NEWP, "#fuego-tm 2\n");
+    write_raw(OLDP, good);
+    Migration m4 = migrate_legacy(OLDP, NEWP);
+    clear_for_test();
+    load(NEWP);
+    CHECK(m4.merged && get(123, v) && v == "hello", "migrate: a header-only new file never costs the old entries");
+    clear_for_test();
     reset_mig();
 }
 
@@ -178,7 +195,7 @@ void test_detect() {
     // Short English UI labels (buttons, titles, list cells) have no stopwords, so the
     // stopword test misses them; the UI-word list catches them (target English only).
     CHECK(is_english_ui_text(L"Select"), "ui: Select");
-    CHECK(is_english_ui_text(L"Log in"), "ui: Log in");
+    CHECK(is_english_ui_text(L"Login"), "ui: Login");
     CHECK(is_english_ui_text(L"Withdraw"), "ui: Withdraw");
     CHECK(is_english_ui_text(L"Bank of San Andreas"), "ui: Bank of San Andreas");
     CHECK(is_english_ui_text(L"Select spawn zone"), "ui: Select spawn zone");
@@ -192,6 +209,30 @@ void test_detect() {
     CHECK(!is_english_ui_text(L"Sat"), "ui: Turkish Sat (sell) is not English");
     CHECK(!is_english_ui_text(L"main theek hoon"), "ui: Roman Urdu is not English");
     CHECK(!is_english_ui_text(L"Gift"), "ui: false friends (German Gift = poison) are not on the list");
+    // False friends in languages the app supports: each means something else there,
+    // so a label or one-word chat line made of it must still be translated.
+    const wchar_t* falseFriends[] = {
+        L"Log",      // Roman Urdu/Hindi: people
+        L"Chat",     // French: cat
+        L"Or",       // French: gold
+        L"Ban",      // Indonesian: tyre
+        L"List",     // Polish: letter
+        L"An",       // Romanian: year
+        L"Gang",     // German: gear
+        L"No",       // Polish/Czech (casual): yeah
+        L"Fine",     // Italian: end
+        L"Location", // French: rental
+        L"Last",     // German: load
+        L"Ty",       // Polish/Czech: you
+        L"Store",    // French: window blind
+        L"Fee",      // German: fairy
+        L"Resume",   // French (unaccented): summary
+        L"At",       // Turkish: horse
+        L"to",       // Roman Urdu: so / then
+        L"Rent",     // Norwegian: clean
+    };
+    for (const wchar_t* w : falseFriends)
+        CHECK(!is_english_ui_text(w), "ui: a false friend is still translated");
     CHECK(!is_english_ui_text(L"\x0417\x0430\x043A\x0440\x044B\x0442\x044C"), "ui: Cyrillic is never English UI text");
     CHECK(!is_english_ui_text(L"Buy the best car in the whole city now"), "ui: long text is left to the stopword test");
     CHECK(!is_english_ui_text(L"12345"), "ui: no words -> not UI text");

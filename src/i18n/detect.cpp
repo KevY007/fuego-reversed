@@ -106,29 +106,34 @@ bool is_probably_english(const std::wstring& text) {
 namespace {
 
 // Common English interface / game words (lowercase). Deliberately LEFT OUT: words
-// that mean something else in another Latin-script language players use -- German
-// gift/art/also/fast/kind/arm/brand/boot/rat/hut/bad/hell/die/was/war/man/hat/tag/rot,
-// Spanish sale/once/pan/red/con/sin/solo/fin/real, Italian come/dove/camera, Roman
-// Urdu main/par/bas, Turkish sat/al, Russian-translit net/da -- so a foreign label
-// made only of "English-looking" words is still sent for translation.
+// that mean something else in another Latin-script language players use, so a
+// foreign label or one-word chat line made only of "English-looking" words is still
+// sent for translation --
+//   German   gift art also fast kind arm brand boot rat hut bad hell die was war man
+//            hat tag rot gang(gear) last(load) fee(fairy)
+//   French   chat(cat) or(gold) store(blind) location(rental) resume(summary)
+//   Spanish  sale once pan red con sin solo fin real    Italian come dove camera fine(end)
+//   Polish/Czech list(letter) ty(you) no(yeah)          Romanian an(year)
+//   Indonesian ban(tyre)    Turkish sat(sell) al(take) at(horse)    Norwegian rent(clean)
+//   Roman Urdu/Hindi main par bas log(people) to(so)    Russian translit net da by
 const char* const kUiWords[] = {
     // buttons / actions
-    "ok", "okay", "yes", "no", "cancel", "close", "back", "next", "previous", "prev",
+    "ok", "okay", "yes", "cancel", "close", "back", "next", "previous", "prev",
     "select", "choose", "confirm", "accept", "decline", "reject", "submit", "send",
     "continue", "done", "finish", "exit", "quit", "leave", "enter", "open", "save",
     "load", "delete", "remove", "edit", "change", "reset", "refresh", "return", "skip",
-    "retry", "login", "logout", "log", "sign", "register", "play", "spawn", "respawn",
-    "start", "stop", "pause", "resume", "join", "invite", "kick", "ban", "mute",
+    "retry", "login", "logout", "sign", "register", "play", "spawn", "respawn",
+    "start", "stop", "pause", "join", "invite", "kick", "mute",
     "unmute", "report", "help", "info", "information", "settings", "setting",
-    "options", "option", "menu", "list", "page", "more", "less", "show", "hide", "view",
+    "options", "option", "menu", "page", "more", "less", "show", "hide", "view",
     "search", "find", "go", "use", "drop", "give", "take", "get", "pick", "equip",
-    "upgrade", "repair", "refill", "lock", "unlock", "buy", "sell", "purchase", "rent",
+    "upgrade", "repair", "refill", "lock", "unlock", "buy", "sell", "purchase",
     "rental", "pay", "withdraw", "deposit", "transfer", "claim", "collect", "redeem",
     "vote", "apply", "create", "add", "set", "clear", "toggle", "enable", "disable",
     "enabled", "disabled", "on", "off",
     // money / shops / property
     "balance", "account", "money", "cash", "bank", "price", "cost", "total", "amount",
-    "fee", "tax", "taxes", "salary", "payday", "shop", "store", "market", "item", "items",
+    "tax", "taxes", "salary", "payday", "shop", "market", "item", "items",
     "inventory", "house", "houses", "home", "property", "properties", "business",
     "businesses", "apartment", "apartments", "hotel", "motel", "garage", "door", "doors",
     "key", "keys",
@@ -140,29 +145,28 @@ const char* const kUiWords[] = {
     // players / server / social
     "player", "players", "admin", "admins", "staff", "owner", "leader", "member",
     "members", "vip", "server", "rules", "rule", "commands", "command", "name",
-    "username", "password", "email", "phone", "call", "message", "messages", "chat",
-    "friend", "friends", "gang", "gangs", "faction", "factions", "family", "team",
+    "username", "password", "email", "phone", "call", "message", "messages",
+    "friend", "friends", "gangs", "faction", "factions", "family", "team",
     "teams", "clan", "clans", "rank", "ranks", "skin", "skins", "color", "colour",
     "colors", "online", "offline", "welcome", "hello", "hi", "thanks", "thank",
     "please", "sorry", "police", "cop", "cops", "medic", "mechanic", "hospital", "jail",
-    "prison", "wanted", "bail", "fine", "fines",
+    "prison", "wanted", "bail", "fines",
     // game systems / places
     "job", "jobs", "work", "level", "levels", "score", "stats", "statistics", "status",
     "skill", "skills", "experience", "exp", "xp", "respect", "points", "point", "reward",
     "rewards", "bonus", "daily", "weekly", "event", "events", "mission", "missions",
     "quest", "quests", "race", "races", "lottery", "casino", "license", "licence",
     "licenses", "driving", "flying", "fishing", "mining", "delivery", "time", "weather",
-    "hours", "minutes", "seconds", "day", "days", "gps", "map", "location",
-    "locations", "teleport", "destination", "closest", "nearest", "zone", "zones",
+    "hours", "minutes", "seconds", "day", "days", "gps", "map",
+    "teleport", "destination", "closest", "nearest", "zone", "zones",
     "area", "city", "interior", "general", "tutorial", "guide", "faq", "support",
     "discord", "forum", "website", "achievement", "achievements", "topic", "topics",
-    "system", "overview", "first", "last", "new", "old", "other", "all", "none",
+    "system", "overview", "first", "new", "old", "other", "all", "none",
     "los", "santos", "san", "fierro", "las", "venturas", "andreas",
     // glue words that only ever pass when EVERY other word is on this list too
-    "my", "your", "the", "a", "an", "of", "to", "for", "and", "or", "in", "at", "with",
-    "from", "by",
+    "my", "your", "the", "a", "of", "for", "and", "in", "with", "from",
     // universal gaming chat
-    "lol", "lmao", "rofl", "gg", "wp", "brb", "afk", "np", "ty", "thx", "xd", "omg",
+    "lol", "lmao", "rofl", "gg", "wp", "brb", "afk", "np", "thx", "xd", "omg",
     "haha", "hahaha", "hehe", "kk",
 };
 

@@ -6,6 +6,7 @@
 #include "lab.h"
 #include "names.h"
 #include "chatbuf.h"
+#include "surfaces.h"
 
 #include "../samp/samp.h"
 #include "../samp/addresses.h"
@@ -52,6 +53,8 @@ std::unordered_map<uint64_t, PendingFlip> g_pendingFlips;
 void apply_result( const i18n::engine::Result &r ) {
 	// Outbound chat (surface 1) is SENT to the server, not shown.
 	if ( r.surface == 1 ) { i18n::outbound::on_result( r ); return; }
+	// Dialog unit translations (surface 3) complete a held dialog.
+	if ( r.surface == 3 ) { i18n::surfaces::on_part_result( r ); return; }
 	// Surface 2: translation-memory fill for labels/HUD -- already cached by
 	// process_one(); nothing to show.
 	if ( r.surface != 0 ) return;
@@ -157,8 +160,10 @@ void pump_tick( IDirect3DDevice9 * ) {
 	// Runs inside hkEndScene (a D3D9 vtable hook) -- no C++ exception may escape this seam.
 	try {
 		i18n::engine::pump();
-		i18n::names::tick( GetTickCount() ); // live player names -> masked, never translated
-		i18n::lab::on_frame();               // debug lab (read-only logging)
+		const uint32_t now = GetTickCount();
+		i18n::names::tick( now );    // live player names -> masked, never translated
+		i18n::surfaces::tick( now ); // release held dialogs that are due
+		i18n::lab::on_frame();       // debug lab (read-only logging)
 	} catch ( ... ) {
 	}
 }

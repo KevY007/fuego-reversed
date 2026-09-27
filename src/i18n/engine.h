@@ -20,7 +20,7 @@ namespace i18n::engine {
 // later phases and reuse this same Job/Result shape.
 struct Job {
     uint64_t handle;
-    int surface;          // 0 = inbound chat display; 1 = outbound chat (send). See hooks::apply_result.
+    int surface;          // 0 inbound chat, 1 outbound chat, 2 TM fill, 3 dialog unit, 4 dialog response. See hooks::apply_result.
     std::string sourceBytes;
     int srcCodepage; // 0 = auto-detect via charset::guess_codepage
     // Recent chat lines (UTF-8, already labeled) to send as background context
@@ -40,6 +40,9 @@ struct Job {
     // and it must never be dropped as a duplicate of an inbound line, so these
     // jobs bypass the in-flight dedup entirely.
     bool noDedup = false;
+    // Max bytes of the finished translation. Chat's 144 by default; dialog units
+    // (a body line can be longer than one chat line) pass more.
+    int capBytes = 144;
 };
 
 struct Result {
@@ -106,7 +109,7 @@ void pump();
 bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
                   const std::string& sysPrompt, std::string& displayOut,
                   int targetLang = 1033, int displayCp = 1252,
-                  const std::string& rollingCtx = "");
+                  const std::string& rollingCtx = "", int capBytes = 144);
 
 // Short human-readable status for the menu (Task 12), e.g. "local ok" or
 // "offline - retrying". Reflects the outcome of the most recent provider

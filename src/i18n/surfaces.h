@@ -21,6 +21,7 @@
 #include <vector>
 
 struct RPCParameters;
+namespace i18n::engine { struct Result; }
 
 namespace i18n::surfaces {
 
@@ -115,9 +116,22 @@ bool rebuild_textdraw_setstring(const uint8_t* pkt, size_t n, const Translator& 
 bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
 
 // Called from the incoming RPC-dispatch chokepoint (compat::HandleRPCPacketFunc).
-// No-op unless config.translate_dialogs is on. Modifies rpc in place on a cache
-// hit; queues a fill + leaves it unchanged on a miss. Main/net thread.
-void on_incoming_rpc(unsigned char id, RPCParameters* rpc);
+// ShowDialog (translate_dialogs): fully cached + nothing held -> rewritten in
+// place and shown now (returns false). Otherwise HELD: returns true (the caller
+// must NOT pass the RPC to SA:MP); it is translated unit by unit and released
+// later through SA:MP's own Show, in arrival order with its original timing.
+// Password dialogs and close signals are never translated. Labels/HUD: TM-first
+// rewrite in place (returns false). Main thread.
+bool on_incoming_rpc(unsigned char id, RPCParameters* rpc);
+
+// A dialog unit's translation finished (engine surface 3). Main thread (pump).
+void on_part_result(const i18n::engine::Result& r);
+
+// Release held dialogs that are due (every frame, main thread).
+void tick(uint32_t nowMs);
+
+// A dialog is currently held for translation (for the on-screen indicator).
+bool holding();
 
 // Register the outbound DialogResponse (RPC 62) reverse-map handler. Call ONCE at
 // startup, BEFORE net::install() (like outbound::install). When a translated LIST

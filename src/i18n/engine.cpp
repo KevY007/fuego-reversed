@@ -112,7 +112,7 @@ void worker_loop() {
         bool ok = false;
         try {
             ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), sp, disp,
-                             tl, dcp, job.rollingCtx);
+                             tl, dcp, job.rollingCtx, job.capBytes);
         } catch (...) {
             // Realistically only std::bad_alloc anywhere in this call graph
             // (string/vector/wstring allocations along the pipeline). An
@@ -143,7 +143,7 @@ void worker_loop() {
 
 bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
                   const std::string& sysPrompt, std::string& displayOut,
-                  int targetLang, int displayCp, const std::string& rollingCtx) {
+                  int targetLang, int displayCp, const std::string& rollingCtx, int capBytes) {
     // 1-2: pick the source codepage and decode to a wide string.
     int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
     std::wstring w = charset::decode(srcBytes, cp2);
@@ -199,7 +199,7 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
 
     // 10: encode for display, cap to the chat line limit, remember it.
     displayOut = charset::cap_and_sanitize(
-        charset::encode(charset::from_utf8(un), displayCp), 144);
+        charset::encode(charset::from_utf8(un), displayCp), (size_t)(capBytes > 0 ? capBytes : 144));
     cache::put(k, displayOut);
     return true;
 }

@@ -142,10 +142,11 @@ void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback
 	// and queue the in-place re-show experiment. Never modifies the packet here.
 	i18n::lab::on_incoming_rpc( id, rpc );
 
-	// Translate incoming dialogs / 3D labels IN PLACE before the game parses them
-	// (no-op unless config.translate_dialogs is on; TM-first, so it only rewrites
-	// on a cache hit). Runs before the rewrites/reads below so they see final text.
-	i18n::surfaces::on_incoming_rpc( id, rpc );
+	// Translate incoming dialogs / 3D labels / HUD text. A ShowDialog that still needs
+	// translating is HELD (swallowed here) and released later, translated and in order,
+	// through SA:MP's own Show. Runs before the rewrites/reads below so they see the
+	// final text.
+	if ( i18n::surfaces::on_incoming_rpc( id, rpc ) ) return;
 
 	if ( rpc != nullptr && rpc->numberOfBitsOfData >= 8 ) {
 		// wrong-version reject -> tell the user to enable compat manually

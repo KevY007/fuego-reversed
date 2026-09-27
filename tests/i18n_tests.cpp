@@ -277,6 +277,7 @@ void test_config() {
     s.api_key = "test-key-123";
     s.provider_kind = 2;   // Anthropic
     s.request_min_gap_ms = 1500;
+    s.source_lang = 1049;  // Russian (source hint)
 
     // Save to temp file
     save("test_cfg.cfg");
@@ -288,6 +289,7 @@ void test_config() {
     s.api_key = "different-key";
     s.provider_kind = 0;   // Custom
     s.request_min_gap_ms = 0;
+    s.source_lang = 0;     // Auto
 
     // Load from temp file - should restore original values
     load("test_cfg.cfg");
@@ -298,9 +300,16 @@ void test_config() {
     CHECK_EQ(s.api_key, std::string("test-key-123"));
     CHECK_EQ(s.provider_kind, 2);
     CHECK_EQ(s.request_min_gap_ms, 1500);
+    CHECK_EQ(s.source_lang, 1049);
 
     // Test build_system_prompt(1033) contains "English" and "placeholder"
     std::string prompt = build_system_prompt(1033);
     CHECK(prompt.find("English") != std::string::npos, "build_system_prompt(1033) must contain 'English'");
     CHECK(prompt.find("placeholder") != std::string::npos, "build_system_prompt must mention 'placeholder'");
+
+    // Auto source (sourceLang 0): no "source is written in" hint.
+    CHECK(prompt.find("written in") == std::string::npos, "Auto source must NOT add a source hint");
+    // Explicit source language adds a hint naming that language.
+    std::string srcPrompt = build_system_prompt(1033, false, 1049); // target EN, source Russian
+    CHECK(srcPrompt.find("written in Russian") != std::string::npos, "explicit sourceLang must hint 'Russian'");
 }

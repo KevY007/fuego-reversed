@@ -86,6 +86,8 @@ void from_text(const std::string& text) {
                 g_settings.inbound_chat = (value == "true" || value == "1");
             } else if (key == "target_lang") {
                 g_settings.target_lang = std::stoi(value);
+            } else if (key == "source_lang") {
+                g_settings.source_lang = std::stoi(value);
             } else if (key == "source_cp") {
                 g_settings.source_cp = std::stoi(value);
             } else if (key == "provider_kind") {
@@ -128,6 +130,7 @@ std::string to_text() {
     std::ostringstream out;
     out << "inbound_chat=" << (g_settings.inbound_chat ? "true" : "false") << "\n";
     out << "target_lang=" << g_settings.target_lang << "\n";
+    out << "source_lang=" << g_settings.source_lang << "\n";
     out << "source_cp=" << g_settings.source_cp << "\n";
     out << "provider_kind=" << g_settings.provider_kind << "\n";
     out << "base_url=" << escape(g_settings.base_url) << "\n";
@@ -232,10 +235,20 @@ int display_codepage(int targetLang, bool roman) {
     }
 }
 
-std::string build_system_prompt(int targetLang, bool roman) {
+std::string build_system_prompt(int targetLang, bool roman, int sourceLang) {
     std::string langName = "the configured language";
     for (const auto& o : language_options()) {
         if (o.code == targetLang) { langName = o.name; break; }
+    }
+
+    // Optional source-language hint. Default (0 = Auto) adds nothing, so the model
+    // detects the source per line -- best for mixed-language servers. A specific
+    // sourceLang (and only when it differs from the target) nudges the model for
+    // servers that are reliably one language.
+    std::string srcHint;
+    if (sourceLang != 0 && sourceLang != targetLang) {
+        for (const auto& o : language_options())
+            if (o.code == sourceLang) { srcHint = "The source message is written in " + std::string(o.name) + ". "; break; }
     }
 
     // Native single-message translation instruction -- what dedicated MT models
@@ -245,6 +258,7 @@ std::string build_system_prompt(int targetLang, bool roman) {
     // a "emit a JSON array" instruction and just parrot the example.
     std::string p =
         "Translate the following SA-MP (San Andreas Multiplayer) chat message into " + langName + ". "
+        + srcHint +
         "Only output the translated text -- no explanation, no quotes, no notes. "
         "Do NOT translate, and keep EXACTLY as they are: player names and nicknames, player IDs, "
         "server commands (like /help or /car), colour codes, GTA:SA vehicle names (Infernus, Sultan, "

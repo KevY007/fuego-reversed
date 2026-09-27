@@ -7,7 +7,12 @@ namespace i18n::config {
 struct Settings {
     bool inbound_chat = false;
     int target_lang = 1033;  // LANG_ENGLISH default (see language_options())
-    int source_cp = 0;       // 0 = auto-detect
+    // Source (incoming) language. 0 = Auto: the model detects it per line, which
+    // is the right default for SA:MP (servers mix English + a local language).
+    // Set a specific LCID (from language_options()) only to HINT the model when a
+    // server is reliably one language and short/ambiguous lines get mis-detected.
+    int source_lang = 0;     // 0 = Auto (detect)
+    int source_cp = 0;       // 0 = auto-detect (byte codepage, not language)
     // Provider preset the endpoint is configured for. Selecting one in the menu
     // overwrites base_url (+ a default model) and drives per-provider request
     // quirks in provider.cpp (see provider_presets() / ProviderConfig::providerKind):
@@ -110,6 +115,8 @@ int display_codepage(int targetLang, bool roman);
 // The cacheable system prompt: target language + the do-not-translate rules
 // (names, IDs, commands, vehicle names, place names, placeholders) + the
 // rolling-context note, and -- when roman is true -- the romanization rule.
-std::string build_system_prompt(int targetLang, bool roman = false);
+// sourceLang: 0 = Auto (the model detects the source language -- the default and
+// best for mixed-language servers); a non-zero LCID adds a "source is <lang>" hint.
+std::string build_system_prompt(int targetLang, bool roman = false, int sourceLang = 0);
 
 }

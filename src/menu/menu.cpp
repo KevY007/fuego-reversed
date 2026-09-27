@@ -92,7 +92,7 @@ void run_selftest_async() {
 	pc.providerKind = s.provider_kind; // apply this provider's request quirks in the self-test too
 	pc.readMs  = s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000;
 	pc.temperature = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0;
-	std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output );
+	std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output, s.source_lang );
 
 	std::thread( [pc, prompt]() {
 		auto prov = i18n::make_openai_compatible( pc );
@@ -429,6 +429,30 @@ void draw_ui() {
 			ImGui::TextDisabled( "  Anthropic (Claude Haiku) and OpenAI (gpt-4o-mini) are cheap and excellent." );
 
 			ImGui::Separator();
+
+			// Source language dropdown: "Auto (detect)" (default) + the same list.
+			// Auto = the model detects the incoming language per line (best for
+			// mixed-language servers); a specific pick just hints the model.
+			{
+				const auto &langs = i18n::config::language_options();
+				const char* preview = "Auto (detect)";
+				if ( s.source_lang != 0 )
+					for ( const auto &l : langs ) if ( l.code == s.source_lang ) { preview = l.name; break; }
+				if ( ImGui::BeginCombo( "Source language", preview ) ) {
+					if ( ImGui::Selectable( "Auto (detect)", s.source_lang == 0 ) ) s.source_lang = 0;
+					if ( s.source_lang == 0 ) ImGui::SetItemDefaultFocus();
+					for ( const auto &l : langs ) {
+						bool sel = ( l.code == s.source_lang );
+						if ( ImGui::Selectable( l.name, sel ) ) s.source_lang = l.code;
+						if ( sel ) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+				ImGui::SameLine();
+				HelpMarker( "Language of INCOMING server text. Leave on Auto -- the model detects it per "
+				            "line, which handles servers that mix English with a local language. Pick a "
+				            "specific language only to hint the model on a reliably single-language server." );
+			}
 
 			// Target language dropdown (names, not raw LCID numbers).
 			{

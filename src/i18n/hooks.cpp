@@ -214,7 +214,7 @@ void apply_config() {
 
 	int dispCp = i18n::config::display_codepage( s.target_lang, s.roman_output );
 	i18n::engine::start( pc,
-	                     i18n::config::build_system_prompt( s.target_lang, s.roman_output ),
+	                     i18n::config::build_system_prompt( s.target_lang, s.roman_output, s.source_lang ),
 	                     s.target_lang, dispCp );
 	Log( "[i18n] engine running (inbound=%d target=%d roman=%d cp=%d | outbound=%d server=%d | model=%s).",
 	     (int)s.inbound_chat, s.target_lang, (int)s.roman_output, dispCp,

@@ -114,6 +114,10 @@ void from_text(const std::string& text) {
                 g_settings.outbound_target_lang = std::stoi(value);
             } else if (key == "debug_capture") {
                 g_settings.debug_capture = (value == "true" || value == "1");
+            } else if (key == "debug_lab") {
+                g_settings.debug_lab = (value == "true" || value == "1");
+            } else if (key == "debug_lab_replace") {
+                g_settings.debug_lab_replace = (value == "true" || value == "1");
             } else if (key == "translate_dialogs") {
                 g_settings.translate_dialogs = (value == "true" || value == "1");
             } else if (key == "translate_hud") {
@@ -144,6 +148,8 @@ std::string to_text() {
     out << "outbound_enabled=" << (g_settings.outbound_enabled ? "true" : "false") << "\n";
     out << "outbound_target_lang=" << g_settings.outbound_target_lang << "\n";
     out << "debug_capture=" << (g_settings.debug_capture ? "true" : "false") << "\n";
+    out << "debug_lab=" << (g_settings.debug_lab ? "true" : "false") << "\n";
+    out << "debug_lab_replace=" << (g_settings.debug_lab_replace ? "true" : "false") << "\n";
     out << "translate_dialogs=" << (g_settings.translate_dialogs ? "true" : "false") << "\n";
     out << "translate_hud=" << (g_settings.translate_hud ? "true" : "false") << "\n";
     return out.str();

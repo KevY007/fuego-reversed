@@ -15,6 +15,7 @@
 #include "../cheats/server.h"
 #include "../i18n/capture.h"   // debug: log incoming dialog/label/textdraw/gametext RPCs
 #include "../i18n/surfaces.h"  // translate incoming dialogs / 3D labels in place
+#include "../i18n/lab.h"       // debug lab: verify in-place chat/dialog replacement
 #include "../hook/CDetour.h"
 
 #include <windows.h>
@@ -136,6 +137,10 @@ void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback
 	// Read-only capture for building the dialog/label/textdraw/gametext surfaces
 	// (no-op unless config.debug_capture is on; never modifies the packet).
 	i18n::capture::on_incoming_rpc( id, rpc );
+
+	// Debug lab (read-only unless debug_lab_replace): decode + log ShowDialog(61)
+	// and queue the in-place re-show experiment. Never modifies the packet here.
+	i18n::lab::on_incoming_rpc( id, rpc );
 
 	// Translate incoming dialogs / 3D labels IN PLACE before the game parses them
 	// (no-op unless config.translate_dialogs is on; TM-first, so it only rewrites

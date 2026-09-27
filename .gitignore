@@ -61,3 +61,4 @@ tests/*.obj
 test_cfg.cfg
 test_tm.txt
 engine_test_tm.txt
+/samp.dll

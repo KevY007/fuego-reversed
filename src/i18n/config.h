@@ -84,8 +84,9 @@ struct Settings {
     // Translate incoming DIALOGS + 3D text labels (RPC 61/36 -- Huffman CSTRING
     // bodies). A dialog not fully in the translation memory is HELD until it is
     // translated, then shown in arrival order with the server's original timing
-    // (after 10 s untranslated: shown in the original); password dialogs are never
-    // translated. 3D labels stay translation-memory-first: first sight shows the
+    // (after 10 s untranslated: shown in the original); a password dialog's text is
+    // translated too, but the password the player types is never touched. 3D labels
+    // stay translation-memory-first: first sight shows the
     // original + fills the cache, the next identical label shows translated.
     // Default OFF.
     bool translate_dialogs = false;

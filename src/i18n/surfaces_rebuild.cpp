@@ -325,7 +325,7 @@ bool should_translate_input(const std::string& text) {
 }
 
 bool never_translated(const DialogPlan& d) {
-    return d.style == 3 || (int16_t)d.id < 0;
+    return (int16_t)d.id < 0;
 }
 
 bool rebuild_gametext(const uint8_t* p, size_t n, const Translator& tr, std::vector<uint8_t>& out) {

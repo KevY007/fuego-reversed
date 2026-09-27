@@ -130,7 +130,7 @@ std::unordered_map<uint16_t, ShownRows> g_shownRows;
 // same id (a different dialog reusing the id, translate_dialogs toggled off, a
 // queue-full flush, ...) can never leave behind rows that get remapped against the
 // WRONG dialog. Call this at EVERY show point, with shown == nullptr meaning "id X
-// was just shown untranslated" (native, passthru/password/close, or no cache hit).
+// was just shown untranslated" (native, a close signal, or no cache hit).
 void note_shown(const std::vector<uint8_t>& original, const std::vector<uint8_t>* shown) {
     DialogPlan o;
     if (!plan_dialog(original.data(), original.size(), o)) return; // can't even get the id -> nothing to do
@@ -185,7 +185,7 @@ constexpr int kDialogUnitCap = 1024;
 bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
     DialogPlan d;
     if (!plan_dialog(p, n, d) || !d.haveBody) return false;   // can't release it ourselves -> native
-    const bool passthru = never_translated(d);                 // CLOSE / PASSWORD: never translated
+    const bool passthru = never_translated(d);                 // CLOSE signal: never translated
     auto& s = i18n::config::get();
 
     // Translation-memory pass: fill every unit we already have.
@@ -225,7 +225,7 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
             commit(rpc, pkt);
             note_shown(original, &pkt);
         } else {
-            note_shown(original, nullptr); // untranslated (incl. passthru password/close): erase any stale entry
+            note_shown(original, nullptr); // untranslated (incl. a passthru close signal): erase any stale entry
         }
         return false;
     }
@@ -253,7 +253,7 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         // One engine job per DISTINCT missing core: a repeated label ("Buy" on every
         // row) is translated once and fills every unit that has it.
         const std::vector<std::vector<size_t>> jobs = group_by_core(d, missing);
-        if (jobs.empty()) { // ready now (cached / close / password) -- waits for its turn
+        if (jobs.empty()) { // ready now (cached / close signal) -- waits for its turn
             g_dlgq.resolve(seq, anyTranslated ? assemble_dialog(d, fit_list_budgets(d, cores)) : std::vector<uint8_t>{});
             return true;
         }

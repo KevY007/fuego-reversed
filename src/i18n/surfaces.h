@@ -8,8 +8,9 @@
 //    and shown now. Otherwise the ShowDialog is HELD (swallowed), its missing
 //    units are translated, and it is released through SA:MP's own Show strictly
 //    in arrival order, with the original gap between dialogs -- or as the original
-//    if it isn't translated within 10 s. Password dialogs and close signals are
-//    never translated. A picked list row is sent back as the ORIGINAL row's text.
+//    if it isn't translated within 10 s. Close signals are never translated; a
+//    password dialog's text is, but the password the player types never is. A
+//    picked list row is sent back as the ORIGINAL row's text.
 //  * 3D LABELS / HUD: translation-memory-first -- a cache hit is rewritten in
 //    place; a miss passes the ORIGINAL through and queues a background fill, so
 //    the next identical label/textdraw shows translated.
@@ -148,8 +149,11 @@ void on_response_result(const i18n::engine::Result& r);
 // queued job), so a swallowed reply can never be lost. Main thread.
 void flush_responses();
 
-// A dialog that must never be translated or held: a PASSWORD dialog (style 3) or
-// the server's CLOSE signal (dialog id < 0 as int16, i.e. 0x8000..0xFFFF).
+// The server's CLOSE signal (dialog id < 0 as int16, i.e. 0x8000..0xFFFF): never
+// translated, but it keeps its place in the release order. A PASSWORD dialog
+// (style 3) is NOT in this set: its title/body/buttons are translated like any
+// dialog's; only the password the player types is never touched (the RPC 62 path
+// returns before reading a style-3 reply).
 bool never_translated(const DialogPlan& d);
 
 // Rebuild a ShowDialog (RPC 61) packet translating it UNIT BY UNIT (plan_dialog):
@@ -184,8 +188,9 @@ bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, s
 // must NOT pass the RPC to SA:MP); it is translated unit by unit and released
 // later through SA:MP's own Show, in arrival order with its original timing.
 // Without a running pump (hooks::pump_ready()) nothing is ever held: SA:MP shows
-// the original (or the in-place rewrite when fully cached). Password dialogs and
-// close signals are never translated. Labels/HUD: TM-first rewrite in place
+// the original (or the in-place rewrite when fully cached). Close signals are
+// never translated (a password dialog's text is; the typed password never is).
+// Labels/HUD: TM-first rewrite in place
 // (returns false). InitGame (RPC 139, a new session): first discards everything
 // the old session left held or pending -- held dialogs, INPUT replies, outgoing
 // chat, list row tables -- without showing or sending any of it (returns false).

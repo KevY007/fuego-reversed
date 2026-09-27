@@ -325,8 +325,8 @@ void draw_ui() {
 			            "then appears translated -- in the order the server sent them and with the server's "
 			            "original timing between them. If translating takes longer than 10 s, it appears in "
 			            "the original instead. Dialogs seen before appear translated at once. Password "
-			            "dialogs are never translated. 3D labels show in the original the first time and "
-			            "translated from the next time on." );
+			            "dialogs are translated too -- the password you type is never touched. 3D labels "
+			            "show in the original the first time and translated from the next time on." );
 			if ( ImGui::Checkbox( "Translate HUD (textdraws, gametext, chat bubbles)", &s.translate_hud ) )
 				i18n::hooks::apply_config();
 			ImGui::SameLine();
@@ -503,7 +503,7 @@ void draw_ui() {
 				i18n::hooks::apply_config(); // apply live
 			ImGui::SameLine();
 			HelpMarker( "Your typed chat AND your text in input dialogs are translated into the server's "
-			            "language before sending. Password dialogs are never touched; picking a row in a "
+			            "language before sending. Passwords you type are never touched; picking a row in a "
 			            "translated list always sends the server's original row. Commands (/...) and "
 			            "numbers are never translated. If translation fails, your original text is sent." );
 			{

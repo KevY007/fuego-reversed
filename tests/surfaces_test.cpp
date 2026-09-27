@@ -223,12 +223,14 @@ int main() {
               "rebuilt packet re-parses to the same unit count");
     }
 
-    // ---- never translated: PASSWORD dialogs and CLOSE signals ----
+    // ---- never translated: only CLOSE signals. A PASSWORD dialog's TEXT (title,
+    // body, buttons) is translated like any other; only the typed reply is never
+    // touched (on_send_dialogresponse returns early for style 3). ----
     {
         std::vector<uint8_t> login = hex(kDialogLogin);   // style 3 = password
         DialogPlan pw;
         plan_dialog(login.data(), login.size(), pw);
-        check(never_translated(pw), "password dialog is never translated");
+        check(pw.style == 3 && !never_translated(pw), "a password dialog's text is translated");
         std::vector<uint8_t> help = hex(kDlgHelpTopics);
         DialogPlan normal;
         plan_dialog(help.data(), help.size(), normal);

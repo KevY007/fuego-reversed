@@ -59,7 +59,7 @@ void queue_fill(const std::string& src) {
 //   chat bubble <= 144
 // (Capping these to chat's 144 cut long translated labels/textdraws, e.g. a
 // two-line ATM prompt; a flat 400/800 overshot the real limits.)
-bool has_key_code(const std::string& s) { return s.find("~k") != std::string::npos || s.find("~K") != std::string::npos; }
+bool has_key_code(const std::string& s) { return s.find("~k~") != std::string::npos || s.find("~K~") != std::string::npos; }
 int limit_label(const std::string& src)    { return has_key_code(src) ? 399 : 1024; }
 int limit_textdraw(const std::string& src) { return has_key_code(src) ? 255 : 799; }
 int limit_gametext(const std::string&)     { return 200; }

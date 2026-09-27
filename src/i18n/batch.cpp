@@ -39,11 +39,16 @@ bool parse_line(const std::string& line, size_t& num, std::string& text) {
 
 } // namespace
 
+// "[n] " markers: in live tests against the local Hy-MT2-7B (the default model) a
+// "1. " list sometimes came back as bare lines, while "[1] " kept its numbering
+// every time (18/18 over 9 real menus: Russian, Spanish, Portuguese, Turkish,
+// Roman Urdu); brackets also can't be mistaken for item text like "1) option".
 std::string numbered_block(const std::vector<std::string>& items) {
     std::string s;
     for (size_t i = 0; i < items.size(); ++i) {
+        s += '[';
         s += std::to_string(i + 1);
-        s += ". ";
+        s += "] ";
         s += items[i];
         s += '\n';
     }
@@ -55,7 +60,7 @@ std::string batch_instruction(size_t n) {
     return "The text below is a numbered list of " + count +
            " separate lines from one SA-MP game menu or dialog (a title, buttons, list rows or table "
            "cells). Translate each line on its own and reply with exactly " + count +
-           " lines in the same order, each starting with its number and a period, like the input. "
+           " lines in the same order, each starting with its number in square brackets, like the input. "
            "Never merge, split, drop, reorder or add lines.";
 }
 

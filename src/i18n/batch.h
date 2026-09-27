@@ -14,7 +14,7 @@
 
 namespace i18n::batch {
 
-// "1. first\n2. second\n..." -- the list the model is asked to translate.
+// "[1] first\n[2] second\n..." -- the list the model is asked to translate.
 std::string numbered_block(const std::vector<std::string>& items);
 
 // The instruction added after the normal translation prompt for an n-item list.

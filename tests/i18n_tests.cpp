@@ -428,9 +428,12 @@ void test_join_url() {
 void test_batch() {
     using namespace i18n::batch;
     CHECK_EQ(numbered_block({ "Withdraw", "Deposit", "Balance" }),
-             std::string("1. Withdraw\n2. Deposit\n3. Balance\n"));
+             std::string("[1] Withdraw\n[2] Deposit\n[3] Balance\n"));
 
     std::vector<std::string> out;
+    // What the model sends back in the requested format parses.
+    CHECK(parse_numbered("[1] Retirar\n[2] Depositar\n[3] Saldo", 3, out) && out.size() == 3 &&
+          out[0] == "Retirar" && out[2] == "Saldo", "batch: the [n] reply format parses");
     // The exact layout comes back: each item on its own line, in order.
     CHECK(parse_numbered("1. Retirar\n2. Depositar\n3. Saldo", 3, out) && out.size() == 3 &&
           out[0] == "Retirar" && out[1] == "Depositar" && out[2] == "Saldo", "batch: exact layout parses");

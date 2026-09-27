@@ -25,6 +25,16 @@ namespace i18n::cache {
     /// Set the path for put() to append to
     void save_path(const char* path);
 
+    /// One-time move of the TM from an old file name to a new one, leaving one file
+    /// and no leftovers. Call before load(newPath). An old file WITH the v2 header
+    /// holds good entries: it is renamed to newPath (only if newPath doesn't exist
+    /// yet). An old file WITHOUT it (master's -- its entries were damaged by the old
+    /// cap bug), or one left behind when newPath already exists, is deleted; so is
+    /// "<oldPath>.v1.bak" (only ever held those damaged entries). No-op when there is
+    /// nothing old. Returns what it did, for the caller to log.
+    struct Migration { bool moved = false; bool removedOld = false; bool removedBak = false; };
+    Migration migrate_legacy(const char* oldPath, const char* newPath);
+
     /// Clear in-memory map (test-only)
     void clear_for_test();
 }

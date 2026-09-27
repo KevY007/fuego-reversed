@@ -47,12 +47,16 @@ Desktop.ini
 #  fuego_reversed.cfg is the UNIFIED config (cheats + /compat + translator). It
 #  can contain a plaintext api_key (BYOK), so it must never be committed.
 #  fuego_i18n.cfg is the legacy standalone translator config (still used by
-#  tests / any standalone save). fuego_i18n_tm.txt is the on-disk
-#  translation-memory cache written at runtime.
+#  tests / any standalone save). fuego_reversed_memory.txt is the on-disk
+#  translation memory written at runtime (fuego_i18n_tm.txt is its old name,
+#  migrated away on first start).
 /fuego_reversed.cfg
 /fuego_reversed.log
+/fuego_reversed_memory.txt
+/fuego_reversed_memory.txt.v1.bak
 /fuego_i18n.cfg
 /fuego_i18n_tm.txt
+/fuego_i18n_tm.txt.v1.bak
 
 # ---- i18n host test artifacts (written into the repo by tests/run_tests.cmd,
 #      not build output) ----
@@ -63,5 +67,8 @@ test_tm.txt
 test_tm_v1.txt
 test_tm_v1.txt.v1.bak
 test_tm_v2.txt
+test_mig_old.txt
+test_mig_old.txt.v1.bak
+test_mig_new.txt
 engine_test_tm.txt
 /samp.dll

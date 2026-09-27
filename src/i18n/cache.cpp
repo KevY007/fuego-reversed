@@ -11,7 +11,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h> // MoveFileExA (the one-time TM reset's rename-over-an-old-backup)
+#include <windows.h> // MoveFileExA / DeleteFileA / GetFileAttributesA (TM reset + file-name migration)
 
 namespace i18n::cache {
     // FNV-1a parameters
@@ -26,7 +26,7 @@ namespace i18n::cache {
     // Global cache state (protected by mutex)
     static std::unordered_map<uint64_t, std::string> g_map;
     static std::mutex g_mutex;
-    static std::string g_save_path = "fuego_i18n_tm.txt";
+    static std::string g_save_path = "fuego_reversed_memory.txt";
 
     /// FNV-1a hash for a single buffer
     static uint64_t fnv1a(const uint8_t* data, size_t len) {
@@ -200,6 +200,31 @@ namespace i18n::cache {
     void save_path(const char* path) {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_save_path = path;
+    }
+
+    Migration migrate_legacy(const char* oldPath, const char* newPath) {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        Migration m;
+        const std::string bak = std::string(oldPath) + ".v1.bak";
+        if (GetFileAttributesA(bak.c_str()) != INVALID_FILE_ATTRIBUTES)
+            m.removedBak = DeleteFileA(bak.c_str()) != 0;
+        if (GetFileAttributesA(oldPath) == INVALID_FILE_ATTRIBUTES) return m;
+
+        bool v2 = false;
+        {
+            std::ifstream ifs(oldPath);
+            std::string line;
+            if (std::getline(ifs, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                v2 = (line == TM_HEADER);
+            }
+        }
+        const bool newExists = GetFileAttributesA(newPath) != INVALID_FILE_ATTRIBUTES;
+        if (v2 && !newExists)
+            m.moved = MoveFileExA(oldPath, newPath, 0) != 0; // no REPLACE: newPath is free
+        else
+            m.removedOld = DeleteFileA(oldPath) != 0;
+        return m;
     }
 
     void clear_for_test() {

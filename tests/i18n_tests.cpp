@@ -126,6 +126,42 @@ void test_cache() {
     std::remove("test_tm_v1.txt");
     std::remove("test_tm_v1.txt.v1.bak");
     std::remove("test_tm_v2.txt");
+
+    // ---- migrate_legacy: the TM file was renamed (fuego_i18n_tm.txt ->
+    // fuego_reversed_memory.txt). One file, no leftovers. ----
+    const char* OLDP = "test_mig_old.txt";
+    const char* NEWP = "test_mig_new.txt";
+    const std::string OLDBAK = std::string(OLDP) + ".v1.bak";
+    auto reset_mig = [&] { std::remove(OLDP); std::remove(NEWP); std::remove(OLDBAK.c_str()); };
+
+    // Nothing there: nothing happens.
+    reset_mig();
+    Migration m0 = migrate_legacy(OLDP, NEWP);
+    CHECK(!m0.moved && !m0.removedOld && !m0.removedBak && !exists(NEWP), "migrate: no old files -> no-op");
+
+    // A v2 old file holds GOOD entries: it is moved to the new name, byte for byte.
+    reset_mig();
+    const std::string good = "#fuego-tm 2\n123\thello\n";
+    write_raw(OLDP, good);
+    Migration m1 = migrate_legacy(OLDP, NEWP);
+    CHECK(m1.moved && !exists(OLDP) && slurp(NEWP) == good, "migrate: a v2 old TM is moved to the new name");
+
+    // A pre-v2 old file (master's, damaged) and its .v1.bak are deleted, not moved.
+    reset_mig();
+    write_raw(OLDP, "123\thello\n");
+    write_raw(OLDBAK.c_str(), "456\tworld\n");
+    Migration m2 = migrate_legacy(OLDP, NEWP);
+    CHECK(m2.removedOld && m2.removedBak && !m2.moved, "migrate: a pre-v2 old TM and its .v1.bak are removed");
+    CHECK(!exists(OLDP) && !exists(OLDBAK.c_str()) && !exists(NEWP), "migrate: nothing old is left, nothing new is made");
+
+    // The new file already exists: it is never touched; the old one is removed.
+    reset_mig();
+    write_raw(NEWP, "#fuego-tm 2\n789\tkept\n");
+    write_raw(OLDP, good);
+    Migration m3 = migrate_legacy(OLDP, NEWP);
+    CHECK(m3.removedOld && !m3.moved && slurp(NEWP) == "#fuego-tm 2\n789\tkept\n",
+          "migrate: an existing new TM wins; the old file is removed");
+    reset_mig();
 }
 
 #include "i18n/detect.h"

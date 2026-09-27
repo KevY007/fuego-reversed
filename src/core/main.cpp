@@ -85,7 +85,19 @@ void bring_up_subsystems() {
 	// below) -- one config file, one Save button. Here we just load the on-disk
 	// translation-memory cache, wire the chat seam ONCE (race-free, before
 	// render::install()), then start the worker engine iff translation is on.
-	i18n::cache::load( "fuego_i18n_tm.txt" );
+	// The translation memory is ONE file next to fuego_reversed.cfg/.log. The first
+	// start after the rename moves a good old fuego_i18n_tm.txt over (or removes a
+	// damaged pre-v2 one and its .v1.bak), so no old file is left behind.
+	{
+		const i18n::cache::Migration m = i18n::cache::migrate_legacy( "fuego_i18n_tm.txt", "fuego_reversed_memory.txt" );
+		if ( m.moved )
+			Log( "[i18n] translation memory moved: fuego_i18n_tm.txt -> fuego_reversed_memory.txt." );
+		if ( m.removedOld || m.removedBak )
+			Log( "[i18n] removed the old translation-memory file(s) from an earlier version "
+			     "(translations are re-learned automatically)." );
+	}
+	i18n::cache::save_path( "fuego_reversed_memory.txt" );
+	i18n::cache::load( "fuego_reversed_memory.txt" );
 	i18n::hooks::install();
 	i18n::outbound::install(); // register the outgoing-chat seam BEFORE net::install() below
 	i18n::surfaces::install(); // register the DialogResponse handler (list remap + input translation; same, pre net::install)

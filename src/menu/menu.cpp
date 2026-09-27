@@ -518,10 +518,11 @@ void draw_ui() {
 				ImGui::SameLine();
 				if ( ImGui::Checkbox( "Alt", &a ) ) s.hotkey_mods ^= 4;
 				ImGui::SameLine();
+				// Only keys SA:MP itself leaves free (it takes F4, F5, F6, F9 and PageUp/
+				// PageDown, besides F1/F7/F8/F12 and this menu's F2).
 				static const struct { int vk; const char *name; } kKeys[] = {
-					{ 0, "(no key)" }, { VK_F3, "F3" }, { VK_F4, "F4" }, { VK_F5, "F5" }, { VK_F6, "F6" },
-					{ VK_F9, "F9" }, { VK_F11, "F11" }, { VK_HOME, "Home" }, { VK_END, "End" },
-					{ VK_PRIOR, "PageUp" }, { VK_NEXT, "PageDown" }, { VK_PAUSE, "Pause" } };
+					{ 0, "(no key)" }, { VK_F3, "F3" }, { VK_F11, "F11" }, { VK_HOME, "Home" },
+					{ VK_END, "End" }, { VK_INSERT, "Insert" }, { VK_PAUSE, "Pause" } };
 				const char *cur = "(custom)";
 				for ( const auto &k : kKeys )
 					if ( k.vk == s.hotkey_vk ) cur = k.name;
@@ -533,8 +534,8 @@ void draw_ui() {
 				}
 				ImGui::SameLine();
 				HelpMarker( "One hotkey for outgoing chat AND dialog input. Default Ctrl+Shift with no key. "
-				            "Avoid keys the game uses (F1 help, F2 menu, F7 chat, F8 screenshot, F12). "
-				            "Saved with Save config." );
+				            "Only keys SA:MP and this menu leave free are offered: F1, F2, F4-F9, F12 and "
+				            "PageUp/PageDown are already taken. Saved with Save config." );
 			}
 			ImGui::Checkbox( "Show translation indicators", &s.show_translate_indicators );
 			ImGui::SameLine();

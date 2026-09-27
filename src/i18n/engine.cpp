@@ -82,8 +82,9 @@ std::mutex g_errMutex;
 std::string g_lastErr;
 
 // Provider response-time stats for the menu readout. Updated only after an ACTUAL
-// prov->translate() call that SUCCEEDED (cache hits and pre-provider skips never
-// reach the provider, so they don't count). avg = running mean since the last
+// prov->translate() call that was ANSWERED -- including a batch the provider
+// reports as a soft failure (see IProvider::translate) -- (cache hits and
+// pre-provider skips never reach the provider, so they don't count). avg = running mean since the last
 // start(); last = the most recent call. Both are wall time around translate(), so
 // they INCLUDE the request-pacer wait and any 429/503 backoff-retries -- i.e. the
 // real end-to-end delay a user feels. Guarded by its own mutex; menu reads a snapshot.
@@ -92,10 +93,11 @@ uint64_t      g_respCount   = 0;
 uint64_t      g_respTotalMs = 0;
 unsigned long g_respLastMs  = 0;
 
-// Batch replies that came back with their numbered layout broken, in a row. At
-// kBatchGiveUp the model evidently can't keep a numbered list: process_batch stops
-// sending batches (each would just be thrown away and retried item by item) until
-// the next start(). Reset by any batch that keeps its layout.
+// Batches that failed on their own (a broken numbered layout, a timeout, a cut-off
+// or rejected request), in a row. At kBatchGiveUp this model/server evidently
+// can't do lists: batching is switched off (each batch would just be thrown away
+// and retried item by item) and re-tried after kBatchReprobeMs (see
+// batching_enabled()). Reset by any batch that keeps its layout.
 constexpr int    kBatchGiveUp = 2;
 std::atomic<int> g_batchBroken{0};
 // When batching was switched off (steady-clock ms; 0 = on). After kBatchReprobeMs
@@ -103,13 +105,21 @@ std::atomic<int> g_batchBroken{0};
 constexpr int64_t    kBatchReprobeMs = 10 * 60 * 1000;
 std::atomic<int64_t> g_batchOffAt{0};
 
-// Recency-weighted latency per request kind, for the held-dialog estimate.
+// Recency-weighted latency per request kind, for the held-dialog estimate, and
+// when the session's first reply arrived (steady ms; 0 = none yet): a request that
+// started before it paid the cold model load and is never offered as a sample.
 // Guarded by g_statsMutex.
 LatencyTracker g_latSingle;
 LatencyTracker g_latBatch;
+int64_t        g_firstReplyAt = 0;
 
 // Jobs a worker is processing right now (popped, result not yet pushed).
 std::atomic<int> g_active{0};
+
+// Set while stop() waits for the workers: process_batch stops its one-by-one
+// retries so a settings change (stop() runs on the render thread) never waits for
+// a whole chunk of per-cell requests.
+std::atomic<bool> g_stopping{false};
 
 int64_t now_ms() {
     return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -170,16 +180,24 @@ Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap
 bool call_provider(IProvider* prov, const std::vector<std::string>& texts, const std::string& sysPrompt,
                    const std::string& rollingCtx, std::vector<std::string>& out) {
     std::string err;
+    const int64_t startMs = now_ms();
     auto t0 = std::chrono::steady_clock::now();
     bool callOk = prov->translate(texts, sysPrompt, rollingCtx, out, err);
     unsigned long dt = (unsigned long)std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - t0).count();
-    // Latency for the held-dialog estimate: every answered request, AND a timeout
-    // (the provider reports "timeout"): a provider that doesn't answer in time is
-    // the slowest provider of all, not one to leave out of the estimate.
-    if (callOk || err == "timeout") {
+    // Latency for the held-dialog estimate: a request answered cleanly, or one that
+    // timed out ("timeout" / "timeout (batch)") -- a provider that doesn't answer in
+    // time is the slowest of all. A batch that failed fast on its own (rejected, a
+    // broken layout) is left out: its cells' one-by-one retries, not that round
+    // trip, are what delayed the dialog. The session's first reply, and every
+    // request that started before it arrived, paid the cold model load: never a sample.
+    const bool timedOut = (err == "timeout" || err == "timeout (batch)");
+    if ((callOk && err.empty()) || timedOut) {
         std::lock_guard<std::mutex> lk(g_statsMutex);
-        (texts.size() > 1 ? g_latBatch : g_latSingle).add((double)dt);
+        if (g_firstReplyAt == 0)
+            g_firstReplyAt = now_ms();
+        else if (startMs >= g_firstReplyAt)
+            (texts.size() > 1 ? g_latBatch : g_latSingle).add((double)dt);
     }
     if (callOk) {
         g_status.store("local ok", std::memory_order_relaxed);
@@ -361,6 +379,7 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
     }
 
     for (size_t i : retry) {
+        if (g_stopping.load()) break; // a settings change is waiting for this worker
         std::vector<std::string> res;
         if (!call_provider(prov, { prep[i].masked.text }, sysPrompt, std::string(), res)) break; // provider down: stop
         if (res.empty()) continue;
@@ -396,6 +415,13 @@ void expire_batch_off_for_test() {
     if (g_batchOffAt.load() != 0) g_batchOffAt.store(now_ms() - kBatchReprobeMs - 1);
 }
 
+void reset_latency_for_test() {
+    std::lock_guard<std::mutex> lk(g_statsMutex);
+    g_latSingle.reset();
+    g_latBatch.reset();
+    g_firstReplyAt = 0;
+}
+
 Latency latency() {
     std::lock_guard<std::mutex> lk(g_statsMutex);
     Latency l;
@@ -425,6 +451,7 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt,
         g_respCount = 0; g_respTotalMs = 0; g_respLastMs = 0;
         g_latSingle.reset(); // the new provider/model's first request is a cold load again
         g_latBatch.reset();
+        g_firstReplyAt = 0;
     }
     g_batchBroken.store(0); // a new model/provider gets a fresh chance to keep numbered lists
     g_batchOffAt.store(0);
@@ -458,11 +485,13 @@ void stop() {
         std::lock_guard<std::mutex> lock(g_jobMutex);
         if (!g_running.exchange(false)) return; // already stopped
     }
+    g_stopping.store(true); // a worker mid-batch stops its one-by-one retries
     g_jobCv.notify_all();
     for (auto& t : g_workers) {
         if (t.joinable()) t.join();
     }
     g_workers.clear();
+    g_stopping.store(false);
 
     {
         std::lock_guard<std::mutex> lock(g_jobMutex);
@@ -550,7 +579,7 @@ std::string last_error() {
 size_t backlog() {
     std::lock_guard<std::mutex> lock(g_jobMutex);
     const int active = g_active.load();
-    return g_jobs.prio.size() + (size_t)(active > 0 ? active : 0);
+    return g_jobs.prio.size() + (size_t)(active > 0 ? (active + 1) / 2 : 0); // a running job is ~half done
 }
 
 int worker_count() {

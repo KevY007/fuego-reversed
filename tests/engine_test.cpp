@@ -295,17 +295,39 @@ void test_engine() {
     {
         engine::LatencyTracker t;
         CHECK(!t.known(), "latency: unknown with no samples");
-        t.add(20000); // the cold model load after a (re)start: dropped
         t.add(500);
         t.add(500);
-        CHECK(!t.known(), "latency: still unknown after two real samples");
+        CHECK(!t.known(), "latency: still unknown after two samples");
         t.add(500);
-        CHECK(t.known() && t.ewma > 499 && t.ewma < 501, "latency: the cold first sample never counts");
+        CHECK(t.known() && t.ewma > 499 && t.ewma < 501, "latency: known after three samples");
         t.add(10000); // a sudden slowdown moves the estimate quickly (alpha 0.3)
         CHECK(t.ewma > 3000, "latency: a recent slow response weighs heavily");
         for (int i = 0; i < 10; ++i) t.add(500);
         CHECK(t.ewma < 700, "latency: recovers after the slowdown passes");
         t.reset();
         CHECK(!t.known(), "latency: reset -> unknown");
+
+        // The engine never offers the session's first reply (the cold model load)
+        // as a sample: one answered request -> still unknown; three more -> known.
+        const std::string dom  = "\xE4\xEE\xEC";                 // дом
+        const std::string dom8 = "\xD0\xB4\xD0\xBE\xD0\xBC";
+        FakeBatch f1;
+        f1.single = { { "\xD0\xBF\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82", "hello" },
+                      { "\xD0\xBC\xD0\xB8\xD1\x80", "world" },
+                      { "\xD0\xB1\xD0\xB0\xD0\xBD\xD0\xBA", "bank" },
+                      { dom8, "house" } };
+        cache::clear_for_test();
+        engine::reset_latency_for_test();
+        std::string d1;
+        engine::process_one("\xEF\xF0\xE8\xE2\xE5\xF2", 1251, &f1, "sys", d1);
+        CHECK(!engine::latency().singleKnown, "latency: the session's first reply is never a sample");
+        engine::process_one("\xEC\xE8\xF0", 1251, &f1, "sys", d1);
+        engine::process_one("\xE1\xE0\xED\xEA", 1251, &f1, "sys", d1);
+        CHECK(!engine::latency().singleKnown, "latency: two warm samples are not enough");
+        engine::process_one(dom, 1251, &f1, "sys", d1);
+        CHECK(engine::latency().singleKnown && !engine::latency().batchKnown,
+              "latency: three warm single samples -> single known, batch still unknown");
+        cache::clear_for_test();
+        engine::reset_latency_for_test();
     }
 }

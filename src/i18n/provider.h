@@ -51,11 +51,16 @@ struct ProviderConfig {
 struct IProvider {
     virtual ~IProvider() = default;
 
-    // Translates `units` (already masked/protected source text) as a batch.
-    // On success, fills `out` with one translation per input unit (same
-    // order/size as `units`) and returns true. On any failure (network,
-    // non-200, malformed reply, open circuit breaker), returns false and
-    // sets `err` to a short reason; `out` is left empty.
+    // Translates `units` (already masked/protected source text): one text is a
+    // normal request, several are ONE numbered-list request (batch.h). On success,
+    // fills `out` with one translation per input unit (same order/size as
+    // `units`) and returns true. On a failure of the provider itself (network,
+    // non-200 after retries, open circuit breaker, and for a single text also a
+    // malformed/empty reply or a timeout -- err "timeout"), returns false and sets
+    // `err` to a short reason; `out` is left empty. A BATCH that fails on its own
+    // (timeout -- err "timeout (batch)" --, HTTP 400/413/422, a malformed, empty,
+    // cut-off or un-numbered reply) instead returns true with every item "" and
+    // `err` set to the reason: the caller retries those texts one at a time.
     virtual bool translate(const std::vector<std::string>& units, const std::string& systemPrompt,
                             const std::string& rollingCtx, std::vector<std::string>& out, std::string& err) = 0;
 

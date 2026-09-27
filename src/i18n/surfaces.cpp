@@ -327,9 +327,9 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
             } else {
                 note_shown(original, nullptr);
             }
-            Log("[i18n] dialog %d shown right away: translating it would take too long now (recent requests "
-                "~%.0f ms); it is translated in the background for next time.",
-                (int)(int16_t)d.id, lat.batchKnown ? lat.batchMs : lat.singleMs);
+            Log("[i18n] dialog %d shown right away: translating it would take too long now (recent single "
+                "request ~%.0f ms, batch ~%.0f ms, %u job(s)); it is translated in the background for next time.",
+                (int)(int16_t)d.id, lat.singleMs, lat.batchMs, (unsigned)chunks.size());
             return false;
         }
     }

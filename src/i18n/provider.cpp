@@ -178,7 +178,10 @@ public:
 
         bool ok = do_translate(units, systemPrompt, rollingCtx, out, err);
         if (ok) {
-            breaker_.on_success();
+            // A batch that timed out is reported as a soft failure (its cells are
+            // retried alone) but is NOT evidence the provider is healthy: leave the
+            // breaker's count as it is.
+            if (err != "timeout (batch)") breaker_.on_success();
         } else {
             breaker_.on_failure(GetTickCount());
             out.clear();
@@ -249,14 +252,18 @@ private:
                        const std::string& rollingCtx, std::vector<std::string>& out, std::string& err) {
         std::string body = build_request_body(units, systemPrompt, rollingCtx);
 
+        if (units.empty()) {
+            err = "no text";
+            return false;
+        }
+
         // A BATCH that fails for a reason of its own -- too slow to answer in one go
         // (timeout), too big for the server (HTTP 400/413/422), cut off by
-        // max_tokens, or a reply that is malformed, empty, un-numbered or simply the
-        // input echoed back -- does not mean the provider is down. Report success
-        // with every item empty: the engine then retries the cells one by one (and
-        // counts it towards switching batching off), and the circuit breaker, which
-        // guards chat translation too, is not tripped by it. A single-text request
-        // keeps failing hard exactly as before.
+        // max_tokens, or a reply that is malformed, empty or un-numbered -- does not
+        // mean the provider is down. Report success with every item empty: the engine
+        // then retries the cells one by one (and counts it towards switching batching
+        // off), and the circuit breaker, which guards chat translation too, is not
+        // tripped by it. A single-text request keeps failing hard exactly as before.
         const bool isBatch = units.size() > 1;
         auto batchSoftFail = [&](const char* why) {
             err = why;
@@ -438,17 +445,15 @@ private:
         if (!batch::parse_numbered(translation, units.size(), items))
             return batchSoftFail("batch layout broken");
         // Each item gets the same quote cleanup a single reply gets (unless its
-        // source was itself quoted); a reply that just echoes every source line back
-        // untranslated is no translation at all.
-        bool allEcho = true;
+        // source was itself quoted). An item that comes back unchanged is accepted,
+        // exactly as a single reply is: lists of names (vehicles, weapons, places)
+        // legitimately translate to themselves.
         for (size_t i = 0; i < items.size(); ++i) {
             const std::string& src = units[i];
             const bool srcQuoted = src.size() >= 2 && (src.front() == '"' || src.front() == '\'') &&
                                    src.back() == src.front();
             items[i] = srcQuoted ? trim_ws(items[i]) : trim_ws_quotes(items[i]);
-            if (items[i] != src) allEcho = false;
         }
-        if (allEcho) return batchSoftFail("batch came back untranslated");
         out = std::move(items);
         return true;
     }

@@ -92,23 +92,24 @@ struct JobQueue {
 };
 
 // Recency-weighted response time of ONE kind of provider request (a single text,
-// or a batch) for the held-dialog estimate (surfaces::likely_too_slow). The first
-// sample after a (re)start is dropped -- it is usually a cold model load, which
-// would otherwise make every dialog of a new session look "too slow" -- and fewer
-// than kMinSamples real samples mean "unknown". A recent slowdown (a rate limit, a
-// model reload, a timeout counted as a sample) moves it within a few requests.
-// PURE; the engine guards its two instances with its stats mutex.
+// or a batch) for the held-dialog estimate (surfaces::likely_too_slow). Fewer than
+// kMinSamples samples mean "unknown"; a recent slowdown (a rate limit, a model
+// reload, a timeout counted as a sample) moves it within a few requests. The
+// engine never offers it a cold-start sample: a request that started before the
+// session's first reply arrived paid the model load, which would otherwise make
+// every dialog of a new session look "too slow". PURE; the engine guards its two
+// instances with its stats mutex.
 struct LatencyTracker {
     static constexpr double kAlpha      = 0.3;
     static constexpr int    kMinSamples = 3;
-    int    seen = 0;   // samples offered, including the dropped first one
+    int    n    = 0;
     double ewma = 0.0; // ms
     void add(double ms) {
-        if (++seen == 1) return;
-        ewma = (seen == 2) ? ms : ewma + kAlpha * (ms - ewma);
+        ewma = (n == 0) ? ms : ewma + kAlpha * (ms - ewma);
+        ++n;
     }
-    bool known() const { return seen - 1 >= kMinSamples; }
-    void reset() { seen = 0; ewma = 0.0; }
+    bool known() const { return n >= kMinSamples; }
+    void reset() { n = 0; ewma = 0.0; }
 };
 
 // Snapshot of both trackers (thread-safe copy).
@@ -185,11 +186,13 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
 // process_one, the ones still needing the model go out together as a numbered
 // list (batch.h), and each returned item is validated, unmasked and cached on its
 // own. An item the batch didn't bring back (the model broke the numbered layout,
-// or that line failed validation) is retried alone; if the batch request itself
-// fails (provider down) nothing is retried. After two broken layouts in a row
-// batching is switched off until the next start() -- that model can't keep a
-// numbered list, so texts go one per request. out[i] = the finished text for
-// units[i], or "" to keep its original. Returns true if any text was translated.
+// the batch timed out / was rejected / was cut off -- the provider's soft batch
+// failures -- or that line failed validation) is retried alone; if the provider
+// itself fails (down, circuit open) nothing is retried, and the retries stop when
+// the engine is stopping. After two batch failures in a row batching is switched
+// off (see batching_enabled(): re-tried after 10 minutes) and texts go one per
+// request. out[i] = the finished text for units[i], or "" to keep its original.
+// Returns true if any text was translated.
 bool process_batch(const std::vector<std::string>& units, int cp, IProvider* prov,
                    const std::string& sysPrompt, std::vector<std::string>& out,
                    int targetLang = 1033, int displayCp = 1252, int capBytes = 144);
@@ -209,9 +212,14 @@ void expire_batch_off_for_test();
 // The recency-weighted provider latency (see LatencyTracker). Thread-safe.
 Latency latency();
 
-// Work ahead of a new priority job: priority-lane jobs still queued plus jobs the
-// workers are processing right now; and the number of worker threads -- inputs for
-// the held-dialog latency estimate. Thread-safe.
+// Test-only: forget all latency samples and the session's first reply (so the
+// next answered request counts as the cold one again).
+void reset_latency_for_test();
+
+// Work ahead of a new priority job: priority-lane jobs still queued plus about half
+// of the jobs the workers are processing right now (a running job is, on average,
+// half done); and the number of worker threads -- inputs for the held-dialog
+// latency estimate. Thread-safe.
 size_t backlog();
 int worker_count();
 
@@ -227,8 +235,9 @@ const char* status();
 // status, parse) instead of just "error - retrying".
 std::string last_error();
 
-// Provider response-time stats for the menu readout. count = successful provider
-// calls since the last start(); avgMs = their running-mean wall time; lastMs = the
+// Provider response-time stats for the menu readout. count = answered provider
+// calls since the last start() (including batches the provider reported as a soft
+// failure, e.g. a batch that timed out); avgMs = their running-mean wall time; lastMs = the
 // most recent. avgMs/lastMs are the REAL end-to-end delay -- they include the
 // request-pacer wait and any 429/503 backoff-retries, not just model inference.
 // count 0 means no provider call has completed yet. Thread-safe snapshot.

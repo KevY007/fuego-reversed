@@ -506,6 +506,34 @@ int main() {
               "I5: groups in first-seen order; a colour prefix doesn't split an identical core");
         check(group_by_core(d, {}).empty(), "I5: nothing missing -> no jobs");
     }
+    {   // M9: a translated BUTTON label lands in its button field (units[1]/[2]).
+        std::vector<uint8_t> orig = hex(kDlgBankList); // buttons "Select" / "Close"
+        DialogPlan d;
+        plan_dialog(orig.data(), orig.size(), d);
+        check(d.units[1].core == "Select" && d.units[2].core == "Close", "291 buttons are Select / Close");
+        Translator tr = [](const std::string& src, std::string& out) {
+            if (src == "Select") out = "Seleccionar";
+            else if (src == "Close") out = "Cerrar";
+            else out = src;
+            return true;
+        };
+        std::vector<uint8_t> pkt;
+        check(rebuild_dialog(orig.data(), orig.size(), tr, pkt), "M9: rebuild with translated buttons");
+        size_t off = 3; // u16 id, u8 style, then u8-length title, button 1, button 2
+        auto field = [&]() {
+            const size_t l = pkt[off++];
+            std::string s((const char*)&pkt[off], l);
+            off += l;
+            return s;
+        };
+        const std::string title = field(), b1 = field(), b2 = field();
+        check(b1 == "Seleccionar", "M9: the translated button 1 is in the button-1 field");
+        check(b2 == "Cerrar", "M9: the translated button 2 is in the button-2 field");
+        check(title == unit_text(d.units[0], d.units[0].core), "M9: the title field is untouched");
+        std::string body;
+        check(i18n::huffman::decode_string(pkt.data() + off, pkt.size() - off, body) &&
+              body == assemble_body(d, original_cores(d)), "M9: the body is byte-identical");
+    }
     {   // M3: SA:MP's response text is the picked row (LIST) / its first cell (TABLIST)
         // copied with strncpy(.., 0x80), then colour-stripped. At that cap the text was CUT.
         const std::string longT(200, 't');

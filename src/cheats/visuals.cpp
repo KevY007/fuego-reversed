@@ -500,12 +500,12 @@ void draw_active_list( ImDrawList *dl ) {
 	}
 
 	// Bottom-right: the name.
-	static const char *kName = "Fuego Reversed";
+	static const char *kWatermark = "Fuego Reversed";
 	const ImVec2 screen = ImGui::GetIO().DisplaySize;
-	const ImVec2 sz     = ImGui::CalcTextSize( kName );
+	const ImVec2 sz     = ImGui::CalcTextSize( kWatermark );
 	const float  nx     = screen.x - sz.x - 12, ny = screen.y - sz.y - 10;
-	dl->AddText( ImVec2( nx + 1, ny + 1 ), IM_COL32( 0, 0, 0, 220 ), kName );
-	dl->AddText( ImVec2( nx, ny ), IM_COL32( 255, 120, 40, 255 ), kName );
+	dl->AddText( ImVec2( nx + 1, ny + 1 ), IM_COL32( 0, 0, 0, 220 ), kWatermark );
+	dl->AddText( ImVec2( nx, ny ), IM_COL32( 255, 120, 40, 255 ), kWatermark );
 }
 
 // ---- SA-MP nametag type (native tags through walls) ---------------------------------

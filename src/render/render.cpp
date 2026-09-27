@@ -28,12 +28,15 @@ DWORD             g_overlayHideUntil = 0; // GetTickCount() deadline for the F8 
 bool              g_maxFullscreenHz  = false; // force highest refresh in exclusive fullscreen
 std::atomic<bool> g_refreshPending{ false };  // re-apply the refresh setting (see apply_refresh)
 UINT              g_injectedHz       = 0;     // the refresh hkReset last put into RW's params (0 = none)
+UINT              g_badHz            = 0;     // a rate whose Reset failed: never injected again
 
 // Posted to the game window by set_max_fullscreen_refresh (from any thread), and a
-// timer that retries while the game is still loading. Both are QUEUED messages: they
-// only ever arrive through the game's message loop (DispatchMessage, between frames)
-// -- never nested inside a frame -- the one safe place for a device reset.
-constexpr UINT     kMsgApplyRefresh   = WM_APP + 0x4F7;
+// timer that retries while the game is still loading or not in front. Both are
+// QUEUED messages: they only ever arrive through the game's message loop
+// (DispatchMessage, between frames) -- never nested inside a frame -- the one safe
+// place for a device reset. The message id is registered (unique per session, no
+// clash with anything else on this window).
+UINT               g_msgApplyRefresh  = 0;
 constexpr UINT_PTR kTimerApplyRefresh = 0x4F7;
 
 // GTA 1.0 US / RenderWare D3D9 internals (verified by disassembling gta_sa.exe):
@@ -46,28 +49,37 @@ constexpr UINT_PTR kTimerApplyRefresh = 0x4F7;
 //   0x745C70  SetVideoMode(int) (__cdecl): GTA's own wrapper -> RwD3D9ChangeVideoMode,
 //             then fixes up the post-FX back-buffer vertices and RsGlobal max size.
 //   0xC8D4C0  gGameState; 9 = in game (GAME_STATE_IDLE).
+//   0x8D621C  ForegroundApp (bool): the game window is the active app.
 D3DPRESENT_PARAMETERS *rw_present_params() { return reinterpret_cast<D3DPRESENT_PARAMETERS *>( 0xC9C040 ); }
 int &rw_current_mode() { return *reinterpret_cast<int *>( 0xC97C18 ); }
 bool in_game() { return *reinterpret_cast<const int *>( 0xC8D4C0 ) == 9; }
+bool foreground_app() { return *reinterpret_cast<const bool *>( 0x8D621C ); }
 
-// Highest refresh the adapter supports at the reset's target resolution, for the
-// present params' back-buffer format (falls back to the desktop rate, then 0).
+// Highest refresh the device's OWN adapter (GTA may run on a second monitor)
+// supports at the reset's target resolution. 0 = no such mode: leave the rate alone
+// -- injecting a rate the mode list doesn't have makes Reset fail (a black screen).
+// Display modes have no alpha format, so an A8R8G8B8 back buffer is enumerated as
+// X8R8G8B8. The desktop rate counts only when the desktop IS that resolution.
 UINT best_fullscreen_refresh( IDirect3DDevice9 *dev, const D3DPRESENT_PARAMETERS *pp ) {
 	IDirect3D9 *d3d = nullptr;
 	if ( FAILED( dev->GetDirect3D( &d3d ) ) || !d3d ) return 0;
+	D3DDEVICE_CREATION_PARAMETERS cp = {};
+	const UINT adapter = SUCCEEDED( dev->GetCreationParameters( &cp ) ) ? cp.AdapterOrdinal : D3DADAPTER_DEFAULT;
 	D3DDISPLAYMODE desktop = {};
-	d3d->GetAdapterDisplayMode( D3DADAPTER_DEFAULT, &desktop );
+	d3d->GetAdapterDisplayMode( adapter, &desktop );
 	D3DFORMAT fmt = pp->BackBufferFormat;
 	if ( fmt == D3DFMT_UNKNOWN ) fmt = desktop.Format;
+	if ( fmt == D3DFMT_A8R8G8B8 ) fmt = D3DFMT_X8R8G8B8;
+	if ( fmt == D3DFMT_A1R5G5B5 ) fmt = D3DFMT_X1R5G5B5;
 	const UINT w = pp->BackBufferWidth, h = pp->BackBufferHeight;
 	UINT best = 0;
-	const UINT cnt = d3d->GetAdapterModeCount( D3DADAPTER_DEFAULT, fmt );
+	const UINT cnt = d3d->GetAdapterModeCount( adapter, fmt );
 	for ( UINT i = 0; i < cnt; ++i ) {
 		D3DDISPLAYMODE m = {};
-		if ( SUCCEEDED( d3d->EnumAdapterModes( D3DADAPTER_DEFAULT, fmt, i, &m ) ) )
+		if ( SUCCEEDED( d3d->EnumAdapterModes( adapter, fmt, i, &m ) ) )
 			if ( m.Width == w && m.Height == h && m.RefreshRate > best ) best = m.RefreshRate;
 	}
-	if ( best == 0 ) best = desktop.RefreshRate; // fallback: desktop refresh
+	if ( best == 0 && desktop.Width == w && desktop.Height == h ) best = desktop.RefreshRate;
 	d3d->Release();
 	return best;
 }
@@ -99,15 +111,18 @@ void force_video_reset() {
 	reinterpret_cast<void( __cdecl * )( int )>( 0x745C70 )( mode );
 	if ( cur == -1 ) {
 		cur = mode;
-		Log( "[render] refresh re-apply: the video-mode reset failed; display left as it was." );
+		Log( "[render] refresh re-apply: RenderWare kept/restored the previous video mode (the reset "
+		     "didn't go through); an Alt+Enter or a restart applies the setting." );
 	}
 }
 
 // Apply a pending refresh change -- on the game's window thread, from a queued message,
 // i.e. between frames (the same context the Alt+Enter reset runs in). Not while the
-// game is still loading the map: a timer tries again every 500 ms until it runs.
+// game is still loading the map, nor while it isn't the active window (alt-tabbed or
+// minimized: the device is lost, a reset would just fail): a timer tries again every
+// 500 ms until it can run.
 void apply_refresh( HWND hwnd ) {
-	if ( !in_game() ) {
+	if ( !in_game() || !foreground_app() || IsIconic( hwnd ) ) {
 		SetTimer( hwnd, kTimerApplyRefresh, 500, nullptr ); // same id -> replaces, never stacks
 		return;
 	}
@@ -117,7 +132,7 @@ void apply_refresh( HWND hwnd ) {
 }
 
 LRESULT CALLBACK hkWndProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp ) {
-	if ( msg == kMsgApplyRefresh || ( msg == WM_TIMER && wp == kTimerApplyRefresh ) ) {
+	if ( ( g_msgApplyRefresh && msg == g_msgApplyRefresh ) || ( msg == WM_TIMER && wp == kTimerApplyRefresh ) ) {
 		apply_refresh( hwnd );
 		return 0; // ours: never passed on to the game / SA:MP
 	}
@@ -143,6 +158,9 @@ void ensure_window( IDirect3DDevice9 *dev ) {
 	g_window = w;
 	g_origWndProc = (WNDPROC) SetWindowLongPtr( g_window, GWLP_WNDPROC, (LONG_PTR) hkWndProc );
 	Log( "[render] window hooked (0x%p).", g_window );
+	// A refresh change requested before the window was hooked (e.g. the saved setting
+	// at startup) is applied now.
+	if ( g_refreshPending && g_msgApplyRefresh ) PostMessage( g_window, g_msgApplyRefresh, 0, 0 );
 }
 
 HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
@@ -168,11 +186,15 @@ HRESULT __stdcall hkReset( IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp ) {
 	// Force the highest refresh for exclusive fullscreen (GTA hardcodes lowest >=60).
 	// We only edit the params GTA passes to its own Reset, so RenderWare's normal
 	// device-reset resource recreation still runs.
+	UINT gtaHz    = 0;     // GTA's own rate, if we replaced it
+	bool injected = false;
 	if ( g_maxFullscreenHz && pp && pp->Windowed == FALSE ) {
 		UINT hz = best_fullscreen_refresh( dev, pp );
-		if ( hz > 0 && hz != pp->FullScreen_RefreshRateInHz ) {
+		if ( hz > 0 && hz != g_badHz && hz != pp->FullScreen_RefreshRateInHz ) {
 			Log( "[render] fullscreen refresh: %u -> %u Hz (%ux%u).",
 			     pp->FullScreen_RefreshRateInHz, hz, pp->BackBufferWidth, pp->BackBufferHeight );
+			gtaHz    = pp->FullScreen_RefreshRateInHz;
+			injected = true;
 			pp->FullScreen_RefreshRateInHz = hz;
 			g_injectedHz = hz; // turning the setting off later has something to undo
 		}
@@ -181,6 +203,17 @@ HRESULT __stdcall hkReset( IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp ) {
 	}
 	for ( auto fn : resetCbs() ) fn( dev, true );   // pre-reset: release resources
 	HRESULT hr = g_origReset( dev, pp );
+	// Our rate refused for a reason other than a lost device (the game isn't in front):
+	// never leave a black screen -- retry once at GTA's own rate, and don't offer that
+	// rate again this session.
+	if ( FAILED( hr ) && injected && hr != D3DERR_DEVICELOST ) {
+		Log( "[render] the %u Hz reset failed (0x%08lX); back to GTA's %u Hz.",
+		     pp->FullScreen_RefreshRateInHz, (unsigned long) hr, gtaHz );
+		g_badHz = pp->FullScreen_RefreshRateInHz;
+		pp->FullScreen_RefreshRateInHz = gtaHz;
+		g_injectedHz = 0;
+		hr = g_origReset( dev, pp );
+	}
 	for ( auto fn : resetCbs() ) fn( dev, false );  // post-reset: recreate
 	return hr;
 }
@@ -225,12 +258,13 @@ bool overlay_hidden() { return g_overlayHideUntil && (int) ( g_overlayHideUntil 
 void set_max_fullscreen_refresh( bool on ) {
 	g_maxFullscreenHz = on;
 	g_refreshPending  = true;
-	if ( g_window ) PostMessage( g_window, kMsgApplyRefresh, 0, 0 ); // -> apply_refresh, between frames
+	if ( g_window && g_msgApplyRefresh ) PostMessage( g_window, g_msgApplyRefresh, 0, 0 ); // -> apply_refresh, between frames
 	Log( "[render] max fullscreen refresh %s (applying now if the display needs it).", on ? "ON" : "OFF" );
 }
 
 bool install() {
 	if ( g_installed ) return true;
+	if ( !g_msgApplyRefresh ) g_msgApplyRefresh = RegisterWindowMessageA( "FuegoReversed.ApplyFullscreenRefresh" );
 	g_vtable = game_device_vtable();
 	if ( !g_vtable ) { Log( "[render] GTA D3D9 device not ready yet (0xC97C28 null)." ); return false; }
 	g_device = game_device();          // real device -> device() valid immediately

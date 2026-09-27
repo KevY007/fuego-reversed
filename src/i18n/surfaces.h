@@ -186,7 +186,10 @@ bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, s
 // Without a running pump (hooks::pump_ready()) nothing is ever held: SA:MP shows
 // the original (or the in-place rewrite when fully cached). Password dialogs and
 // close signals are never translated. Labels/HUD: TM-first rewrite in place
-// (returns false). Main thread.
+// (returns false). InitGame (RPC 139, a new session): first discards everything
+// the old session left held or pending -- held dialogs, INPUT replies, outgoing
+// chat, list row tables -- without showing or sending any of it (returns false).
+// Main thread.
 bool on_incoming_rpc(unsigned char id, RPCParameters* rpc);
 
 // A dialog unit's translation finished (engine surface 3). Main thread (pump).

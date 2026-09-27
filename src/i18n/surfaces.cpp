@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "dlgq.h"
 #include "hooks.h"               // hooks::pump_ready() -- a swallowed reply needs a pump to deliver it
+#include "outbound.h"            // outbound::discard_pending() on a new session (InitGame)
 
 #include "../net/net.h"         // on_send_rpc (DialogResponse: list-index remap + input translation)
 #include "../net/RakClient.h"   // RPCParameters, g_RakClient
@@ -102,7 +103,9 @@ bool safe_show(void* fn, void* self, int id, int style, const char* cap, const c
     }
 }
 
-i18n::dlgq::Queue g_dlgq(10000, 16); // hold at most 10s, at most 16 dialogs
+constexpr uint32_t kMaxHoldMs      = 10000; // hold a dialog at most 10 s, then show the original
+constexpr size_t   kMaxHeldDialogs = 16;
+i18n::dlgq::Queue  g_dlgq(kMaxHoldMs, kMaxHeldDialogs);
 
 // A held dialog still waiting for some of its unit translations.
 struct PendingDialog {
@@ -425,9 +428,34 @@ bool on_send_dialogresponse(int id, BitStream* params, PacketPriority, PacketRel
     return true;
 }
 
+// A new game session (InitGame): everything still held or pending belongs to the
+// OLD server/session -- drop it WITHOUT showing or sending any of it (a held
+// dialog, an INPUT reply or a chat line meant for the previous server must never
+// reach the new one). Late engine results then find no entry and are ignored.
+void discard_session() {
+    const size_t dialogs = g_dlgq.size();
+    const size_t replies = g_pendingResponses.size();
+    const size_t rows    = g_shownRows.size();
+    g_dlgq = i18n::dlgq::Queue(kMaxHoldMs, kMaxHeldDialogs); // held dialogs: never shown
+    g_pendingDialogs.clear();
+    g_partJobs.clear();
+    g_pendingResponses.clear();                              // INPUT replies: never sent
+    g_shownRows.clear();                                     // no remap against the old dialogs' rows
+    const size_t chat = i18n::outbound::discard_pending();   // outgoing chat: never sent
+    Log("[i18n] new session (InitGame): discarded %u held dialog(s), %u pending input reply(ies), "
+        "%u pending outgoing chat line(s), %u list row table(s).",
+        (unsigned)dialogs, (unsigned)replies, (unsigned)chat, (unsigned)rows);
+}
+
 } // namespace
 
 bool on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
+    // InitGame (a (re)connect, a server restart/GMX, another server): before any
+    // other handling, discard the old session's held/pending state. Never swallowed.
+    if (id == RPC_InitGame) {
+        try { discard_session(); } catch (...) {} // an RPC-dispatch seam: nothing may escape
+        return false;
+    }
     if (!rpc || !rpc->input || rpc->numberOfBitsOfData < 8) return false;
     auto& s = i18n::config::get();
     const uint8_t* p = rpc->input;

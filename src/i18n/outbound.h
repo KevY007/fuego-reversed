@@ -11,6 +11,7 @@
 // (flush_pending). Commands (/...) always pass through untranslated. Toggled live
 // with a settable hotkey (default Ctrl+Shift) or the menu; default off.
 
+#include <cstddef>
 #include <cstdint>
 
 namespace i18n::engine { struct Result; }
@@ -42,5 +43,11 @@ void tick(uint32_t nowMs);
 // forgets them. Call before the engine is stopped or restarted (engine::stop()/
 // start() drop every queued job). Main thread.
 void flush_pending();
+
+// A new game session began (InitGame): forget every swallowed line WITHOUT
+// sending it -- it was typed to the previous server/session. A result that still
+// comes back finds no entry and is ignored. Returns how many were dropped. Main
+// thread.
+size_t discard_pending();
 
 } // namespace i18n::outbound

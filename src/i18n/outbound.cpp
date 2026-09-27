@@ -162,4 +162,10 @@ void flush_pending() {
 	}
 }
 
+size_t discard_pending() {
+	const size_t n = g_pending.size();
+	g_pending.clear(); // typed to the previous session: never sent to the new one
+	return n;
+}
+
 } // namespace i18n::outbound

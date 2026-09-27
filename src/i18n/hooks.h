@@ -24,7 +24,8 @@ namespace i18n::hooks {
 void install();
 
 // (Re)builds the provider config + system prompt from i18n::config and starts
-// the worker engine when inbound_chat is enabled, or stops it when disabled.
+// the worker engine when ANY translation surface is enabled (inbound chat,
+// outgoing translation, dialogs/labels, HUD), or stops it when all are off.
 // Safe to call repeatedly at runtime -- this is what the menu's Save button
 // calls so settings changes apply live, with no game restart. A call that finds
 // nothing actually changed (rebuilt config/prompt/target/codepage are identical
@@ -33,7 +34,10 @@ void install();
 // this (the main/game) thread and can stall it for as long as an in-flight HTTP
 // call, and drops every job still queued (held dialog units, chat flips, outbound
 // chat, dialog-input replies) -- unacceptable for something called on every menu
-// Save and every outbound-toggle hotkey press. Main thread only.
+// Save and every outbound-toggle hotkey press. Before a real stop/restart, every
+// swallowed dialog-input reply and outgoing chat line is sent as typed. Never
+// throws (it runs inside hkEndScene): if engine::start()/stop() fails, the engine
+// is left OFF and the next call retries. Main thread only.
 void apply_config();
 
 // True once install() has wired the AddEntry detour + registered the per-frame

@@ -236,52 +236,71 @@ void install() {
 bool pump_ready() { return g_installed && render::installed(); }
 
 void apply_config() {
-	auto &s = i18n::config::get();
-	// The one worker engine serves every surface (inbound chat display, outbound
-	// send, and the dialog/label cache-fill jobs), so it runs whenever ANY of them
-	// is enabled.
-	if ( !s.inbound_chat && !s.outbound_enabled && !s.translate_dialogs && !s.translate_hud ) {
-		if ( g_engineOn ) {
-			i18n::surfaces::flush_responses(); // about to drop the queue -- never lose a swallowed reply
-			i18n::outbound::flush_pending();   // ... or a swallowed chat line
-			i18n::engine::stop();
-			g_engineOn = false;
-			g_engineSig.clear();
+	// Called from the menu and the outbound hotkey INSIDE hkEndScene (a D3D9 vtable
+	// hook -- a C-ABI seam), and engine::start() can throw (std::thread): nothing may
+	// escape. `engineTouched` is set right before engine::stop()/start(): if either
+	// throws, the engine's real state is unknown, so stop whatever is left and mark
+	// it OFF with no signature -- the next apply_config() then retries a clean start
+	// instead of skipping it as "unchanged".
+	bool engineTouched = false;
+	try {
+		auto &s = i18n::config::get();
+		// The one worker engine serves every surface (inbound chat display, outbound
+		// send, and the dialog/label cache-fill jobs), so it runs whenever ANY of them
+		// is enabled.
+		if ( !s.inbound_chat && !s.outbound_enabled && !s.translate_dialogs && !s.translate_hud ) {
+			if ( g_engineOn ) {
+				i18n::surfaces::flush_responses(); // about to drop the queue -- never lose a swallowed reply
+				i18n::outbound::flush_pending();   // ... or a swallowed chat line
+				engineTouched = true;
+				i18n::engine::stop();
+				g_engineOn = false;
+				g_engineSig.clear();
+			}
+			Log( "[i18n] translation disabled (engine stopped)." );
+			return;
 		}
-		Log( "[i18n] translation disabled (engine stopped)." );
-		return;
+
+		i18n::ProviderConfig pc;
+		pc.baseUrl      = s.base_url;
+		pc.apiKey       = s.api_key;
+		pc.model        = s.model;
+		pc.providerKind = s.provider_kind; // per-provider request quirks (see provider.h)
+		pc.connectMs = 2000;
+		pc.readMs    = s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000; // local models cold-load slowly
+		pc.temperature = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0; // 30 -> 0.30
+		pc.minRequestGapMs = s.request_min_gap_ms; // request pacer (free-tier RPM limits)
+
+		int dispCp = i18n::config::display_codepage( s.target_lang, s.roman_output );
+		std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output, s.source_lang );
+		std::string sig = engine_signature( pc, prompt, s.target_lang, dispCp );
+
+		// Nothing that actually matters changed (the outbound hotkey and plenty of menu
+		// widgets call this on every press/Save): keep the running engine as-is. See
+		// apply_config()'s doc comment (hooks.h) for why restarting is costly.
+		if ( g_engineOn && sig == g_engineSig ) {
+			Log( "[i18n] settings applied (engine unchanged)." );
+			return;
+		}
+
+		i18n::surfaces::flush_responses(); // the queue below is about to be dropped
+		i18n::outbound::flush_pending();
+		engineTouched = true;
+		i18n::engine::start( pc, prompt, s.target_lang, dispCp );
+		g_engineOn  = true;
+		g_engineSig = std::move( sig );
+		Log( "[i18n] engine running (inbound=%d target=%d roman=%d cp=%d | outbound=%d server=%d | model=%s).",
+		     (int)s.inbound_chat, s.target_lang, (int)s.roman_output, dispCp,
+		     (int)s.outbound_enabled, s.outbound_target_lang, s.model.c_str() );
+	} catch ( ... ) {
+		if ( engineTouched ) {
+			try { i18n::engine::stop(); } catch ( ... ) {} // a half-started pool must not linger
+			g_engineOn = false;
+			g_engineSig.clear(); // never matches -> the next apply_config() retries start()
+		}
+		Log( "[i18n] applying translator settings failed (exception)%s.",
+		     engineTouched ? " -- engine is off; the next Save retries" : " -- engine left as it was" );
 	}
-
-	i18n::ProviderConfig pc;
-	pc.baseUrl      = s.base_url;
-	pc.apiKey       = s.api_key;
-	pc.model        = s.model;
-	pc.providerKind = s.provider_kind; // per-provider request quirks (see provider.h)
-	pc.connectMs = 2000;
-	pc.readMs    = s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000; // local models cold-load slowly
-	pc.temperature = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0; // 30 -> 0.30
-	pc.minRequestGapMs = s.request_min_gap_ms; // request pacer (free-tier RPM limits)
-
-	int dispCp = i18n::config::display_codepage( s.target_lang, s.roman_output );
-	std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output, s.source_lang );
-	std::string sig = engine_signature( pc, prompt, s.target_lang, dispCp );
-
-	// Nothing that actually matters changed (the outbound hotkey and plenty of menu
-	// widgets call this on every press/Save): keep the running engine as-is. See
-	// apply_config()'s doc comment (hooks.h) for why restarting is costly.
-	if ( g_engineOn && sig == g_engineSig ) {
-		Log( "[i18n] settings applied (engine unchanged)." );
-		return;
-	}
-
-	i18n::surfaces::flush_responses(); // the queue below is about to be dropped
-	i18n::outbound::flush_pending();
-	i18n::engine::start( pc, prompt, s.target_lang, dispCp );
-	g_engineOn  = true;
-	g_engineSig = std::move( sig );
-	Log( "[i18n] engine running (inbound=%d target=%d roman=%d cp=%d | outbound=%d server=%d | model=%s).",
-	     (int)s.inbound_chat, s.target_lang, (int)s.roman_output, dispCp,
-	     (int)s.outbound_enabled, s.outbound_target_lang, s.model.c_str() );
 }
 
 } // namespace i18n::hooks

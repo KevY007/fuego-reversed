@@ -269,6 +269,58 @@ int main() {
     }
     check(strip_colors("{666666}Palomino{ffffff} Bank") == "Palomino Bank", "strip_colors");
 
+    // ---- DialogResponse remap: fix-round-1 hardening ----
+    {
+        // style 4 = TABLIST (no header row): row == listItem, no +1 offset.
+        std::vector<std::string> orig  = { "Alpha\tOne", "Beta\tTwo" };
+        std::vector<std::string> trans = { "Alfa\tUno", "Beta2\tDos" };
+        std::string out;
+        check(remap_list_response(4, orig, trans, 1, "Beta2", out) && out == "Beta",
+              "TABLIST (no header): row == listItem, first-column candidate");
+    }
+    {
+        std::vector<std::string> orig  = { "A", "B" };
+        std::vector<std::string> trans = { "A" };
+        std::string out;
+        check(!remap_list_response(2, orig, trans, 0, "A", out), "orig/trans size mismatch -> no remap");
+        check(!remap_list_response(2, orig, orig, -1, "A", out), "negative listItem -> no remap");
+    }
+    {
+        // style 5 upper bound: 3 rows total (1 header + 2 data) -> valid listItem is 0..1.
+        std::vector<std::string> orig  = { "{c8c8c8}H", "Row0", "Row1" };
+        std::vector<std::string> trans = { "{c8c8c8}H", "Fila0", "Fila1" };
+        std::string out;
+        check(remap_list_response(5, orig, trans, 1, "Fila1", out) && out == "Row1",
+              "TABLIST_HEADERS upper bound: last data row (listItem = rows-2) remaps");
+        check(!remap_list_response(5, orig, trans, 2, "x", out),
+              "TABLIST_HEADERS upper bound: one past the last row (listItem = rows-1) -> no remap");
+    }
+    {
+        // SA:MP didn't strip colour from this particular response -> the raw (uncoloured-stripped) original.
+        std::vector<std::string> orig  = { "{ffffff}Account Balance" };
+        std::vector<std::string> trans = { "{ffffff}Saldo de cuenta" };
+        std::string out;
+        check(remap_list_response(2, orig, trans, 0, "{ffffff}Saldo de cuenta", out) &&
+              out == "{ffffff}Account Balance", "raw-colour response -> raw original");
+    }
+    {
+        // Blank-row guard: unverified whether SA:MP counts a blank line as a list item,
+        // so a blank row before the picked one must block the remap entirely.
+        std::vector<std::string> orig  = { "A", "", "B" };
+        std::vector<std::string> trans = { "X", "", "Y" };
+        std::string out;
+        check(!remap_list_response(2, orig, trans, 2, "Y", out), "blank row before the picked one -> no remap");
+    }
+
+    // ---- should_translate_input: single tokens (passwords/emails/amounts) never leave ----
+    check(!should_translate_input(""), "should_translate_input: empty -> false");
+    check(!should_translate_input("/help me"), "should_translate_input: command -> false");
+    check(!should_translate_input("12345"), "should_translate_input: digits-only -> false");
+    check(!should_translate_input("qwerty123"), "should_translate_input: single token -> false");
+    check(!should_translate_input("john@mail.com"), "should_translate_input: email (single token) -> false");
+    check(should_translate_input("hello there"), "should_translate_input: a real phrase -> true");
+    check(should_translate_input("deposit\tmoney"), "should_translate_input: tab-separated phrase -> true");
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

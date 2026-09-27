@@ -38,6 +38,37 @@ AddEntryFn g_origAddEntry = nullptr;
 bool                  g_installed = false;
 std::atomic<uint64_t> g_seq{ 1 };
 
+// Tracks whether the worker engine is currently running, and a signature of the
+// settings it was last started with -- so apply_config() (called on every menu
+// Save AND every outbound-toggle hotkey press) can skip a same-settings restart.
+// See apply_config()'s comment (hooks.h) for why a needless restart is costly.
+bool        g_engineOn = false;
+std::string g_engineSig;
+
+// Everything that actually changes what the running engine does: every
+// ProviderConfig field apply_config() sets, plus the system prompt, target
+// language and display codepage engine::start() also takes. Fields apply_config()
+// never varies (topP, maxTokens) are deliberately left out -- they can't change,
+// so they'd never make two signatures differ anyway. NEVER logged: it embeds the
+// API key.
+std::string engine_signature( const i18n::ProviderConfig &pc, const std::string &prompt,
+                               int targetLang, int displayCp ) {
+	const char sep = '\x01';
+	std::string sig;
+	sig += pc.baseUrl;                           sig += sep;
+	sig += pc.apiKey;                            sig += sep;
+	sig += pc.model;                             sig += sep;
+	sig += std::to_string( pc.providerKind );    sig += sep;
+	sig += std::to_string( pc.connectMs );       sig += sep;
+	sig += std::to_string( pc.readMs );          sig += sep;
+	sig += std::to_string( pc.temperature );     sig += sep;
+	sig += std::to_string( pc.minRequestGapMs ); sig += sep;
+	sig += prompt;                               sig += sep;
+	sig += std::to_string( targetLang );         sig += sep;
+	sig += std::to_string( displayCp );
+	return sig;
+}
+
 // A line shown in its ORIGINAL form while its translation is in flight: the exact
 // chat entries it became (AddEntry may have wrapped it into several), identified by
 // SystemTime + text, so the translation can be written back over THOSE rows in
@@ -199,13 +230,20 @@ void install() {
 	Log( "[i18n] hooks installed: AddEntry detour + main-thread pump active (idle until enabled)." );
 }
 
+bool pump_ready() { return g_installed; }
+
 void apply_config() {
 	auto &s = i18n::config::get();
 	// The one worker engine serves every surface (inbound chat display, outbound
 	// send, and the dialog/label cache-fill jobs), so it runs whenever ANY of them
 	// is enabled.
 	if ( !s.inbound_chat && !s.outbound_enabled && !s.translate_dialogs && !s.translate_hud ) {
-		i18n::engine::stop();
+		if ( g_engineOn ) {
+			i18n::surfaces::flush_responses(); // about to drop the queue -- never lose a swallowed reply
+			i18n::engine::stop();
+			g_engineOn = false;
+			g_engineSig.clear();
+		}
 		Log( "[i18n] translation disabled (engine stopped)." );
 		return;
 	}
@@ -221,9 +259,21 @@ void apply_config() {
 	pc.minRequestGapMs = s.request_min_gap_ms; // request pacer (free-tier RPM limits)
 
 	int dispCp = i18n::config::display_codepage( s.target_lang, s.roman_output );
-	i18n::engine::start( pc,
-	                     i18n::config::build_system_prompt( s.target_lang, s.roman_output, s.source_lang ),
-	                     s.target_lang, dispCp );
+	std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output, s.source_lang );
+	std::string sig = engine_signature( pc, prompt, s.target_lang, dispCp );
+
+	// Nothing that actually matters changed (the outbound hotkey and plenty of menu
+	// widgets call this on every press/Save): keep the running engine as-is. See
+	// apply_config()'s doc comment (hooks.h) for why restarting is costly.
+	if ( g_engineOn && sig == g_engineSig ) {
+		Log( "[i18n] settings applied (engine unchanged)." );
+		return;
+	}
+
+	i18n::surfaces::flush_responses(); // the queue below is about to be dropped
+	i18n::engine::start( pc, prompt, s.target_lang, dispCp );
+	g_engineOn  = true;
+	g_engineSig = std::move( sig );
 	Log( "[i18n] engine running (inbound=%d target=%d roman=%d cp=%d | outbound=%d server=%d | model=%s).",
 	     (int)s.inbound_chat, s.target_lang, (int)s.roman_output, dispCp,
 	     (int)s.outbound_enabled, s.outbound_target_lang, s.model.c_str() );

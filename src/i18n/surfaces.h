@@ -99,8 +99,19 @@ bool remap_list_response(int style, const std::vector<std::string>& orig,
                          const std::vector<std::string>& trans, int listItem,
                          const std::string& resp, std::string& out);
 
+// True if outgoing INPUT-dialog text is eligible for translation: non-empty, not a
+// "/command", not dynamic/numeric (is_dynamic_text), AND contains at least one
+// space or tab. A single token -- a password typed into an INPUT dialog, an email,
+// a username, an amount -- is never sent to a translator or off this machine.
+bool should_translate_input(const std::string& text);
+
 // An outgoing dialog-input translation finished (engine surface 4). Main thread.
 void on_response_result(const i18n::engine::Result& r);
+
+// Send every pending outgoing INPUT reply's ORIGINAL text right now and forget it.
+// Call before the engine is stopped or restarted (engine::stop()/start() drop every
+// queued job), so a swallowed reply can never be lost. Main thread.
+void flush_responses();
 
 // A dialog that must never be translated or held: a PASSWORD dialog (style 3) or
 // the server's CLOSE signal (dialog id < 0 as int16, i.e. 0x8000..0xFFFF).

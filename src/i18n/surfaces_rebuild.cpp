@@ -204,8 +204,13 @@ bool remap_list_response(int style, const std::vector<std::string>& orig,
                          const std::vector<std::string>& trans, int listItem,
                          const std::string& resp, std::string& out) {
     if (listItem < 0 || orig.size() != trans.size()) return false;
-    const size_t row = (size_t)listItem + (style == 5 ? 1u : 0u);
+    const size_t firstDataRow = (style == 5 ? 1u : 0u); // style 5's row 0 is the header, never a list item
+    const size_t row = (size_t)listItem + firstDataRow;
     if (row >= orig.size()) return false;
+    // Unverified whether SA:MP counts a blank list line as an item -- never risk a
+    // shifted index: refuse to remap if any DATA row before the picked one is blank.
+    for (size_t i = firstDataRow; i < row; ++i)
+        if (orig[i].empty()) return false;
     auto first_col = [](const std::string& s) {
         size_t t = s.find('\t');
         return t == std::string::npos ? s : s.substr(0, t);
@@ -217,6 +222,11 @@ bool remap_list_response(int style, const std::vector<std::string>& orig,
     for (int k = 0; k < 4; ++k)
         if (candT[k] == resp) { out = candO[k]; return true; }
     return false;
+}
+
+bool should_translate_input(const std::string& text) {
+    if (text.empty() || text[0] == '/' || is_dynamic_text(text)) return false;
+    return text.find(' ') != std::string::npos || text.find('\t') != std::string::npos;
 }
 
 bool never_translated(const DialogPlan& d) {

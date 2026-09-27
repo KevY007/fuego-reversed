@@ -3,8 +3,9 @@
 #include "config.h"
 #include "engine.h"
 #include "dlgq.h"
+#include "hooks.h"               // hooks::pump_ready() -- a swallowed reply needs a pump to deliver it
 
-#include "../net/net.h"         // on_send_rpc (DialogResponse reverse-map)
+#include "../net/net.h"         // on_send_rpc (DialogResponse: list-index remap + input translation)
 #include "../net/RakClient.h"   // RPCParameters, g_RakClient
 #include "../net/BitStream.h"
 #include "../core/logger.h"
@@ -120,18 +121,31 @@ struct ShownRows {
 };
 std::unordered_map<uint16_t, ShownRows> g_shownRows;
 
-// Remember the rows of a translated LIST/TABLIST dialog that is now on screen.
-void remember_rows(const std::vector<uint8_t>& original, const std::vector<uint8_t>& shown) {
-    DialogPlan o, t;
-    if (!plan_dialog(original.data(), original.size(), o) || !plan_dialog(shown.data(), shown.size(), t)) return;
-    if (!(o.style == 2 || o.style == 4 || o.style == 5) || !o.haveBody || !t.haveBody) return;
-    ShownRows r;
-    r.style = o.style;
-    split_lines(assemble_body(o, original_cores(o)), r.orig);
-    split_lines(assemble_body(t, original_cores(t)), r.trans);
-    if (r.orig.size() != r.trans.size()) return;
-    if (g_shownRows.size() > 64) g_shownRows.clear();
-    g_shownRows[o.id] = std::move(r);
+// Every show of dialog id X either records X's rows (a translated LIST/TABLIST,
+// shown != null) or ERASES X's stale entry -- so a later untranslated show of the
+// same id (a different dialog reusing the id, translate_dialogs toggled off, a
+// queue-full flush, ...) can never leave behind rows that get remapped against the
+// WRONG dialog. Call this at EVERY show point, with shown == nullptr meaning "id X
+// was just shown untranslated" (native, passthru/password/close, or no cache hit).
+void note_shown(const std::vector<uint8_t>& original, const std::vector<uint8_t>* shown) {
+    DialogPlan o;
+    if (!plan_dialog(original.data(), original.size(), o)) return; // can't even get the id -> nothing to do
+    if (shown && o.haveBody) {
+        DialogPlan t;
+        if (plan_dialog(shown->data(), shown->size(), t) && (o.style == 2 || o.style == 4 || o.style == 5) &&
+            t.haveBody) {
+            ShownRows r;
+            r.style = o.style;
+            split_lines(assemble_body(o, original_cores(o)), r.orig);
+            split_lines(assemble_body(t, original_cores(t)), r.trans);
+            if (r.orig.size() == r.trans.size()) {
+                if (g_shownRows.size() > 64) g_shownRows.clear();
+                g_shownRows[o.id] = std::move(r);
+                return;
+            }
+        }
+    }
+    g_shownRows.erase(o.id);
 }
 
 // Show a released payload (translated or original) through SA:MP's own Show.
@@ -196,7 +210,9 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         if (anyTranslated) {
             std::vector<uint8_t> pkt = assemble_dialog(d, cores);
             commit(rpc, pkt);
-            remember_rows(original, pkt);
+            note_shown(original, &pkt);
+        } else {
+            note_shown(original, nullptr); // untranslated (incl. passthru password/close): erase any stale entry
         }
         return false;
     }
@@ -205,7 +221,12 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
     const uint64_t seq = g_seq.fetch_add(1, std::memory_order_relaxed);
     if (!g_dlgq.push(seq, GetTickCount(), original)) {
         // Queue full (something is stuck): show everything held, then this one natively.
-        for (auto& r : g_dlgq.flush()) { g_pendingDialogs.erase(r.seq); show_payload(r.payload); }
+        for (auto& r : g_dlgq.flush()) {
+            g_pendingDialogs.erase(r.seq);
+            show_payload(r.payload);
+            note_shown(r.original, r.translated ? &r.payload : nullptr);
+        }
+        note_shown(original, nullptr); // this one shows natively (untranslated) too
         return false;
     }
     if (missing.empty()) { // ready now (cached / close / password) -- waits for its turn
@@ -236,9 +257,10 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
 
 // DialogResponse wire (client -> server): i16 dialogId, u8 response, i16 listItem,
 // u8 textLen, text. Sent via g_RakClient, which wraps the REAL interface and so
-// bypasses the send seam -- this can never re-enter on_send_dialogresponse().
-void send_dialog_response(int16_t dlgId, uint8_t resp, int16_t listItem, const std::string& text) {
-    if (!g_RakClient) return;
+// bypasses the send seam -- this can never re-enter on_send_dialogresponse(). False
+// only if there's no RakClient to send through (nothing else we can do about it).
+bool send_dialog_response(int16_t dlgId, uint8_t resp, int16_t listItem, const std::string& text) {
+    if (!g_RakClient) return false;
     const size_t tl = text.size() > 255 ? 255 : text.size();
     BitStream bs;
     bs.Write(dlgId);
@@ -246,7 +268,7 @@ void send_dialog_response(int16_t dlgId, uint8_t resp, int16_t listItem, const s
     bs.Write(listItem);
     bs.Write((uint8_t)tl);
     if (tl) bs.Write((char*)text.data(), (int)tl);
-    g_RakClient->RPC(62, &bs);
+    return g_RakClient->RPC(62, &bs);
 }
 
 struct PendingResponse {
@@ -254,8 +276,45 @@ struct PendingResponse {
     uint8_t     resp = 0;
     int16_t     listItem = 0;
     std::string original;
+    uint32_t    t0 = 0; // GetTickCount() when swallowed -- the delivery deadline clock
 };
 std::unordered_map<uint64_t, PendingResponse> g_pendingResponses;
+
+// Guaranteed delivery: an INPUT reply swallowed pending translation is sent as typed
+// if the translation doesn't land within this long (settings/menu access, a stalled
+// provider, ...) -- a reply must never be lost or delayed indefinitely.
+constexpr uint32_t kResponseDeadlineMs = 5000;
+
+// Wrap-safe "at least ms have elapsed since t0" for GetTickCount()-style clocks
+// (mirrors i18n::dlgq's at_or_after).
+bool elapsed_ms(uint32_t nowMs, uint32_t t0, uint32_t ms) { return (int32_t)(nowMs - t0 - ms) >= 0; }
+
+// Send every pending reply's ORIGINAL text now and forget it -- used by the overflow
+// guard below and by flush_responses() (engine restart/stop). Unlogged: this is a
+// bulk safety net for an unusual condition (too many in flight, or settings applied),
+// not a per-reply outcome; send_dialog_response()'s result is ignored, same as
+// on_response_result() and the deadline flush -- there's nothing else to do if it fails.
+void flush_all_pending() {
+    for (auto& kv : g_pendingResponses) {
+        const PendingResponse& pr = kv.second;
+        send_dialog_response(pr.dlgId, pr.resp, pr.listItem, pr.original);
+    }
+    g_pendingResponses.clear();
+}
+
+// Any reply that has been waiting too long is sent as typed -- called every frame,
+// before anything else, so a reply is never held hostage by a stuck dialog queue.
+void flush_due_responses(uint32_t nowMs) {
+    for (auto it = g_pendingResponses.begin(); it != g_pendingResponses.end(); ) {
+        if (elapsed_ms(nowMs, it->second.t0, kResponseDeadlineMs)) {
+            send_dialog_response(it->second.dlgId, it->second.resp, it->second.listItem, it->second.original);
+            Log("[i18n] dialog %d: input reply sent as typed (translation took too long).", (int)it->second.dlgId);
+            it = g_pendingResponses.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
 
 // The live dialog's style if it's the one being answered (SA:MP's own state, read at
 // send time -- the response is sent before the dialog closes), else -1.
@@ -278,32 +337,45 @@ bool on_send_dialogresponse(int id, BitStream* params, PacketPriority, PacketRel
             params->ResetReadPointer();
             return true;
         }
+
+        // Style is checked BEFORE the text bytes are even read into a buffer: a
+        // PASSWORD response (or one for a dialog that isn't the one on screen) must
+        // never be touched, so its text is never given the chance to reach a buffer,
+        // the translator, g_pendingResponses or a log line.
+        const int style = answered_style(dlgId);
+        if (style == 3 || style < 0) { params->ResetReadPointer(); return true; }
+
         char buf[256] = {};
         if (tlen && !params->Read(buf, tlen)) { params->ResetReadPointer(); return true; }
         params->ResetReadPointer();
-
-        const int style = answered_style(dlgId);
-        if (style == 3) return true;  // PASSWORD: never touched, never logged
-        if (style < 0) return true;   // not the dialog on screen -> leave it alone
         const std::string text(buf, tlen);
         auto& s = i18n::config::get();
 
         // LIST / TABLIST we translated: send the ORIGINAL row's text for the picked index.
         if (style == 2 || style == 4 || style == 5) {
             auto it = g_shownRows.find((uint16_t)dlgId);
-            if (it == g_shownRows.end()) return true;
+            // The stored style must match the LIVE dialog's style too: an id can be
+            // reused by a later, differently-styled (or untranslated) dialog.
+            if (it == g_shownRows.end() || it->second.style != style) return true;
             std::string orig;
             if (!remap_list_response(style, it->second.orig, it->second.trans, listItem, text, orig) || orig == text)
                 return true;
-            send_dialog_response(dlgId, resp, listItem, orig);
-            return false; // swallow the translated-text response; the original went instead
+            if (send_dialog_response(dlgId, resp, listItem, orig)) {
+                Log("[i18n] dialog %d: list pick %d sent as the server's original row.", (int)dlgId, (int)listItem);
+                return false; // swallow the translated-text response; the original went instead
+            }
+            return true; // couldn't send the replacement -> let the translated-text one go
         }
 
-        // INPUT: translate what I typed into the server's language (shared outgoing toggle).
-        // Only for the main button, never commands, never numbers/PINs/amounts.
-        if (style == 1 && s.outbound_enabled && resp == 1 && !text.empty() && text[0] != '/' &&
-            !is_dynamic_text(text)) {
-            if (g_pendingResponses.size() > 64) g_pendingResponses.clear();
+        // INPUT: translate what I typed into the server's language (shared outgoing
+        // toggle). Only the main button; never a command, a single token (password/
+        // email/amount -- should_translate_input), dynamic/numeric text, or already
+        // the target language; and only if the pump can actually deliver a result
+        // back (else this would swallow the reply and never send it).
+        if (style == 1 && s.outbound_enabled && resp == 1 && i18n::hooks::pump_ready() &&
+            should_translate_input(text) &&
+            i18n::engine::needs_translation(text, s.source_cp, s.outbound_target_lang)) {
+            if (g_pendingResponses.size() > 64) flush_all_pending(); // never silently drop -- send them first
             i18n::engine::Job job;
             job.handle             = g_seq.fetch_add(1, std::memory_order_relaxed);
             job.surface            = 4; // -> hooks::apply_result -> on_response_result
@@ -314,9 +386,9 @@ bool on_send_dialogresponse(int id, BitStream* params, PacketPriority, PacketRel
             job.promptOverride     = i18n::config::build_system_prompt(s.outbound_target_lang, false);
             job.targetLangOverride = s.outbound_target_lang;
             job.displayCpOverride  = i18n::config::display_codepage(s.outbound_target_lang, false);
-            g_pendingResponses[job.handle] = { dlgId, resp, listItem, text };
+            g_pendingResponses[job.handle] = { dlgId, resp, listItem, text, GetTickCount() };
             i18n::engine::submit(job);
-            return false; // swallow; on_response_result sends it (translated, or as typed)
+            return false; // swallow; on_response_result or the tick() deadline sends it
         }
     } catch (...) {
         params->ResetReadPointer();
@@ -333,7 +405,13 @@ bool on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
     size_t n = (size_t)((rpc->numberOfBitsOfData + 7) / 8);
 
     try {
-        if (id == 61) return s.translate_dialogs ? handle_dialog(rpc, p, n) : false;
+        if (id == 61) {
+            if (!s.translate_dialogs) {
+                note_shown(std::vector<uint8_t>(p, p + n), nullptr); // shown natively -> erase any stale entry
+                return false;
+            }
+            return handle_dialog(rpc, p, n);
+        }
 
         std::vector<uint8_t> out;
         bool ok = false;
@@ -372,13 +450,14 @@ void on_part_result(const i18n::engine::Result& r) {
 }
 
 void tick(uint32_t nowMs) {
+    flush_due_responses(nowMs); // guaranteed delivery: nothing waits past its deadline
     if (g_dlgq.empty()) return;
     std::vector<i18n::dlgq::Release> out =
         i18n::config::get().translate_dialogs ? g_dlgq.tick(nowMs) : g_dlgq.flush();
     for (auto& r : out) {
         g_pendingDialogs.erase(r.seq); // a straggler that timed out
         show_payload(r.payload);
-        if (r.translated) remember_rows(r.original, r.payload);
+        note_shown(r.original, r.translated ? &r.payload : nullptr);
     }
 }
 
@@ -391,7 +470,10 @@ void on_response_result(const i18n::engine::Result& r) {
     g_pendingResponses.erase(it);
     const bool ok = r.ok && !r.displayBytes.empty();
     send_dialog_response(pr.dlgId, pr.resp, pr.listItem, ok ? r.displayBytes : pr.original);
+    Log("[i18n] dialog %d: input reply sent %s.", (int)pr.dlgId, ok ? "translated" : "as typed");
 }
+
+void flush_responses() { flush_all_pending(); }
 
 void install() {
     net::on_send_rpc(on_send_dialogresponse);

@@ -26,7 +26,22 @@ void install();
 // (Re)builds the provider config + system prompt from i18n::config and starts
 // the worker engine when inbound_chat is enabled, or stops it when disabled.
 // Safe to call repeatedly at runtime -- this is what the menu's Save button
-// calls so settings changes apply live, with no game restart. Main thread only.
+// calls so settings changes apply live, with no game restart. A call that finds
+// nothing actually changed (rebuilt config/prompt/target/codepage are identical
+// to the running engine's) returns WITHOUT restarting it: engine::start()
+// internally stops the previous engine first, which JOINS the worker threads on
+// this (the main/game) thread and can stall it for as long as an in-flight HTTP
+// call, and drops every job still queued (held dialog units, chat flips, outbound
+// chat, dialog-input replies) -- unacceptable for something called on every menu
+// Save and every outbound-toggle hotkey press. Main thread only.
 void apply_config();
+
+// True once install() has wired the AddEntry detour + registered the per-frame
+// pump + the engine's result applier -- i.e. once a submitted job is guaranteed
+// to eventually be delivered to apply_result() via pump_tick(). A surface that
+// SWALLOWS an outgoing message pending a translated result (e.g. a dialog INPUT
+// reply) must check this first: if the pump was never wired, nothing will ever
+// call back, so it must not swallow.
+bool pump_ready();
 
 } // namespace i18n::hooks

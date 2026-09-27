@@ -88,6 +88,8 @@ void from_text(const std::string& text) {
                 g_settings.target_lang = std::stoi(value);
             } else if (key == "source_cp") {
                 g_settings.source_cp = std::stoi(value);
+            } else if (key == "provider_kind") {
+                g_settings.provider_kind = std::stoi(value);
             } else if (key == "base_url") {
                 g_settings.base_url = unescape(value);
             } else if (key == "api_key") {
@@ -100,6 +102,8 @@ void from_text(const std::string& text) {
                 g_settings.read_timeout_ms = std::stoi(value);
             } else if (key == "translate_temp") {
                 g_settings.translate_temp = std::stoi(value);
+            } else if (key == "request_min_gap_ms") {
+                g_settings.request_min_gap_ms = std::stoi(value);
             } else if (key == "roman_output") {
                 g_settings.roman_output = (value == "true" || value == "1");
             } else if (key == "outbound_enabled") {
@@ -125,12 +129,14 @@ std::string to_text() {
     out << "inbound_chat=" << (g_settings.inbound_chat ? "true" : "false") << "\n";
     out << "target_lang=" << g_settings.target_lang << "\n";
     out << "source_cp=" << g_settings.source_cp << "\n";
+    out << "provider_kind=" << g_settings.provider_kind << "\n";
     out << "base_url=" << escape(g_settings.base_url) << "\n";
     out << "api_key=" << escape(g_settings.api_key) << "\n";
     out << "model=" << escape(g_settings.model) << "\n";
     out << "marker_style=" << g_settings.marker_style << "\n";
     out << "read_timeout_ms=" << g_settings.read_timeout_ms << "\n";
     out << "translate_temp=" << g_settings.translate_temp << "\n";
+    out << "request_min_gap_ms=" << g_settings.request_min_gap_ms << "\n";
     out << "roman_output=" << (g_settings.roman_output ? "true" : "false") << "\n";
     out << "outbound_enabled=" << (g_settings.outbound_enabled ? "true" : "false") << "\n";
     out << "outbound_target_lang=" << g_settings.outbound_target_lang << "\n";
@@ -160,6 +166,21 @@ void save(const char* path) {
 
 void save() {
     save("fuego_i18n.cfg");
+}
+
+const std::vector<ProviderPreset>& provider_presets() {
+    // Order = menu dropdown order. Custom first (empty url/model = don't touch the
+    // user's values). Cloud defaults chosen from live testing (2026-09): Gemini 2.0
+    // and 2.5 flash are retired, so "gemini-flash-latest" tracks the current flash;
+    // claude-haiku-4-5 and gpt-4o-mini are the cheap, strong translation models.
+    static const std::vector<ProviderPreset> presets = {
+        {0, "Custom (edit URL below)", "", ""},
+        {1, "Google (Gemini)", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-flash-latest"},
+        {2, "Anthropic (Claude)", "https://api.anthropic.com/v1", "claude-haiku-4-5"},
+        {3, "OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"},
+        {4, "Ollama / Local", "http://127.0.0.1:11434/v1", "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M"},
+    };
+    return presets;
 }
 
 const std::vector<LangOption>& language_options() {

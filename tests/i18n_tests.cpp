@@ -275,6 +275,8 @@ void test_config() {
     s.target_lang = 1049;  // Russian
     s.model = "custom-model";
     s.api_key = "test-key-123";
+    s.provider_kind = 2;   // Anthropic
+    s.request_min_gap_ms = 1500;
 
     // Save to temp file
     save("test_cfg.cfg");
@@ -284,6 +286,8 @@ void test_config() {
     s.target_lang = 1031;  // German
     s.model = "different-model";
     s.api_key = "different-key";
+    s.provider_kind = 0;   // Custom
+    s.request_min_gap_ms = 0;
 
     // Load from temp file - should restore original values
     load("test_cfg.cfg");
@@ -292,6 +296,8 @@ void test_config() {
     CHECK_EQ(s.target_lang, 1049);
     CHECK_EQ(s.model, std::string("custom-model"));
     CHECK_EQ(s.api_key, std::string("test-key-123"));
+    CHECK_EQ(s.provider_kind, 2);
+    CHECK_EQ(s.request_min_gap_ms, 1500);
 
     // Test build_system_prompt(1033) contains "English" and "placeholder"
     std::string prompt = build_system_prompt(1033);

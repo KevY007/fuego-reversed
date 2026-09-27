@@ -203,12 +203,14 @@ void apply_config() {
 	}
 
 	i18n::ProviderConfig pc;
-	pc.baseUrl   = s.base_url;
-	pc.apiKey    = s.api_key;
-	pc.model     = s.model;
+	pc.baseUrl      = s.base_url;
+	pc.apiKey       = s.api_key;
+	pc.model        = s.model;
+	pc.providerKind = s.provider_kind; // per-provider request quirks (see provider.h)
 	pc.connectMs = 2000;
 	pc.readMs    = s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000; // local models cold-load slowly
 	pc.temperature = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0; // 30 -> 0.30
+	pc.minRequestGapMs = s.request_min_gap_ms; // request pacer (free-tier RPM limits)
 
 	int dispCp = i18n::config::display_codepage( s.target_lang, s.roman_output );
 	i18n::engine::start( pc,

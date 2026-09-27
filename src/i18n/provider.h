@@ -28,6 +28,24 @@ struct ProviderConfig {
     double temperature = 0.3;
     double topP = 0.6;
     int maxTokens = 512;
+    // Minimum gap (ms) between outgoing requests, enforced globally across worker
+    // threads (mirrors config::Settings::request_min_gap_ms). 0 = no pacing. Used
+    // to stay under a cloud provider's RPM limit (free tiers). Separate from the
+    // automatic 429/503 backoff-retry, which always runs.
+    int minRequestGapMs = 0;
+    // Provider preset (mirrors config::Settings::provider_kind) -- selects
+    // per-provider request quirks discovered by live testing against each API:
+    //   0 Custom / 4 Ollama-Local : permissive -> send top_p, no special headers.
+    //   1 Google (Gemini)         : permissive -> same as above (accepts anything).
+    //   2 Anthropic (Claude)      : REJECTS temperature+top_p together (HTTP 400)
+    //                               -> omit top_p; also needs an "anthropic-version"
+    //                               header on both /chat/completions and /models.
+    //   3 OpenAI                  : REJECTS reasoning_effort (HTTP 400) -> we never
+    //                               send it anyway; top_p omitted for cloud.
+    // (reasoning_effort is no longer sent for ANY provider: OpenAI 400s on it,
+    //  Ollama silently ignores it, and chain-of-thought is handled by strip_think
+    //  plus recommending non-thinking models.)
+    int providerKind = 0;
 };
 
 struct IProvider {

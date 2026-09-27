@@ -8,6 +8,17 @@ struct Settings {
     bool inbound_chat = false;
     int target_lang = 1033;  // LANG_ENGLISH default (see language_options())
     int source_cp = 0;       // 0 = auto-detect
+    // Provider preset the endpoint is configured for. Selecting one in the menu
+    // overwrites base_url (+ a default model) and drives per-provider request
+    // quirks in provider.cpp (see provider_presets() / ProviderConfig::providerKind):
+    //   0 = Custom (edit URL freely; permissive request, like local)
+    //   1 = Google (Gemini)     -- permissive
+    //   2 = Anthropic (Claude)  -- MUST omit top_p (400 if temperature+top_p both
+    //                              set) and needs an "anthropic-version" header
+    //   3 = OpenAI              -- MUST omit reasoning_effort (400 "unrecognized")
+    //   4 = Ollama / Local      -- permissive (the offline default)
+    // Default 4 matches the local base_url/model below.
+    int provider_kind = 4;
     std::string base_url = "http://127.0.0.1:11434/v1";
     std::string api_key;     // empty = no key (local Ollama)
     // Default: Tencent Hy-MT2-7B (purpose-built MT LLM, Apache-2.0), Q4_K_M ~4.6 GB.
@@ -23,6 +34,13 @@ struct Settings {
     // Sampling temperature as a percent (30 = 0.30). 0.3 works well for both the
     // Hy-MT2 MT models and general models (gemma3/qwen). Menu: "Temperature".
     int translate_temp = 30;
+    // Minimum gap (ms) between outgoing translation requests, enforced globally
+    // across all worker threads (a request pacer). 0 = off (default -- local/paid
+    // endpoints have no meaningful RPM limit). Set ~1000-4000ms for a free-tier
+    // cloud key (e.g. Gemini free) to stay under its requests-per-minute cap and
+    // avoid HTTP 429/503 throttling. Independent of the automatic 429/503 retry
+    // (which always backs off + retries a few times). Menu: "Min request gap".
+    int request_min_gap_ms = 0;
     // Write the target language phonetically in the Latin/Roman alphabet
     // (Roman Urdu, Hinglish, Arabizi, ...) instead of its native script. This
     // is REQUIRED for languages whose script SA:MP's cp1251/cp1252 font can't
@@ -69,6 +87,15 @@ std::string to_text();             // serialize this block to key=value lines
 void from_text(const std::string& text); // parse key=value lines into get()
 
 // --- helpers shared by the engine + the menu -------------------------------
+
+// A selectable provider preset for the menu's Provider dropdown. `kind` is the
+// value stored in Settings::provider_kind. `url` / `model` are applied to
+// base_url / model when the preset is chosen; both are empty for Custom, which
+// leaves the user's typed values untouched. The per-provider request quirks are
+// applied in provider.cpp based on `kind` (see Settings::provider_kind).
+struct ProviderPreset { int kind; const char* name; const char* url; const char* model; };
+const std::vector<ProviderPreset>& provider_presets();
+
 struct LangOption { int code; const char* name; };
 // The languages offered in the menu's target-language dropdown, in menu order.
 // build_system_prompt() resolves a code to its name from this same table, so

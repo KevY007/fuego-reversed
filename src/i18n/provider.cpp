@@ -7,6 +7,7 @@
 #include <winhttp.h>
 #include <algorithm>
 #include <cstdio>
+#include <mutex>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -77,6 +78,41 @@ std::string trim_ws_quotes(const std::string& in) {
     if (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') && s.back() == s.front())
         s = s.substr(1, s.size() - 2);
     return s;
+}
+
+// Global request pacer. All translation requests (from every worker thread) pass
+// through this before sending, so their START times are at least `minGapMs` apart
+// -- a simple way to stay under a provider's requests-per-minute limit (free-tier
+// cloud keys throttle hard: HTTP 429/503). Holding the mutex across the Sleep
+// serializes the workers, which is exactly the pacing we want. minGapMs<=0 = off.
+std::mutex    g_rateMtx;
+unsigned long g_lastReqTick = 0; // GetTickCount() of the last request start (0 = none yet)
+
+void rate_gate(int minGapMs) {
+    if (minGapMs <= 0) return;
+    std::lock_guard<std::mutex> lk(g_rateMtx);
+    unsigned long now = GetTickCount();
+    if (g_lastReqTick != 0) {
+        unsigned long earliest = g_lastReqTick + (unsigned long)minGapMs;
+        // now < earliest also covers the ~49-day GetTickCount wrap safely enough
+        // for a pacer (worst case: one request goes early right at the wrap).
+        if (now < earliest) { Sleep(earliest - now); now = GetTickCount(); }
+    }
+    g_lastReqTick = now;
+}
+
+// Reads a Retry-After response header (seconds form) if present and sane; returns
+// milliseconds to wait, or 0 if absent/unparseable (caller falls back to
+// exponential backoff). An HTTP-date Retry-After parses to 0 here -> backoff.
+DWORD retry_after_ms(HINTERNET hRequest) {
+    wchar_t buf[64] = {};
+    DWORD len = sizeof(buf);
+    if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_RETRY_AFTER, WINHTTP_HEADER_NAME_BY_INDEX,
+                            buf, &len, WINHTTP_NO_HEADER_INDEX)) {
+        int secs = _wtoi(buf);
+        if (secs > 0 && secs <= 60) return (DWORD)secs * 1000u;
+    }
+    return 0;
 }
 
 // Formats a double with a '.' decimal point regardless of C locale (the app
@@ -178,12 +214,17 @@ private:
         std::string body = "{";
         body += "\"model\":\"" + json::escape(cfg_.model) + "\",";
         body += "\"temperature\":" + fmt_double(cfg_.temperature) + ",";
-        body += "\"top_p\":" + fmt_double(cfg_.topP) + ",";
+        // top_p is sent only for permissive endpoints (Custom / Ollama-Local).
+        // Anthropic returns HTTP 400 if temperature AND top_p are both set, and the
+        // cloud models are well-behaved on temperature alone; local small models
+        // (Hy-MT2) keep top_p as an extra anti-runaway guard. See ProviderConfig.
+        if (cfg_.providerKind == 0 || cfg_.providerKind == 4)
+            body += "\"top_p\":" + fmt_double(cfg_.topP) + ",";
         body += "\"max_tokens\":" + std::to_string(cfg_.maxTokens) + ",";
         body += "\"stream\":false,";
-        // Suppress chain-of-thought on reasoning-capable OpenAI models; Ollama
-        // and MT models ignore it harmlessly.
-        body += "\"reasoning_effort\":\"none\",";
+        // NOTE: reasoning_effort is deliberately NOT sent -- OpenAI 400s on it
+        // ("Unrecognized request argument"), Ollama ignores it, and we suppress
+        // chain-of-thought via strip_think() + recommending non-thinking models.
         body += "\"messages\":[";
         body += "{\"role\":\"user\",\"content\":\"" + json::escape(userContent) + "\"}";
         body += "]}";
@@ -193,6 +234,10 @@ private:
     bool do_translate(const std::vector<std::string>& units, const std::string& systemPrompt,
                        const std::string& rollingCtx, std::vector<std::string>& out, std::string& err) {
         std::string body = build_request_body(units, systemPrompt, rollingCtx);
+
+        // Pace request starts across all workers (stay under a provider's RPM
+        // limit -- free-tier cloud keys throttle hard). No-op when disabled (0).
+        rate_gate(cfg_.minRequestGapMs);
 
         // baseUrl should already end in /v1, but tolerate a stray trailing
         // slash (a common config typo, e.g. "http://127.0.0.1:11434/v1/")
@@ -236,56 +281,69 @@ private:
         }
 
         DWORD reqFlags = https ? WINHTTP_FLAG_SECURE : 0;
-        WinHttpHandle hRequest(WinHttpOpenRequest(hConnect, L"POST", pathBuf, nullptr, WINHTTP_NO_REFERER,
-                                                   WINHTTP_DEFAULT_ACCEPT_TYPES, reqFlags));
-        if (!hRequest.h) {
-            err = "WinHttpOpenRequest failed";
-            return false;
-        }
 
-        std::wstring headers = L"Content-Type: application/json\r\n";
-        if (!cfg_.apiKey.empty()) {
-            headers += L"Authorization: Bearer " + widen(cfg_.apiKey) + L"\r\n";
-        }
-
-        BOOL sent = WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.size(),
-                                        body.empty() ? nullptr : (LPVOID)body.data(), (DWORD)body.size(),
-                                        (DWORD)body.size(), 0);
-        if (!sent) {
-            err = "WinHttpSendRequest failed";
-            return false;
-        }
-
-        if (!WinHttpReceiveResponse(hRequest, nullptr)) {
-            err = "WinHttpReceiveResponse failed";
-            return false;
-        }
-
+        // Send with a bounded retry on transient throttling / 5xx: HTTP 429 (rate
+        // limit) and 500/502/503/504 back off (honouring Retry-After when given,
+        // else exponential 500ms->1000ms) and retry before giving up. A FRESH
+        // request handle is opened per attempt (a sent handle can't be cleanly
+        // reused). A 200 breaks out with the body read; any other status -- or
+        // exhausted retries -- fails the call (the engine then shows the original).
+        const int kMaxAttempts = 3;
         DWORD statusCode = 0;
-        DWORD statusSize = sizeof(statusCode);
-        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
-        if (statusCode != 200) {
+        std::string responseBody;
+        for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+            WinHttpHandle hRequest(WinHttpOpenRequest(hConnect, L"POST", pathBuf, nullptr, WINHTTP_NO_REFERER,
+                                                       WINHTTP_DEFAULT_ACCEPT_TYPES, reqFlags));
+            if (!hRequest.h) { err = "WinHttpOpenRequest failed"; return false; }
+
+            std::wstring headers = L"Content-Type: application/json\r\n";
+            if (!cfg_.apiKey.empty())
+                headers += L"Authorization: Bearer " + widen(cfg_.apiKey) + L"\r\n";
+            // Anthropic's OpenAI-compatible endpoint still requires its native
+            // versioning header; harmless to the others (tested: OpenAI/Gemini
+            // accept it). Only added for the Anthropic preset to stay clean.
+            if (cfg_.providerKind == 2)
+                headers += L"anthropic-version: 2023-06-01\r\n";
+
+            BOOL sent = WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.size(),
+                                            body.empty() ? nullptr : (LPVOID)body.data(), (DWORD)body.size(),
+                                            (DWORD)body.size(), 0);
+            if (!sent) { err = "WinHttpSendRequest failed"; return false; }
+            if (!WinHttpReceiveResponse(hRequest, nullptr)) { err = "WinHttpReceiveResponse failed"; return false; }
+
+            statusCode = 0;
+            DWORD statusSize = sizeof(statusCode);
+            WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+
+            if (statusCode == 200) {
+                responseBody.clear();
+                bool readOk = true;
+                for (;;) {
+                    DWORD avail = 0;
+                    if (!WinHttpQueryDataAvailable(hRequest, &avail)) { err = "WinHttpQueryDataAvailable failed"; readOk = false; break; }
+                    if (avail == 0) break;
+                    std::string chunk(avail, '\0');
+                    DWORD read = 0;
+                    if (!WinHttpReadData(hRequest, chunk.data(), avail, &read)) { err = "WinHttpReadData failed"; readOk = false; break; }
+                    chunk.resize(read);
+                    responseBody += chunk;
+                }
+                if (!readOk) return false;
+                break; // success
+            }
+
+            bool retryable = (statusCode == 429 || statusCode == 500 ||
+                              statusCode == 502 || statusCode == 503 || statusCode == 504);
+            if (retryable && attempt + 1 < kMaxAttempts) {
+                DWORD waitMs = retry_after_ms(hRequest);
+                if (waitMs == 0) waitMs = 500u << attempt; // 500ms, then 1000ms
+                if (waitMs > 15000) waitMs = 15000;
+                Sleep(waitMs);
+                continue;
+            }
             err = "HTTP status " + std::to_string(statusCode);
             return false;
-        }
-
-        std::string responseBody;
-        for (;;) {
-            DWORD avail = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
-                err = "WinHttpQueryDataAvailable failed";
-                return false;
-            }
-            if (avail == 0) break;
-            std::string chunk(avail, '\0');
-            DWORD read = 0;
-            if (!WinHttpReadData(hRequest, chunk.data(), avail, &read)) {
-                err = "WinHttpReadData failed";
-                return false;
-            }
-            chunk.resize(read);
-            responseBody += chunk;
         }
 
         std::string content;
@@ -367,6 +425,11 @@ bool list_models(const ProviderConfig& config, std::vector<std::string>& out, st
     std::wstring headers = L"Accept: application/json\r\n";
     if (!config.apiKey.empty()) {
         headers += L"Authorization: Bearer " + widen(config.apiKey) + L"\r\n";
+    }
+    // Anthropic's /models rejects the request without this (HTTP 400
+    // "anthropic-version: header is required"); other providers ignore it.
+    if (config.providerKind == 2) {
+        headers += L"anthropic-version: 2023-06-01\r\n";
     }
 
     if (!WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.size(),

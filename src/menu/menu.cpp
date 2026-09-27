@@ -50,9 +50,10 @@ void fetch_models_async() {
 	// Snapshot the endpoint/key now (the user may keep typing while it runs).
 	i18n::ProviderConfig pc;
 	auto &s = i18n::config::get();
-	pc.baseUrl = s.base_url;
-	pc.apiKey  = s.api_key;
-	pc.model   = s.model;
+	pc.baseUrl      = s.base_url;
+	pc.apiKey       = s.api_key;
+	pc.model        = s.model;
+	pc.providerKind = s.provider_kind; // e.g. Anthropic /models needs its version header
 
 	std::thread( [pc]() {
 		std::vector<std::string> out;
@@ -85,9 +86,10 @@ void run_selftest_async() {
 
 	i18n::ProviderConfig pc;
 	auto &s = i18n::config::get();
-	pc.baseUrl = s.base_url;
-	pc.apiKey  = s.api_key;
-	pc.model   = s.model;
+	pc.baseUrl      = s.base_url;
+	pc.apiKey       = s.api_key;
+	pc.model        = s.model;
+	pc.providerKind = s.provider_kind; // apply this provider's request quirks in the self-test too
 	pc.readMs  = s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000;
 	pc.temperature = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0;
 	std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output );
@@ -330,10 +332,55 @@ void draw_ui() {
 			            "romanized targets; Cyrillic/Arabic may not render there (dialogs/labels/chat are fine)." );
 			ImGui::Separator();
 
-			// Endpoint
+			// Endpoint + model text buffers (declared together so the Provider
+			// preset dropdown below can overwrite both when a provider is picked).
 			static char endpoint_buf[256] = "";
-			static bool endpoint_init = false;
-			if ( !endpoint_init ) { endpoint_init = true; strncpy_s( endpoint_buf, sizeof endpoint_buf, s.base_url.c_str(), _TRUNCATE ); }
+			static char model_buf[256]    = "";
+			static bool bufs_init = false;
+			if ( !bufs_init ) {
+				bufs_init = true;
+				strncpy_s( endpoint_buf, sizeof endpoint_buf, s.base_url.c_str(), _TRUNCATE );
+				strncpy_s( model_buf,    sizeof model_buf,    s.model.c_str(),    _TRUNCATE );
+			}
+
+			// Provider preset: pick a known API to auto-fill the URL + a default
+			// model and apply that provider's request quirks (see provider.cpp),
+			// or Custom to type any OpenAI-compatible URL yourself.
+			{
+				const auto &presets = i18n::config::provider_presets();
+				int cur = 0;
+				for ( size_t i = 0; i < presets.size(); ++i )
+					if ( presets[i].kind == s.provider_kind ) { cur = (int) i; break; }
+				if ( ImGui::BeginCombo( "Provider", presets[cur].name ) ) {
+					for ( size_t i = 0; i < presets.size(); ++i ) {
+						bool sel = ( presets[i].kind == s.provider_kind );
+						if ( ImGui::Selectable( presets[i].name, sel ) ) {
+							s.provider_kind = presets[i].kind;
+							// A concrete provider overwrites the URL + default model
+							// (Custom has empty url/model -> leaves them untouched),
+							// then refresh the model list against the new endpoint.
+							if ( presets[i].url && presets[i].url[0] ) {
+								s.base_url = presets[i].url;
+								strncpy_s( endpoint_buf, sizeof endpoint_buf, presets[i].url, _TRUNCATE );
+							}
+							if ( presets[i].model && presets[i].model[0] ) {
+								s.model = presets[i].model;
+								strncpy_s( model_buf, sizeof model_buf, presets[i].model, _TRUNCATE );
+							}
+							fetch_models_async();
+						}
+						if ( sel ) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+				ImGui::SameLine();
+				HelpMarker( "Your API provider. Google / Anthropic / OpenAI fill in the URL and a "
+				            "default model and apply that provider's required request tweaks "
+				            "automatically (paste your API key below). Ollama / Local is the offline "
+				            "default. Custom lets you type any OpenAI-compatible base URL." );
+			}
+
+			// Endpoint (auto-filled by the preset above; edit freely for Custom)
 			ImGui::InputText( "Endpoint (base URL, ends in /v1)", endpoint_buf, sizeof endpoint_buf );
 			s.base_url = endpoint_buf;
 
@@ -346,9 +393,6 @@ void draw_ui() {
 
 			// Model: a live dropdown of what the endpoint ACTUALLY serves (so you
 			// can't pick one that isn't installed) + a manual-override text field.
-			static char model_buf[256] = "";
-			static bool model_init = false;
-			if ( !model_init ) { model_init = true; strncpy_s( model_buf, sizeof model_buf, s.model.c_str(), _TRUNCATE ); }
 
 			if ( ImGui::Button( "Refresh models" ) ) fetch_models_async();
 			ImGui::SameLine();
@@ -377,14 +421,12 @@ void draw_ui() {
 			ImGui::InputText( "Model (or type manually)", model_buf, sizeof model_buf );
 			s.model = model_buf;
 
-			ImGui::TextDisabled( "Recommended: Hy-MT2-7B for native-script languages (Spanish/Russian/etc.)." );
+			ImGui::TextDisabled( "Local (Ollama): Hy-MT2-7B is great for native-script languages (Spanish/Russian/etc.)." );
 			if ( ImGui::SmallButton( "copy 7B pull" ) )
 				ImGui::SetClipboardText( "ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M" );
-			ImGui::SameLine();
-			if ( ImGui::SmallButton( "copy qwen3:4b pull" ) )
-				ImGui::SetClipboardText( "ollama pull qwen3:4b" );
-			ImGui::TextDisabled( "  For ROMANIZED output (Roman Urdu / Hinglish) use a general LLM: qwen3:4b or gemma3:4b." );
-			ImGui::TextDisabled( "  Claude/OpenAI etc. work too -- for Claude use https://api.anthropic.com/v1/ + your key." );
+			ImGui::TextDisabled( "  For ROMANIZED output (Roman Urdu/Arabic/Hindi), pick a cloud Provider above and" );
+			ImGui::TextDisabled( "  paste your key -- local models can't romanize well. Google has a free tier;" );
+			ImGui::TextDisabled( "  Anthropic (Claude Haiku) and OpenAI (gpt-4o-mini) are cheap and excellent." );
 
 			ImGui::Separator();
 
@@ -416,6 +458,13 @@ void draw_ui() {
 			ImGui::SameLine();
 			HelpMarker( "Sampling temperature x100 (30 = 0.30). 0.30 works well for both Hy-MT2 and general "
 			            "models. Higher = more creative/varied; too low (0) can make Hy-MT2 loop. Applies on Save." );
+
+			ImGui::SliderInt( "Min request gap (ms, 0=off)", &s.request_min_gap_ms, 0, 5000 );
+			ImGui::SameLine();
+			HelpMarker( "Minimum time between translation requests, paced across all workers. Leave 0 for "
+			            "local or paid cloud. For a FREE-tier cloud key (e.g. Gemini free) set ~1000-4000ms to "
+			            "stay under its requests-per-minute limit and avoid 429/503 throttling. (Transient "
+			            "429/503 are also auto-retried with backoff regardless.) Applies on Save." );
 
 			const char* marker_styles[] = { "Glyph + tint", "Tint only", "Prefix tag" };
 			ImGui::Combo( "Marker style", &s.marker_style, marker_styles, 3 );

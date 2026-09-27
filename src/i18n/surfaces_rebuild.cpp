@@ -198,6 +198,9 @@ namespace {
 // at most 0x80 bytes (127 + NUL) per cell and spills the rest into the next column.
 constexpr size_t kLineBudget = 255;
 constexpr size_t kCellBudget = 127;
+// A DialogResponse's list text is strncpy(.., 0x80)'d from the picked row: a text
+// this long was (or may have been) cut there.
+constexpr size_t kNativeRespCut = 127;
 
 bool blank_line(const std::string& s) {
     for (char c : s)
@@ -293,6 +296,22 @@ bool remap_list_response(int style, const std::vector<std::string>& orig,
     };
     const std::string& o = orig[row];
     const std::string& t = trans[row];
+
+    // SA:MP's response text is the picked row (LIST) or its FIRST CELL (TABLIST)
+    // copied with strncpy(.., 0x80), then colour-stripped. A response at that cap
+    // (>= 127 bytes) was CUT -- and holds no complete {RRGGBB} (stripping one would
+    // leave it under 120 bytes) -- so mirror the cut: the picked row matches if its
+    // selection STARTS WITH resp, and the original's selection gets the same cut,
+    // then the same colour strip, exactly as SA:MP would have produced it.
+    if (resp.size() >= kNativeRespCut) {
+        const std::string selT = (style == 2) ? t : first_col(t);
+        const std::string selO = (style == 2) ? o : first_col(o);
+        if (selT.size() < resp.size() || selT.compare(0, resp.size(), resp) != 0) return false;
+        out = strip_colors(selO.substr(0, resp.size()));
+        return true;
+    }
+
+    // Below the cap: exact matching (whole row / first column, colour-stripped or raw).
     const std::string candT[4] = { strip_colors(t), strip_colors(first_col(t)), t, first_col(t) };
     const std::string candO[4] = { strip_colors(o), strip_colors(first_col(o)), o, first_col(o) };
     for (int k = 0; k < 4; ++k)

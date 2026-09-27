@@ -122,7 +122,11 @@ std::string strip_colors(const std::string& s);
 // from the TRANSLATED row the player picked. Rebuild the text the ORIGINAL dialog
 // would have produced for the same row: find which derivation (whole row / first
 // column, colour-stripped or raw) turns trans[row] into `resp` and apply it to
-// orig[row]. row = listItem (+1 for TABLIST_HEADERS, whose row 0 is the header).
+// orig[row]. SA:MP copies the row (LIST) / first cell (TABLIST) with strncpy(.., 0x80)
+// and then strips colours, so a `resp` of 127+ bytes was CUT: the row matches if
+// that selection STARTS WITH `resp`, and `out` is the original's selection cut to
+// resp.size() bytes, then colour-stripped (SA:MP's order). Shorter responses must
+// match exactly. row = listItem (+1 for TABLIST_HEADERS, whose row 0 is the header).
 // False if out of range, if a row before the picked one isn't exactly one native
 // item (empty, or longer than 255 bytes -- listItem would then name another row),
 // or if nothing matches (the caller then sends `resp` unchanged).

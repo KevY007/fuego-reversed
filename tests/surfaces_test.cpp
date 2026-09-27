@@ -506,6 +506,37 @@ int main() {
               "I5: groups in first-seen order; a colour prefix doesn't split an identical core");
         check(group_by_core(d, {}).empty(), "I5: nothing missing -> no jobs");
     }
+    {   // M3: SA:MP's response text is the picked row (LIST) / its first cell (TABLIST)
+        // copied with strncpy(.., 0x80), then colour-stripped. At that cap the text was CUT.
+        const std::string longT(200, 't');
+        std::vector<std::string> orig  = { "Withdraw", std::string(200, 'o') };
+        std::vector<std::string> trans = { longT, std::string(180, 'u') };
+        std::string out;
+        check(remap_list_response(2, orig, trans, 0, longT.substr(0, 127), out) && out == "Withdraw",
+              "M3: a response cut at the native cap matches its row by prefix");
+        check(remap_list_response(2, orig, trans, 1, std::string(127, 'u'), out) && out == std::string(127, 'o'),
+              "M3: the chosen original is cut to the response's length");
+        check(remap_list_response(2, orig, trans, 0, longT.substr(0, 128), out) && out == "Withdraw",
+              "M3: a 128-byte response (the other reading of the 0x80 copy) matches too");
+        check(!remap_list_response(2, orig, trans, 0, std::string(127, 'x'), out),
+              "M3: a cut response that isn't a prefix of the row -> no remap");
+        // Below the cap: exact matching only.
+        std::vector<std::string> o2 = { "Withdraw money" };
+        std::vector<std::string> t2 = { "Retirar dinero" };
+        check(!remap_list_response(2, o2, t2, 0, "Retirar", out), "M3: below the cap a mere prefix is NOT a match");
+        check(remap_list_response(2, o2, t2, 0, "Retirar dinero", out) && out == "Withdraw money",
+              "M3: below the cap exact matching still works");
+        // TABLIST: the response is the FIRST CELL only, so the original's first cell is sent.
+        std::vector<std::string> o3 = { "{c8c8c8}H1\t{c8c8c8}H2", "Las Venturas Bank\t12m" };
+        std::vector<std::string> t3 = { "{c8c8c8}H1\t{c8c8c8}H2", std::string(150, 'L') + "\t12m" };
+        check(remap_list_response(5, o3, t3, 0, std::string(127, 'L'), out) && out == "Las Venturas Bank",
+              "M3: a tablist first cell at the cap maps back to the original's first cell only");
+        // SA:MP cuts BEFORE it strips colours: the original is cut the same way.
+        std::vector<std::string> o4 = { "{ffffff}" + std::string(200, 'o') };
+        std::vector<std::string> t4 = { longT };
+        check(remap_list_response(2, o4, t4, 0, longT.substr(0, 127), out) && out == std::string(119, 'o'),
+              "M3: the original is cut at the response length, then colour-stripped (native order)");
+    }
     {   // remap: a data row before the picked one that isn't exactly ONE native item
         // (longer than the 255-byte reader) shifts SA:MP's indices -> never remap.
         std::vector<std::string> orig  = { std::string(300, 'a'), "Bank B", "Bank C" };

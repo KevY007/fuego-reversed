@@ -47,6 +47,8 @@ constexpr uint32_t HOOKENTER_CNETGAME_DTOR2 = 0xC6736;
 
 // --- offsets WITHIN structs (not from samp.dll base) ---
 constexpr uint32_t NETGAME_RAKCLIENT_IFACE = 0x2C; // stSAMP::pRakClientInterface
+constexpr uint32_t DIALOG_TYPE = 0x2C; // CDialog::iType (int)
+constexpr uint32_t DIALOG_ID   = 0x30; // CDialog::DialogID (int16)
 
 // --- version signature (10 bytes at base+SIG_OFFSET identify 0.3.DL) ---
 constexpr uint32_t SIG_OFFSET = 0xBABE;

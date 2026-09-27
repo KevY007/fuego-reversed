@@ -27,31 +27,11 @@ namespace {
 
 std::atomic<uint64_t> g_seq{ 1 };
 
-// List-dialog selection reverse-map (translated row text -> original row text), so a
-// selection on a TRANSLATED list dialog still sends what a text-matching server
-// expects. Populated when a multi-line dialog body is translated; read on outbound
-// RPC 62. Main/net thread only (incoming dispatch + outgoing send both run there).
-std::unordered_map<std::string, std::string> g_listRevMap;
-
 void split_lines(const std::string& s, std::vector<std::string>& out) {
     out.clear();
     size_t start = 0;
     for (size_t i = 0; i <= s.size(); ++i)
         if (i == s.size() || s[i] == '\n') { out.push_back(s.substr(start, i - start)); start = i + 1; }
-}
-
-// Record translated<->original rows of a translated multi-line body (a list dialog's
-// items are its newline-separated body). Harmless for non-list bodies (unused unless
-// a matching RPC 62 arrives). Capped to bound memory.
-void note_list_rows(const std::string& original, const std::string& translated) {
-    if (original.find('\n') == std::string::npos) return;
-    std::vector<std::string> o, t;
-    split_lines(original, o);
-    split_lines(translated, t);
-    if (o.size() != t.size()) return;
-    if (g_listRevMap.size() > 500) g_listRevMap.clear();
-    for (size_t i = 0; i < t.size(); ++i)
-        if (!t[i].empty() && t[i] != o[i]) g_listRevMap[t[i]] = o[i];
 }
 
 // Queue a background cache-fill translation (surface 2 -> apply_result ignores it;
@@ -76,7 +56,6 @@ bool tm_translate(const std::string& src, std::string& out) {
     if (src.size() < 2) { out = src; return true; }
     auto& s = i18n::config::get();
     if (i18n::engine::cache_lookup(src, s.source_cp, s.target_lang, out)) {
-        note_list_rows(src, out); // remember rows in case this is a list dialog body
         return true;
     }
     queue_fill(src);
@@ -255,37 +234,94 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
     return true;
 }
 
-// Outbound RPC 62 (DialogResponse): if the selected LIST-row text is one we recorded
-// as a translation, re-send it with the ORIGINAL row text so a text-matching server
-// recognises the selection. Bypasses the seam via g_RakClient (like outbound chat) ->
-// no re-entry. Index-based servers are unaffected (wListItem is unchanged).
-bool on_send_dialogresponse(int id, BitStream* params, PacketPriority, PacketReliability, char, bool) {
-    if (id != 62 || !params) return true;
-    if (!i18n::config::get().translate_dialogs || g_listRevMap.empty()) return true;
-
-    params->ResetReadPointer();
-    int16_t dlgId = 0, listItem = 0;
-    uint8_t resp = 0, tlen = 0;
-    if (!params->Read(dlgId) || !params->Read(resp) || !params->Read(listItem) || !params->Read(tlen)
-        || tlen == 0 || tlen > 200) { params->ResetReadPointer(); return true; }
-    char buf[256] = {};
-    if (!params->Read(buf, tlen)) { params->ResetReadPointer(); return true; }
-    params->ResetReadPointer();
-
-    auto it = g_listRevMap.find(std::string(buf, tlen));
-    if (it == g_listRevMap.end()) return true; // not a translated row -> send unchanged
-
-    const std::string& orig = it->second;
-    if (!g_RakClient) return true;
-    size_t ol = orig.size() > 255 ? 255 : orig.size();
+// DialogResponse wire (client -> server): i16 dialogId, u8 response, i16 listItem,
+// u8 textLen, text. Sent via g_RakClient, which wraps the REAL interface and so
+// bypasses the send seam -- this can never re-enter on_send_dialogresponse().
+void send_dialog_response(int16_t dlgId, uint8_t resp, int16_t listItem, const std::string& text) {
+    if (!g_RakClient) return;
+    const size_t tl = text.size() > 255 ? 255 : text.size();
     BitStream bs;
     bs.Write(dlgId);
     bs.Write(resp);
     bs.Write(listItem);
-    bs.Write((uint8_t)ol);
-    if (ol) bs.Write((char*)orig.data(), (int)ol);
+    bs.Write((uint8_t)tl);
+    if (tl) bs.Write((char*)text.data(), (int)tl);
     g_RakClient->RPC(62, &bs);
-    return false; // swallow the translated-text response; we sent the original
+}
+
+struct PendingResponse {
+    int16_t     dlgId = 0;
+    uint8_t     resp = 0;
+    int16_t     listItem = 0;
+    std::string original;
+};
+std::unordered_map<uint64_t, PendingResponse> g_pendingResponses;
+
+// The live dialog's style if it's the one being answered (SA:MP's own state, read at
+// send time -- the response is sent before the dialog closes), else -1.
+int answered_style(int16_t dlgId) {
+    const uint32_t base = samp::base();
+    if (!base) return -1;
+    const uint8_t* dlg = *reinterpret_cast<const uint8_t* const*>(base + samp::addr::DIALOG_INFO);
+    if (!dlg) return -1;
+    if (*reinterpret_cast<const int16_t*>(dlg + samp::addr::DIALOG_ID) != dlgId) return -1;
+    return *reinterpret_cast<const int*>(dlg + samp::addr::DIALOG_TYPE);
+}
+
+bool on_send_dialogresponse(int id, BitStream* params, PacketPriority, PacketReliability, char, bool) {
+    if (id != 62 || !params) return true;
+    try {
+        params->ResetReadPointer();
+        int16_t dlgId = 0, listItem = 0;
+        uint8_t resp = 0, tlen = 0;
+        if (!params->Read(dlgId) || !params->Read(resp) || !params->Read(listItem) || !params->Read(tlen)) {
+            params->ResetReadPointer();
+            return true;
+        }
+        char buf[256] = {};
+        if (tlen && !params->Read(buf, tlen)) { params->ResetReadPointer(); return true; }
+        params->ResetReadPointer();
+
+        const int style = answered_style(dlgId);
+        if (style == 3) return true;  // PASSWORD: never touched, never logged
+        if (style < 0) return true;   // not the dialog on screen -> leave it alone
+        const std::string text(buf, tlen);
+        auto& s = i18n::config::get();
+
+        // LIST / TABLIST we translated: send the ORIGINAL row's text for the picked index.
+        if (style == 2 || style == 4 || style == 5) {
+            auto it = g_shownRows.find((uint16_t)dlgId);
+            if (it == g_shownRows.end()) return true;
+            std::string orig;
+            if (!remap_list_response(style, it->second.orig, it->second.trans, listItem, text, orig) || orig == text)
+                return true;
+            send_dialog_response(dlgId, resp, listItem, orig);
+            return false; // swallow the translated-text response; the original went instead
+        }
+
+        // INPUT: translate what I typed into the server's language (shared outgoing toggle).
+        // Only for the main button, never commands, never numbers/PINs/amounts.
+        if (style == 1 && s.outbound_enabled && resp == 1 && !text.empty() && text[0] != '/' &&
+            !is_dynamic_text(text)) {
+            if (g_pendingResponses.size() > 64) g_pendingResponses.clear();
+            i18n::engine::Job job;
+            job.handle             = g_seq.fetch_add(1, std::memory_order_relaxed);
+            job.surface            = 4; // -> hooks::apply_result -> on_response_result
+            job.sourceBytes        = text;
+            job.srcCodepage        = s.source_cp;
+            job.skipContext        = true;
+            job.noDedup            = true;
+            job.promptOverride     = i18n::config::build_system_prompt(s.outbound_target_lang, false);
+            job.targetLangOverride = s.outbound_target_lang;
+            job.displayCpOverride  = i18n::config::display_codepage(s.outbound_target_lang, false);
+            g_pendingResponses[job.handle] = { dlgId, resp, listItem, text };
+            i18n::engine::submit(job);
+            return false; // swallow; on_response_result sends it (translated, or as typed)
+        }
+    } catch (...) {
+        params->ResetReadPointer();
+    }
+    return true;
 }
 
 } // namespace
@@ -348,9 +384,18 @@ void tick(uint32_t nowMs) {
 
 bool holding() { return !g_dlgq.empty(); }
 
+void on_response_result(const i18n::engine::Result& r) {
+    auto it = g_pendingResponses.find(r.handle);
+    if (it == g_pendingResponses.end()) return;
+    PendingResponse pr = std::move(it->second);
+    g_pendingResponses.erase(it);
+    const bool ok = r.ok && !r.displayBytes.empty();
+    send_dialog_response(pr.dlgId, pr.resp, pr.listItem, ok ? r.displayBytes : pr.original);
+}
+
 void install() {
     net::on_send_rpc(on_send_dialogresponse);
-    Log("[i18n] surfaces: dialog-response reverse-map registered.");
+    Log("[i18n] surfaces: DialogResponse handler registered (list remap + input translation).");
 }
 
 } // namespace i18n::surfaces

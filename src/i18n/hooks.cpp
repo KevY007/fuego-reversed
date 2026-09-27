@@ -55,6 +55,8 @@ void apply_result( const i18n::engine::Result &r ) {
 	if ( r.surface == 1 ) { i18n::outbound::on_result( r ); return; }
 	// Dialog unit translations (surface 3) complete a held dialog.
 	if ( r.surface == 3 ) { i18n::surfaces::on_part_result( r ); return; }
+	// Outgoing dialog-input translations (surface 4) are sent to the server.
+	if ( r.surface == 4 ) { i18n::surfaces::on_response_result( r ); return; }
 	// Surface 2: translation-memory fill for labels/HUD -- already cached by
 	// process_one(); nothing to show.
 	if ( r.surface != 0 ) return;

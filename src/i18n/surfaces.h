@@ -86,6 +86,22 @@ std::string assemble_body(const DialogPlan& plan, const std::vector<std::string>
 // entry falls back to the original core).
 std::vector<uint8_t> assemble_dialog(const DialogPlan& plan, const std::vector<std::string>& cores);
 
+// Remove {RRGGBB} colour codes (SA:MP strips them from a list row's response text).
+std::string strip_colors(const std::string& s);
+
+// A DialogResponse from a TRANSLATED list/tablist dialog carries text SA:MP derived
+// from the TRANSLATED row the player picked. Rebuild the text the ORIGINAL dialog
+// would have produced for the same row: find which derivation (whole row / first
+// column, colour-stripped or raw) turns trans[row] into `resp` and apply it to
+// orig[row]. row = listItem (+1 for TABLIST_HEADERS, whose row 0 is the header).
+// False if out of range or nothing matches (the caller then sends `resp` unchanged).
+bool remap_list_response(int style, const std::vector<std::string>& orig,
+                         const std::vector<std::string>& trans, int listItem,
+                         const std::string& resp, std::string& out);
+
+// An outgoing dialog-input translation finished (engine surface 4). Main thread.
+void on_response_result(const i18n::engine::Result& r);
+
 // A dialog that must never be translated or held: a PASSWORD dialog (style 3) or
 // the server's CLOSE signal (dialog id < 0 as int16, i.e. 0x8000..0xFFFF).
 bool never_translated(const DialogPlan& d);
@@ -133,10 +149,11 @@ void tick(uint32_t nowMs);
 // A dialog is currently held for translation (for the on-screen indicator).
 bool holding();
 
-// Register the outbound DialogResponse (RPC 62) reverse-map handler. Call ONCE at
-// startup, BEFORE net::install() (like outbound::install). When a translated LIST
-// dialog row is selected, the client would send the TRANSLATED row text; this maps
-// it back to the ORIGINAL so text-matching servers still recognise the selection.
+// Register the outbound DialogResponse (RPC 62) handler. Call ONCE at startup,
+// BEFORE net::install() (like outbound::install). It (a) maps a picked row of a
+// TRANSLATED list/tablist back to the ORIGINAL row text by index, and (b) with
+// outgoing translation on, translates INPUT-dialog text into the server's
+// language. PASSWORD dialog responses are never touched.
 void install();
 
 } // namespace i18n::surfaces

@@ -190,6 +190,35 @@ std::vector<uint8_t> assemble_dialog(const DialogPlan& d, const std::vector<std:
     return out;
 }
 
+std::string strip_colors(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        if (is_color_code(s, i)) { i += 8; continue; }
+        o += s[i++];
+    }
+    return o;
+}
+
+bool remap_list_response(int style, const std::vector<std::string>& orig,
+                         const std::vector<std::string>& trans, int listItem,
+                         const std::string& resp, std::string& out) {
+    if (listItem < 0 || orig.size() != trans.size()) return false;
+    const size_t row = (size_t)listItem + (style == 5 ? 1u : 0u);
+    if (row >= orig.size()) return false;
+    auto first_col = [](const std::string& s) {
+        size_t t = s.find('\t');
+        return t == std::string::npos ? s : s.substr(0, t);
+    };
+    const std::string& o = orig[row];
+    const std::string& t = trans[row];
+    const std::string candT[4] = { strip_colors(t), strip_colors(first_col(t)), t, first_col(t) };
+    const std::string candO[4] = { strip_colors(o), strip_colors(first_col(o)), o, first_col(o) };
+    for (int k = 0; k < 4; ++k)
+        if (candT[k] == resp) { out = candO[k]; return true; }
+    return false;
+}
+
 bool never_translated(const DialogPlan& d) {
     return d.style == 3 || (int16_t)d.id < 0;
 }

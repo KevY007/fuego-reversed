@@ -241,6 +241,34 @@ int main() {
         check(out == orig, "chatbubble identity is byte-exact");
     }
 
+    // ---- DialogResponse remap: translated row -> original row, by index ----
+    {
+        std::vector<std::string> orig  = { "{ffffff}Account Balance", "Withdraw", "Deposit" };
+        std::vector<std::string> trans = { "{ffffff}Saldo de cuenta", "Retirar", "Depositar" };
+        std::string out;
+        check(remap_list_response(2, orig, trans, 1, "Retirar", out) && out == "Withdraw", "LIST: picked row maps back");
+        check(remap_list_response(2, orig, trans, 0, "Saldo de cuenta", out) && out == "Account Balance",
+              "LIST: colour-stripped response -> colour-stripped original");
+        check(!remap_list_response(2, orig, trans, 5, "x", out), "out-of-range row -> no remap");
+        check(!remap_list_response(2, orig, trans, 1, "Something else", out), "unrecognised response -> no remap");
+    }
+    {
+        std::vector<std::string> orig  = { "{c8c8c8}Destination\t{c8c8c8}Distance", "Las Venturas Bank\t12m",
+                                           "{666666}Palomino Creek Bank\t{666666}1.15km" };
+        std::vector<std::string> trans = { "{c8c8c8}Destino\t{c8c8c8}Distancia", "Banco de Las Venturas\t12m",
+                                           "{666666}Banco de Palomino Creek\t{666666}1.15km" };
+        std::string out;
+        check(remap_list_response(5, orig, trans, 0, "Banco de Las Venturas", out) && out == "Las Venturas Bank",
+              "TABLIST_HEADERS: listItem 0 = first data row, first column");
+        check(remap_list_response(5, orig, trans, 1, "Banco de Palomino Creek\t1.15km", out) &&
+              out == "Palomino Creek Bank\t1.15km", "whole colour-stripped row variant");
+        std::vector<std::string> dupO = { "{c8c8c8}H", "Bank A", "Bank B" };
+        std::vector<std::string> dupT = { "{c8c8c8}H", "Banco", "Banco" };
+        check(remap_list_response(5, dupO, dupT, 1, "Banco", out) && out == "Bank B",
+              "two rows with the same translation: the index picks the right one");
+    }
+    check(strip_colors("{666666}Palomino{ffffff} Bank") == "Palomino Bank", "strip_colors");
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

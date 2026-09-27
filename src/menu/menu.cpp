@@ -109,19 +109,6 @@ void run_selftest_async() {
 	} ).detach();
 }
 
-// Auto-apply the fullscreen refresh override without the user Alt+Entering: run
-// GTA's OWN video-mode apply, which resets the same device -> render::hkReset then
-// injects the max refresh. Called from on_wndproc (message-pump thread), the same
-// safe between-frames context GTA uses for its Alt+Enter reset.
-//   GcurSelVM (current video mode index) @ 0x8D6220; SetVideoMode(int) @ 0x745C70
-//   (__cdecl) -> RwD3D9ChangeVideoMode. Addresses from gta-reversed VideoMode.cpp.
-bool g_reapplyVideo = false;
-void reapply_video_mode_now() {
-	if ( !render::installed() ) return; // device/game not ready
-	int mode = *reinterpret_cast<int *>( 0x8D6220 );
-	reinterpret_cast<void( __cdecl * )( int )>( 0x745C70 )( mode );
-}
-
 // Small "(?)" hover-help marker (ImGui demo idiom; the built-in demo helper
 // isn't linked into a stripped build, so define our own).
 void HelpMarker( const char* desc ) {
@@ -285,23 +272,19 @@ void draw_ui() {
 		if ( ImGui::BeginTabItem( "Display" ) ) {
 			ImGui::Checkbox( "Uncap FPS (frame limiter off)", &g_set.uncap_fps );
 			ImGui::Checkbox( "Borderless window (fill screen)", &g_set.borderless );
-			if ( ImGui::Checkbox( "Exclusive fullscreen: max refresh rate", &g_set.fullscreen_max_hz ) ) {
-				render::set_max_fullscreen_refresh( g_set.fullscreen_max_hz );
-				if ( g_set.fullscreen_max_hz ) g_reapplyVideo = true; // auto-apply once (one reset/flicker)
-			}
+			if ( ImGui::Checkbox( "Exclusive fullscreen: max refresh rate", &g_set.fullscreen_max_hz ) )
+				render::set_max_fullscreen_refresh( g_set.fullscreen_max_hz ); // applies at once
 			ImGui::SameLine();
 			HelpMarker( "Forces GTA's EXCLUSIVE fullscreen to your monitor's HIGHEST refresh at the current "
-			            "resolution (GTA hardcodes the lowest >=60Hz). No borderless needed. On enable it "
-			            "auto-applies (one screen flicker as the display resets). If it doesn't take, Alt+Enter "
-			            "out and back once." );
+			            "resolution (GTA hardcodes the lowest >=60Hz). No borderless needed. Applies at once "
+			            "when you tick or untick it, and on every game start when saved -- the screen flickers "
+			            "once as the display resets. Only matters in exclusive fullscreen." );
 			ImGui::SeparatorText( "Overlay" );
 			ImGui::Checkbox( "Cheat state text (top-right)", &g_set.status_text );
-			ImGui::Checkbox( "Active-cheat watermark (top-left)", &g_set.show_active_list );
-			ImGui::Spacing();
-			ImGui::TextWrapped( "For 1440p @ your monitor's refresh (e.g. 260Hz): set GTA to "
-			                    "WINDOWED at 2560x1440 in its own Display menu, then enable both "
-			                    "boxes above. Windowed mode presents at the desktop's refresh, so "
-			                    "you get the full rate -- GTA's fullscreen mode list is capped at 60Hz." );
+			ImGui::Checkbox( "Active-cheat watermark", &g_set.show_active_list );
+			ImGui::SameLine();
+			HelpMarker( "Lists the cheats you have on in the top-left corner, with \"Fuego Reversed\" in the "
+			            "bottom-right corner." );
 			ImGui::EndTabItem();
 		}
 		// ---------------- Translator ----------------
@@ -751,11 +734,6 @@ void on_reset( IDirect3DDevice9 *, bool preReset ) {
 
 bool on_wndproc( HWND h, UINT m, WPARAM w, LPARAM l ) {
 	if ( !g_init ) return false;
-
-	// Apply a pending fullscreen-refresh change here (message-pump thread, between
-	// frames -- the safe context for GTA's device reset). Clear first so a message
-	// during the reset can't re-enter it.
-	if ( g_reapplyVideo ) { g_reapplyVideo = false; reapply_video_mode_now(); }
 
 	if ( m == WM_KEYDOWN || m == WM_SYSKEYDOWN ) {
 		// One-time heartbeat: proves the WndProc hook is actually receiving keys.

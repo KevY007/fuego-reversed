@@ -474,7 +474,8 @@ void draw_streamed_out( ImDrawList *dl, int id, const float pos[3] ) {
 	text_shadowed( dl, sx, sy - ImGui::GetTextLineHeight() - 2.0f, IM_COL32( 150, 190, 255, 220 ), line, true );
 }
 
-// EXTRA: "Fuego Reversed" + active-cheat list (only with set.show_active_list).
+// EXTRA: the active-cheat list top-left, and "Fuego Reversed" bottom-right (only with
+// set.show_active_list).
 void draw_active_list( ImDrawList *dl ) {
 	auto &set = fx::g_set;
 	struct { bool on; const char *name; } items[] = {
@@ -487,16 +488,24 @@ void draw_active_list( ImDrawList *dl ) {
 		{ set.explode_cars || set.explode_cars_silent, "Explode Cars" },
 		{ set.floating_cars, "Floating Cars" }, { set.remove_cars, "Remove Cars" },
 	};
-	float x = 12, y = 10, lh = ImGui::GetTextLineHeight();
-	dl->AddText( ImVec2( x + 1, y + 1 ), IM_COL32( 0, 0, 0, 220 ), "Fuego Reversed" );
-	dl->AddText( ImVec2( x, y ), IM_COL32( 255, 120, 40, 255 ), "Fuego Reversed" );
-	y += lh + 4;
+	const float lh = ImGui::GetTextLineHeight();
+
+	// Top-left: only the cheats that are on.
+	float x = 12, y = 10;
 	for ( auto &it : items ) {
 		if ( !it.on ) continue;
-		dl->AddText( ImVec2( x + 8 + 1, y + 1 ), IM_COL32( 0, 0, 0, 200 ), it.name );
-		dl->AddText( ImVec2( x + 8, y ), IM_COL32( 220, 220, 220, 255 ), it.name );
+		dl->AddText( ImVec2( x + 1, y + 1 ), IM_COL32( 0, 0, 0, 200 ), it.name );
+		dl->AddText( ImVec2( x, y ), IM_COL32( 220, 220, 220, 255 ), it.name );
 		y += lh + 1;
 	}
+
+	// Bottom-right: the name.
+	static const char *kName = "Fuego Reversed";
+	const ImVec2 screen = ImGui::GetIO().DisplaySize;
+	const ImVec2 sz     = ImGui::CalcTextSize( kName );
+	const float  nx     = screen.x - sz.x - 12, ny = screen.y - sz.y - 10;
+	dl->AddText( ImVec2( nx + 1, ny + 1 ), IM_COL32( 0, 0, 0, 220 ), kName );
+	dl->AddText( ImVec2( nx, ny ), IM_COL32( 255, 120, 40, 255 ), kName );
 }
 
 // ---- SA-MP nametag type (native tags through walls) ---------------------------------

@@ -77,7 +77,7 @@ struct Settings {
 	float player_tags_dist = 225.0f; // S0biet nametag range + SA:MP draw distance (fuego.ini)
 	float vehicle_tags_dist = 100.0f;// vehicle tag range incl. [LOCKED] (fuego.ini)
 	bool  status_text = false;       // cheat state text, top-right (Fuego d3dtext_hud; shipped OFF)
-	bool  show_active_list = false;  // our extra: "Fuego Reversed" + active-cheat list watermark
+	bool  show_active_list = false;  // our extra: active-cheat list top-left + "Fuego Reversed" bottom-right
 	// --- other misc ---
 	bool  break_dance = false;       // "Onfoot Break Dance"
 	bool  auto_unscramble = false;   // "Auto Unscrambler LSRP"
@@ -117,9 +117,9 @@ struct Settings {
 	bool  uncap_fps = false;         // force GTA's frame limiter (0xBA6794) off every frame
 	bool  borderless = false;        // borderless-window the game window
 	// Force EXCLUSIVE fullscreen to the highest refresh the monitor supports at the
-	// current resolution (GTA hardcodes the lowest >=60). Applied in the D3D Reset
-	// hook; takes effect on the next device reset (change res in GTA's Display menu,
-	// or Alt+Tab).
+	// current resolution (GTA hardcodes the lowest >=60). Injected in the D3D Reset
+	// hook, and applied at once -- on toggle and when restored at startup -- by
+	// re-running GTA's own video-mode apply (see render::set_max_fullscreen_refresh).
 	bool  fullscreen_max_hz = false;
 };
 

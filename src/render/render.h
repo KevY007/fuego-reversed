@@ -38,9 +38,12 @@ HWND              window(); // game window; null before the first frame
 
 // When on, the Reset hook rewrites D3DPRESENT_PARAMETERS.FullScreen_RefreshRateInHz
 // to the highest rate the monitor supports at the current resolution (exclusive
-// fullscreen only). Applies on the next device reset. Safe: it only edits the
-// present params GTA passes to its OWN Reset, so RenderWare recreates resources
-// normally.
+// fullscreen only). Applied at once -- when toggled either way, and when the saved
+// setting is restored at startup: if the game is in exclusive fullscreen and its
+// refresh differs from what the setting wants, GTA's own video-mode apply is re-run
+// (one screen flicker, like a resolution change) on the window thread once the game
+// is running. Safe: it only edits the present params GTA passes to its OWN Reset, so
+// RenderWare recreates its resources normally.
 void set_max_fullscreen_refresh( bool on );
 
 } // namespace render

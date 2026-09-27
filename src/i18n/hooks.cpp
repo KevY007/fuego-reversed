@@ -207,8 +207,12 @@ void pump_tick( IDirect3DDevice9 * ) {
 		static uint32_t lastNotes = 0;
 		if ( now - lastNotes >= 1000 ) {
 			lastNotes = now;
-			for ( const std::string &n : i18n::engine::drain_failure_notes() )
-				Log( "[i18n] not translated -- %s", n.c_str() );
+			std::string all; // one log write per drain (each Log() opens the file)
+			for ( const std::string &n : i18n::engine::drain_failure_notes() ) {
+				if ( !all.empty() ) all += "\n";
+				all += "[i18n] not translated -- " + n;
+			}
+			if ( !all.empty() ) Log( "%s", all.c_str() );
 		}
 	} catch ( ... ) {
 	}

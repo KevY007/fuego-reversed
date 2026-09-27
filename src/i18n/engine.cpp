@@ -6,6 +6,7 @@
 #include "i18n/cache.h"
 #include "i18n/validate.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -31,6 +32,13 @@ constexpr int kWorkerCount = 3;
 // start(); defaults to "" so process_one() is directly callable -- as
 // tests/engine_test.cpp does -- without ever starting the threaded engine.
 std::string g_profile;
+// start() can run on the init thread at startup while the game thread already looks
+// up the cache for chat lines (hooked_add_entry -> cache_lookup): guard the string.
+std::mutex g_profileMutex;
+std::string profile_copy() {
+    std::lock_guard<std::mutex> lk(g_profileMutex);
+    return g_profile;
+}
 
 // ---- threaded engine state ------------------------------------------------
 // g_provider/g_sysPrompt/g_profile above are written only by start(), and
@@ -43,7 +51,9 @@ std::unique_ptr<IProvider> g_provider;
 std::string g_sysPrompt;
 int g_targetLang = 1033;  // written only by start() (same publication rules as g_sysPrompt)
 int g_displayCp  = 1252;
-bool g_ctxEnabled = false; // send recent chat as context (context_for_provider); set by start(), read by submit() -- both main thread
+// Send recent chat as context (context_for_provider). Set by start() -- on the init
+// thread at startup, while the game thread may already submit() chat -- so atomic.
+std::atomic<bool> g_ctxEnabled{false};
 std::vector<std::thread> g_workers;
 std::atomic<bool> g_running{false};
 
@@ -133,10 +143,18 @@ std::deque<std::string> g_notes;
 size_t                  g_notesDropped = 0;
 constexpr size_t        kMaxNotes = 20;
 
+// `src` "" = a note about the provider itself (no text): while it is down, every line
+// fails the same way, so that is one note per drain, not one per line.
 void note_failure(const std::string& why, const std::string& src) {
-    std::string s = why + ": '" + src.substr(0, 80) + (src.size() > 80 ? "...'" : "'");
+    std::string s = why;
+    if (!src.empty()) {
+        std::string snippet = src.substr(0, 80);
+        for (char& c : snippet)
+            if ((unsigned char)c < 0x20) c = ' '; // no line breaks / placeholder bytes in the log
+        s += ": '" + snippet + (src.size() > 80 ? "...'" : "'");
+    }
     std::lock_guard<std::mutex> lk(g_noteMutex);
-    if (!g_notes.empty() && g_notes.back() == s) return; // the same text failing again
+    if (std::find(g_notes.begin(), g_notes.end(), s) != g_notes.end()) return; // already noted
     if (g_notes.size() >= kMaxNotes) {
         ++g_notesDropped;
         return;
@@ -154,20 +172,35 @@ size_t placeholder_len(const std::string& t, size_t i) {
     return (j > i + 1 && j < t.size() && t[j] == '\x02') ? j + 1 - i : 0;
 }
 
-// Split masked text into lead + core + trail: the placeholders (colour / format /
-// key codes, names, ...) and spaces at the very START and END are kept out of what
-// the model sees and re-attached verbatim afterwards. Models tend to drop exactly
-// those (live: Hy-MT2 dropped the leading ~W~ of "~W~Press ~Y~~k~~...~ ~W~to open
-// hood" every time, so the reply failed validation and the textdraw never got
-// translated); inner placeholders still go to the model, which has to keep them.
-// Spaces are only held back together with an edge code (the space in "<name> says:"
-// must survive); plain leading/trailing spaces go to the model as before.
-void split_edges(const std::string& t, std::string& lead, std::string& core, std::string& trail) {
+bool is_ws(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+
+// A FORMATTING code: a {RRGGBB} colour or a ~x~ / ~k~~KEY~ GTA text code. Names,
+// numbers, commands and brackets are not: they stay in the text the model sees, so
+// a reply that drops one is still caught by validation.
+bool is_format_token(const std::string& tok) { return !tok.empty() && (tok[0] == '{' || tok[0] == '~'); }
+
+// Split masked text into lead + core + trail: the FORMATTING codes (see
+// is_format_token) at the very START and END -- with the spaces/line breaks next to
+// them -- are kept out of what the model sees and re-attached verbatim afterwards.
+// Models tend to drop exactly those (live: Hy-MT2 dropped the leading ~W~ of
+// "~W~Press ~Y~~k~~...~ ~W~to open hood" every time, so the reply failed validation
+// and the textdraw never got translated). Everything else -- inner codes, and names or
+// numbers even at an edge -- still goes to the model, which has to keep them. Plain
+// leading/trailing whitespace with no code goes to the model as before.
+void split_edges(const std::string& t, const std::vector<std::string>& tokens, std::string& lead,
+                 std::string& core, std::string& trail) {
+    auto format_len = [&](size_t i) -> size_t { // length of a FORMAT placeholder at t[i], else 0
+        const size_t n = placeholder_len(t, i);
+        if (n == 0) return 0;
+        size_t k = 0;
+        for (size_t d = i + 1; d + 1 < i + n; ++d) k = k * 10 + (size_t)(t[d] - '0');
+        return (k < tokens.size() && is_format_token(tokens[k])) ? n : 0;
+    };
     size_t a = 0;
     bool leadCode = false;
     for (;;) {
-        if (a < t.size() && (t[a] == ' ' || t[a] == '\t')) { ++a; continue; }
-        const size_t n = placeholder_len(t, a);
+        if (a < t.size() && is_ws(t[a])) { ++a; continue; }
+        const size_t n = format_len(a);
         if (n == 0) break;
         a += n;
         leadCode = true;
@@ -176,10 +209,10 @@ void split_edges(const std::string& t, std::string& lead, std::string& core, std
     size_t b = t.size();
     bool trailCode = false;
     for (;;) {
-        if (b > a && (t[b - 1] == ' ' || t[b - 1] == '\t')) { --b; continue; }
+        if (b > a && is_ws(t[b - 1])) { --b; continue; }
         if (b > a && t[b - 1] == '\x02') {
             const size_t k = t.rfind('\x01', b - 1);
-            if (k != std::string::npos && k >= a && placeholder_len(t, k) == b - k) {
+            if (k != std::string::npos && k >= a && format_len(k) == b - k) {
                 b = k;
                 trailCode = true;
                 continue;
@@ -222,7 +255,7 @@ Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap
     // A hit that displays as nothing (master stored "" for some lines; '%'-only
     // text caps to "") is a MISS -- translate it again instead of blanking the text.
     std::string normSrc = charset::to_utf8(w);
-    p.key = cache::key(normSrc, cp2, targetLang, g_profile);
+    p.key = cache::key(normSrc, cp2, targetLang, profile_copy());
     {
         std::string hit;
         if (cache::get(p.key, hit)) {
@@ -239,7 +272,7 @@ Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap
     // codes at the very edges stay out of the model's input (split_edges).
     p.masked = protect::mask(normSrc);
     if (!p.masked.translatable) return p;
-    split_edges(p.masked.text, p.lead, p.send, p.trail);
+    split_edges(p.masked.text, p.masked.tokens, p.lead, p.send, p.trail);
     p.kind = Prepared::Need;
     return p;
 }
@@ -284,7 +317,7 @@ bool call_provider(IProvider* prov, const std::vector<std::string>& texts, const
 // are put back around it first). "" = it can't be trusted: keep the original --
 // `why` (if given) then says what was wrong, for the log.
 std::string finish(const Prepared& p, const std::string& modelOut, int targetLang, int displayCp, size_t cap,
-                   const char** why = nullptr) {
+                   const char** why = nullptr, bool hadContext = false) {
     auto reject = [&](const char* reason) {
         if (why) *why = reason;
         return std::string();
@@ -292,9 +325,10 @@ std::string finish(const Prepared& p, const std::string& modelOut, int targetLan
     if (modelOut.empty()) return reject("empty reply");
     const std::string full = p.lead + modelOut + p.trail;
 
-    // A one-line text answered with several lines: the model translated something
-    // else as well -- typically the chat context it was only meant to read.
-    if (full.find('\n') != std::string::npos && p.masked.text.find('\n') == std::string::npos)
+    // A one-line text sent WITH chat context but answered with several lines: the
+    // model translated the context it was only meant to read. (Without context a
+    // stray line break is left to the consumer -- dialog cells flatten it.)
+    if (hadContext && full.find('\n') != std::string::npos && p.masked.text.find('\n') == std::string::npos)
         return reject("reply has extra lines (it translated something else, e.g. the chat context)");
 
     // 7: sanity-check the model's output (placeholders intact, non-empty,
@@ -404,12 +438,12 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     std::vector<std::string> out;
     std::string err;
     if (!call_provider(prov, { p.send }, sysPrompt, rollingCtx, out, err) || out.empty()) {
-        note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", srcBytes);
+        note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", std::string());
         return false;
     }
 
     const char* why = nullptr;
-    std::string s = finish(p, out[0], targetLang, displayCp, cap, &why); // steps 7-10
+    std::string s = finish(p, out[0], targetLang, displayCp, cap, &why, !rollingCtx.empty()); // steps 7-10
     if (s.empty()) {
         note_failure(why ? why : "reply rejected", srcBytes);
         return false;
@@ -450,9 +484,7 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
         std::vector<std::string> res;
         std::string err;
         if (!call_provider(prov, texts, sysPrompt, std::string(), res, err)) { // provider down: no retry storm
-            note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ") for a dialog of " +
-                             std::to_string(need.size()) + " lines, first",
-                         units[need.front()]);
+            note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", std::string());
             return any;
         }
         bool layoutKept = false;
@@ -484,7 +516,7 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
         std::vector<std::string> res;
         std::string err;
         if (!call_provider(prov, { prep[i].send }, sysPrompt, std::string(), res, err)) { // provider down: stop
-            note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", units[i]);
+            note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", std::string());
             break;
         }
         if (res.empty()) continue;
@@ -562,11 +594,11 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt,
     }
 
     g_provider = make_openai_compatible(cfg);
-    g_profile = cfg.model;
+    { std::lock_guard<std::mutex> lk(g_profileMutex); g_profile = cfg.model; }
     g_sysPrompt = systemPrompt;
     g_targetLang = targetLang;
     g_displayCp = displayCp;
-    g_ctxEnabled = context_for_provider(cfg.providerKind);
+    g_ctxEnabled.store(context_for_provider(cfg.providerKind));
     { std::lock_guard<std::mutex> lock(g_jobMutex); g_recentCtx.clear(); }
     g_status.store("idle", std::memory_order_relaxed);
     // Reset response-time stats: a new provider/model has its own latency profile,
@@ -641,7 +673,8 @@ void submit(const Job& job) {
     // reuse as future context (raw cp1251/cp1252 bytes would corrupt the
     // request body). Short chat strings -> negligible cost on the game thread.
     std::string utf8Line;
-    if (g_ctxEnabled && !isBatch && !job.skipContext) {
+    const bool ctx = g_ctxEnabled.load(); // read once: both uses below agree
+    if (ctx && !isBatch && !job.skipContext) {
         int cp = (job.srcCodepage != 0) ? job.srcCodepage : charset::guess_codepage(job.sourceBytes);
         utf8Line = charset::to_utf8(charset::decode(job.sourceBytes, cp));
     }
@@ -654,7 +687,7 @@ void submit(const Job& job) {
     // player is composing, translated the other way) opt out via skipContext so
     // they neither read nor pollute the inbound context ring. Only for providers
     // whose models read context instead of translating it (context_for_provider).
-    if (g_ctxEnabled && !job.skipContext && !isBatch) {
+    if (ctx && !job.skipContext && !isBatch) {
         // Attach the recent conversation (oldest -> newest) as background context
         // for this job, BEFORE recording the current line so a line is never its
         // own context.
@@ -727,7 +760,7 @@ bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::stri
     if (srcBytes.empty()) return false;
     int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
     std::string normSrc = charset::to_utf8(charset::decode(srcBytes, cp2));
-    uint64_t k = cache::key(normSrc, cp2, targetLang, g_profile);
+    uint64_t k = cache::key(normSrc, cp2, targetLang, profile_copy());
     if (!cache::get(k, out)) return false;
     out = charset::cap_display(out, (size_t)(capBytes > 0 ? capBytes : 144));
     // An entry that displays as nothing is a MISS: an empty dialog unit blanks it

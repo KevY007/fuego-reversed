@@ -223,11 +223,13 @@ void reset_latency_for_test();
 // none. PURE.
 bool context_for_provider(int providerKind);
 
-// Why texts were NOT translated since the last call, oldest first -- e.g.
-// "reply lost a placeholder: 'Use /actions to view ...'" or "provider failed
-// (timeout): '...'" -- for the log (hooks::pump_tick drains it about once a second).
-// Capped, so a provider outage can't flood the log: a last entry says how many were
-// left out. The same failure twice in a row is noted once. Thread-safe.
+// Why texts were NOT translated since the last call, oldest first -- e.g. "reply
+// lost or repeated a placeholder (...): 'Use /actions to view ...'", or "provider
+// failed (timeout)" (a provider failure is noted once, without text: while it is
+// down every line fails the same way) -- for the log (hooks::pump_tick drains it
+// about once a second). Control bytes in the text are blanked. Capped at 20 per
+// drain (a last entry says how many were left out); an identical note is kept once.
+// Thread-safe.
 std::vector<std::string> drain_failure_notes();
 
 // Work ahead of a new priority job: priority-lane jobs still queued plus about half

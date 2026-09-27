@@ -426,8 +426,14 @@ private:
         if (isBatch && json::reply_truncated(responseBody)) return batchSoftFail("batch reply cut off");
 
         // Native MT reply is plain text -- drop any <think> block, then strip code
-        // fences / surrounding quotes the model may have added around it.
-        std::string translation = trim_ws_quotes(strip_code_fences(strip_think(content)));
+        // fences / surrounding quotes the model may have added around it. A single
+        // text that was itself quoted ("Welcome to Los Santos" in quotes) keeps its
+        // quotes -- the same rule each batch item gets below.
+        const std::string& src0 = units[0];
+        const bool src0Quoted = !isBatch && src0.size() >= 2 && (src0.front() == '"' || src0.front() == '\'') &&
+                                src0.back() == src0.front();
+        const std::string cleaned = strip_code_fences(strip_think(content));
+        std::string translation = src0Quoted ? trim_ws(cleaned) : trim_ws_quotes(cleaned);
         if (translation.empty()) {
             if (isBatch) return batchSoftFail("batch reply empty");
             err = "empty translation in reply";

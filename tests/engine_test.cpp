@@ -346,10 +346,69 @@ void test_engine() {
         cache::clear_for_test();
         engine::drain_failure_notes();
         std::string d;
-        CHECK(!engine::process_one("\xEF\xF0\xE8\xE2\xE5\xF2 \xEC\xE8\xF0", 1251, &ce, "sys", d),
-              "context: a multi-line reply to a one-line text is rejected");
+        const std::string ctx = "Recent chat (context only, do NOT translate):\n- xerohero: hola\n";
+        CHECK(!engine::process_one("\xEF\xF0\xE8\xE2\xE5\xF2 \xEC\xE8\xF0", 1251, &ce, "sys", d, 1033, 1252, ctx),
+              "context: a multi-line reply to a one-line text sent WITH context is rejected");
         std::vector<std::string> notes = engine::drain_failure_notes();
         CHECK(notes.size() == 1 && notes[0].find("extra lines") != std::string::npos, "context: the reason is noted");
+        CHECK(engine::process_one("\xEF\xF0\xE8\xE2\xE5\xF2 \xEC\xE8\xF0", 1251, &ce, "sys", d),
+              "context: without context a stray line break is left to the consumer (as before)");
+        cache::clear_for_test();
+    }
+
+    // ---- only FORMATTING codes are held back at the edges; line breaks next to them too ----
+    {
+        struct Echo : i18n::IProvider {
+            std::vector<std::string> seen;
+            bool translate(const std::vector<std::string>& u, const std::string&, const std::string&,
+                           std::vector<std::string>& out, std::string&) override {
+                seen = u;
+                out.clear();
+                for (const std::string& t : u) {
+                    // like the real provider: the reply is trimmed at both ends
+                    size_t a = t.find_first_not_of(" \t\r\n"), b = t.find_last_not_of(" \t\r\n");
+                    out.push_back(a == std::string::npos ? std::string() : t.substr(a, b - a + 1));
+                }
+                return true;
+            }
+            const char* name() const override { return "echo"; }
+        } echo;
+        cache::clear_for_test();
+        std::string d;
+        // A name at the start stays in the text (a dropped name is still caught).
+        CHECK(engine::process_one("Kevin_Smith says: hi there", 1252, &echo, "sys", d, 1034) &&
+                  !echo.seen.empty() && !echo.seen[0].empty() && echo.seen[0][0] == '\x01',
+              "edges: a name at the edge is NOT held back");
+        // 3D-label shapes: the line break next to an edge code survives.
+        const std::string lab1 = "{FFFF00}Entrance\n{FFFFFF}(( /enter ))";
+        CHECK(engine::process_one(lab1, 1252, &echo, "sys", d, 1034, 1252, "", 1024) && d == lab1,
+              "edges: a label's inner line break survives");
+        const std::string lab2 = "{FFFF00}Vehicle for sale\r\n{FFFFFF}";
+        CHECK(engine::process_one(lab2, 1252, &echo, "sys", d, 1034, 1252, "", 1024) && d == lab2,
+              "edges: a line break before a trailing code survives");
+        const std::string lab3 = "{FFFFFF}\nHouse for sale";
+        CHECK(engine::process_one(lab3, 1252, &echo, "sys", d, 1034, 1252, "", 1024) && d == lab3,
+              "edges: a line break after a leading code survives");
+        // A batch whose cells carry edge codes: each cell gets its own codes back.
+        engine::reset_batch_for_test();
+        struct NumberedEcho : i18n::IProvider {
+            std::vector<size_t> calls;
+            bool translate(const std::vector<std::string>& u, const std::string&, const std::string&,
+                           std::vector<std::string>& out, std::string&) override {
+                calls.push_back(u.size());
+                out.clear();
+                for (const std::string& t : u) out.push_back("T:" + t);
+                return true;
+            }
+            const char* name() const override { return "numbered-echo"; }
+        } ne;
+        cache::clear_for_test();
+        std::vector<std::string> outs;
+        CHECK(engine::process_batch({ "~W~Buy car", "{00FF00}Sell car~n~", "Exit menu now" }, 1252, &ne, "sys", outs,
+                                    1034, 1252, 1024) &&
+                  ne.calls == std::vector<size_t>({ 3 }) && outs.size() == 3 &&
+                  outs[0] == "~W~T:Buy car" && outs[1] == "{00FF00}T:Sell car~n~" && outs[2] == "T:Exit menu now",
+              "edges: a batch re-attaches every cell's own codes");
         cache::clear_for_test();
     }
 
@@ -376,9 +435,16 @@ void test_engine() {
         FakeBatch down;
         down.fail = true;
         CHECK(!engine::process_one("\xEC\xE8\xF0", 1251, &down, "sys", d), "notes: provider down");
+        CHECK(!engine::process_one("\xE1\xE0\xED\xEA", 1251, &down, "sys", d), "notes: provider still down");
         notes = engine::drain_failure_notes();
-        CHECK(notes.size() == 1 && notes[0].find("down") != std::string::npos,
-              "notes: a provider failure is noted with its error");
+        CHECK(notes.size() == 1 && notes[0] == "provider failed (down)",
+              "notes: a provider outage is ONE note with its error, no text");
+
+        // Control bytes in a noted text are blanked (no line breaks in the log).
+        CHECK(!engine::process_one("Use /help\nfor more help.", 1252, &lossy, "sys", d, 1034), "notes: rejected");
+        notes = engine::drain_failure_notes();
+        CHECK(notes.size() == 1 && notes[0].find('\n') == std::string::npos &&
+              notes[0].find("Use /help for more help.") != std::string::npos, "notes: control bytes blanked");
         cache::clear_for_test();
     }
 

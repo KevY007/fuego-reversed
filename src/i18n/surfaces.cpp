@@ -51,13 +51,22 @@ void queue_fill(const std::string& src) {
     i18n::engine::submit(j);
 }
 
+// Longest text each surface holds: a cache hit is capped to it (the cache keeps the
+// full translation). A textdraw holds 800 bytes (szText[801]), a 3D label far more
+// than a chat line, a chat bubble a chat line's 144. (Capping these to chat's 144
+// used to cut long translated labels/textdraws, e.g. a two-line ATM prompt.)
+constexpr int kCapLabel    = 1024;
+constexpr int kCapTextDraw = 800;
+constexpr int kCapGameText = 400;
+constexpr int kCapBubble   = 144;
+
 // TM-first translator for a piece of text: cache hit -> out=translation, true;
 // trivial string (<2 chars, e.g. a lone space) -> keep as-is, true; miss -> queue
 // a fill and return false (caller shows the original this time).
-bool tm_translate(const std::string& src, std::string& out) {
+bool tm_translate(const std::string& src, std::string& out, int cap) {
     if (src.size() < 2) { out = src; return true; }
     auto& s = i18n::config::get();
-    if (i18n::engine::cache_lookup(src, s.source_cp, s.target_lang, out)) {
+    if (i18n::engine::cache_lookup(src, s.source_cp, s.target_lang, out, cap)) {
         return true;
     }
     queue_fill(src);
@@ -67,9 +76,13 @@ bool tm_translate(const std::string& src, std::string& out) {
 // HUD variant: additionally SKIP dynamic/numeric-heavy strings (timers, counters,
 // stats) so a textdraw that updates every tick with a changing number never spams
 // the translator -- return false (pass original) without queueing anything.
-bool tm_translate_hud(const std::string& src, std::string& out) {
+bool tm_translate_hud(const std::string& src, std::string& out, int cap) {
     if (is_dynamic_text(src)) return false;
-    return tm_translate(src, out);
+    return tm_translate(src, out, cap);
+}
+
+Translator hud_translator(int cap) {
+    return [cap](const std::string& a, std::string& b) { return tm_translate_hud(a, b, cap); };
 }
 
 // Replace the RPC's payload with `pkt` (all byte-aligned). Mirrors compat's
@@ -560,13 +573,14 @@ bool on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
         std::vector<uint8_t> out;
         bool ok = false;
         if (s.translate_dialogs && id == 36) {
-            ok = rebuild_label(p, n, tm_translate, out);
+            ok = rebuild_label(p, n, [](const std::string& a, std::string& b) { return tm_translate(a, b, kCapLabel); },
+                               out);
         } else if (s.translate_hud && (id == 73 || id == 59 || id == 105 || id == 134)) {
             switch (id) {
-                case 73:  ok = rebuild_gametext(p, n, tm_translate_hud, out); break;
-                case 59:  ok = rebuild_chatbubble(p, n, tm_translate_hud, out); break;
-                case 105: ok = rebuild_textdraw_setstring(p, n, tm_translate_hud, out); break;
-                case 134: ok = rebuild_textdraw_show(p, n, tm_translate_hud, out); break;
+                case 73:  ok = rebuild_gametext(p, n, hud_translator(kCapGameText), out); break;
+                case 59:  ok = rebuild_chatbubble(p, n, hud_translator(kCapBubble), out); break;
+                case 105: ok = rebuild_textdraw_setstring(p, n, hud_translator(kCapTextDraw), out); break;
+                case 134: ok = rebuild_textdraw_show(p, n, hud_translator(kCapTextDraw), out); break;
             }
         } else {
             return false;

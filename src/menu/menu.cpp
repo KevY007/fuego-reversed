@@ -598,9 +598,9 @@ void draw_ui() {
 
 			ImGui::Checkbox( "Lab: log chat/dialog internals", &s.debug_lab );
 			ImGui::SameLine();
-			HelpMarker( "Read-only. Logs the newest chat line + decoded ShowDialog fields (id/style/"
-			            "title/buttons/body) to fuego_reversed.log, to verify the in-place replacement "
-			            "offsets on your build. Applies immediately (no Save needed)." );
+			HelpMarker( "Read-only. Logs the newest chat line and each decoded ShowDialog "
+			            "(id/style/title/buttons/body -- never a password dialog's body) to "
+			            "fuego_reversed.log. Applies immediately (no Save needed)." );
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();

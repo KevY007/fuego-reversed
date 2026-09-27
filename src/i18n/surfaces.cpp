@@ -205,11 +205,17 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
     }
     const std::vector<uint8_t> original(p, p + n);
 
+    // A held dialog is only ever released by tick() on the per-frame pump: with no
+    // running pump (hooks not installed, or the EndScene hook never went live) NEVER
+    // hold -- a fully cached dialog is still rewritten in place below, anything else
+    // is shown by SA:MP as the original, right now.
+    const bool canHold = i18n::hooks::pump_ready();
+
     // Nothing to wait for and nothing ahead of it: SA:MP shows it right now.
     // fit_list_budgets (here and at every other assembly): a translated list line
     // must never change the item count SA:MP builds, or every pick below it would
     // go out with a shifted listitem.
-    if (g_dlgq.empty() && missing.empty()) {
+    if (missing.empty() && (g_dlgq.empty() || !canHold)) {
         if (anyTranslated) {
             std::vector<uint8_t> pkt = assemble_dialog(d, fit_list_budgets(d, cores));
             commit(rpc, pkt);
@@ -217,6 +223,10 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         } else {
             note_shown(original, nullptr); // untranslated (incl. passthru password/close): erase any stale entry
         }
+        return false;
+    }
+    if (!canHold) {
+        note_shown(original, nullptr); // shown natively (untranslated): erase any stale entry
         return false;
     }
 

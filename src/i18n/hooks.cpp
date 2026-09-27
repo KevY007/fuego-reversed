@@ -230,7 +230,9 @@ void install() {
 	Log( "[i18n] hooks installed: AddEntry detour + main-thread pump active (idle until enabled)." );
 }
 
-bool pump_ready() { return g_installed; }
+// install() registered pump_tick AND render's EndScene hook, which calls it every
+// frame, went live -- only then does a submitted job's result ever come back.
+bool pump_ready() { return g_installed && render::installed(); }
 
 void apply_config() {
 	auto &s = i18n::config::get();

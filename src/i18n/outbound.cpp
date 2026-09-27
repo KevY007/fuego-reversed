@@ -46,6 +46,9 @@ void send_chat( const std::string& bytes ) {
 bool on_send_chat( int id, BitStream* params, PacketPriority, PacketReliability, char, bool ) {
 	if ( id != kRpcChat || !params ) return true;             // not chat -> pass
 	if ( !i18n::config::get().outbound_enabled ) return true; // feature off -> pass
+	// Swallowing is only safe when the per-frame pump will deliver the result;
+	// without it nothing would ever send the line -- let it go as typed.
+	if ( !i18n::hooks::pump_ready() ) return true;
 
 	// Parse the outgoing chat (uint8 length + bytes), fully bounds-checked so a
 	// malformed stream is passed through untouched rather than crashing.

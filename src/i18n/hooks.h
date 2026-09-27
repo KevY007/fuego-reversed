@@ -37,11 +37,13 @@ void install();
 void apply_config();
 
 // True once install() has wired the AddEntry detour + registered the per-frame
-// pump + the engine's result applier -- i.e. once a submitted job is guaranteed
-// to eventually be delivered to apply_result() via pump_tick(). A surface that
-// SWALLOWS an outgoing message pending a translated result (e.g. a dialog INPUT
-// reply) must check this first: if the pump was never wired, nothing will ever
-// call back, so it must not swallow.
+// pump + the engine's result applier AND render::install() has hooked EndScene,
+// which is what actually calls pump_tick() every frame -- i.e. once a submitted
+// job is guaranteed to eventually be delivered to apply_result(), and held
+// dialogs / deadlines are ticked. A surface that HOLDS or SWALLOWS something
+// pending a translated result (a held dialog, outgoing chat, a dialog INPUT reply)
+// must check this first: without a running pump nothing will ever call back or
+// release it, so it must pass the original through instead.
 bool pump_ready();
 
 } // namespace i18n::hooks

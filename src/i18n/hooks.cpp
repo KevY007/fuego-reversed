@@ -161,9 +161,13 @@ void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const ch
 // Registered via render::on_frame(); drains finished translations on the
 // main thread every frame (see engine::pump()'s contract).
 void pump_tick( IDirect3DDevice9 * ) {
-	i18n::engine::pump();
-	i18n::names::tick( GetTickCount() ); // live player names -> masked, never translated
-	i18n::lab::on_frame();               // debug lab (read-only logging)
+	// Runs inside hkEndScene (a D3D9 vtable hook) -- no C++ exception may escape this seam.
+	try {
+		i18n::engine::pump();
+		i18n::names::tick( GetTickCount() ); // live player names -> masked, never translated
+		i18n::lab::on_frame();               // debug lab (read-only logging)
+	} catch ( ... ) {
+	}
 }
 
 } // namespace

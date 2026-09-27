@@ -2,6 +2,9 @@
 #include "i18n/glossary_data.h"
 
 #include <algorithm>
+#include <memory>
+#include <mutex>
+#include <unordered_set>
 
 namespace i18n::protect {
 
@@ -20,6 +23,21 @@ bool is_alnum(char c) { return is_alpha(c) || is_digit(c); }
 bool is_hex(char c) { return is_digit(c) || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'); }
 bool is_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 bool is_word_char(char c) { return is_alnum(c) || c == '_'; }
+
+std::mutex g_namesMtx;
+std::shared_ptr<const std::vector<std::string>> g_names =
+    std::make_shared<const std::vector<std::string>>();
+
+std::shared_ptr<const std::vector<std::string>> names_snapshot() {
+    std::lock_guard<std::mutex> lk(g_namesMtx);
+    return g_names;
+}
+
+std::string lower_ascii(std::string s) {
+    for (char& c : s)
+        if (is_upper(c)) c = char(c - 'A' + 'a');
+    return s;
+}
 
 std::string make_placeholder(size_t k) {
     std::string s;
@@ -135,6 +153,7 @@ Masked mask(const std::string& src) {
     out.translatable = false;
     const size_t n = src.size();
     size_t i = 0;
+    const auto names = names_snapshot();
 
     auto emit = [&](size_t start, size_t end) {
         out.tokens.push_back(src.substr(start, end - start));
@@ -160,6 +179,19 @@ Masked mask(const std::string& src) {
             emit(i, j);
             i = j;
             matched = true;
+        }
+
+        // Live player names (set_names): whole word, case-insensitive, longest first.
+        if (!matched && !names->empty() && (i == 0 || !is_word_char(src[i - 1]))) {
+            for (const std::string& nm : *names) {
+                size_t len = match_ci_literal(src, i, nm.c_str());
+                if (len == 0) continue;
+                if (i + len < n && is_word_char(src[i + len])) continue; // "Khalidx" isn't "Khalid"
+                emit(i, i + len);
+                i += len;
+                matched = true;
+                break;
+            }
         }
 
         // {RRGGBB} / {AARRGGBB} colour embed.
@@ -460,6 +492,64 @@ std::string apply_glossary(const std::string& text, int /*tgtLang*/) {
         }
     }
 
+    return out;
+}
+
+void set_names(std::vector<std::string> terms) {
+    std::stable_sort(terms.begin(), terms.end(),
+                     [](const std::string& x, const std::string& y) { return x.size() > y.size(); });
+    auto snap = std::make_shared<const std::vector<std::string>>(std::move(terms));
+    std::lock_guard<std::mutex> lk(g_namesMtx);
+    g_names = std::move(snap);
+}
+
+std::vector<std::string> name_variants(const std::vector<std::string>& names) {
+    // Common words that also show up as parts of RP names ("John_Black", "The_Man"):
+    // protecting them alone would freeze ordinary chat words, so such a part is only
+    // protected inside its full name.
+    static const std::unordered_set<std::string> kCommon = {
+        "the", "and", "you", "are", "for", "not", "but", "all", "any", "can", "had", "her", "was",
+        "one", "our", "out", "day", "get", "has", "him", "his", "how", "man", "men", "new", "now",
+        "old", "see", "two", "way", "who", "boy", "did", "its", "let", "put", "say", "she", "too",
+        "use", "big", "bad", "car", "cop", "gun", "god", "sir", "king", "lord", "lady", "miss",
+        "mister", "black", "white", "brown", "green", "gray", "grey", "red", "blue", "gold",
+        "silver", "young", "long", "short", "little", "hunter", "baker", "cook", "smith", "will",
+        "may", "june", "mark", "hope", "rose", "grace", "faith", "joy", "sky", "star", "stone",
+        "wood", "woods", "hill", "hills", "lake", "rich", "love", "dead", "death", "ghost", "snake",
+        "wolf", "fox", "bear", "lion", "hawk", "eagle", "bird", "fish", "ice", "fire", "storm",
+        "rain", "snow", "frost", "night", "dark", "light", "shadow", "angel", "devil", "bishop",
+        "knight", "cross", "church", "street", "park", "west", "east", "north", "south", "money",
+        "cash", "boss", "chief", "doctor", "officer", "police"
+    };
+    std::vector<std::string> out;
+    std::unordered_set<std::string> seen; // lower-cased, for case-insensitive dedupe
+    auto add = [&](const std::string& s) {
+        if (s.size() < 3) return;
+        if (seen.insert(lower_ascii(s)).second) out.push_back(s);
+    };
+    auto all_letters = [](const std::string& s) {
+        if (s.empty()) return false;
+        for (char c : s)
+            if (!is_alpha(c)) return false;
+        return true;
+    };
+    for (const std::string& nm : names) {
+        add(nm);
+        if (nm.find('_') == std::string::npos) continue;
+        std::string spaced = nm;
+        std::replace(spaced.begin(), spaced.end(), '_', ' ');
+        add(spaced);
+        size_t a = 0;
+        while (a <= nm.size()) {
+            size_t b = nm.find('_', a);
+            if (b == std::string::npos) b = nm.size();
+            std::string part = nm.substr(a, b - a);
+            if (all_letters(part) && !kCommon.count(lower_ascii(part))) add(part);
+            a = b + 1;
+        }
+    }
+    std::stable_sort(out.begin(), out.end(),
+                     [](const std::string& x, const std::string& y) { return x.size() > y.size(); });
     return out;
 }
 

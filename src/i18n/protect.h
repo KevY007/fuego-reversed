@@ -44,4 +44,20 @@ std::string unmask(const std::string& translated, const std::vector<std::string>
 // returns text unchanged. The real glossary table lands in Phase 3+.
 std::string apply_glossary(const std::string& text, int tgtLang);
 
+// ---- Live player-name protection ---------------------------------------------
+// set_names() publishes the protected terms (see name_variants()); mask() then
+// masks every whole-word, case-insensitive occurrence, longest first, so the model
+// never sees a player's name and can't translate or transliterate it
+// ("Khalid" -> "Халид"). The ORIGINAL span is the token, so unmask() restores its
+// exact casing ("khalid" stays "khalid"). Thread-safe: workers read an immutable
+// snapshot while the main thread swaps in a new one.
+void set_names(std::vector<std::string> terms);
+
+// Protected terms for connected players' names: each exact name (>= 3 chars), its
+// RP display form with '_' -> ' ' ("Khalid Ahmed"), and each underscore-separated
+// part of >= 3 letters that isn't a common word ("Khalid", "Ahmed" -- but not
+// "Black" from "John_Black" or "The" from "The_Man"). Deduped case-insensitively,
+// sorted longest first.
+std::vector<std::string> name_variants(const std::vector<std::string>& names);
+
 } // namespace i18n::protect

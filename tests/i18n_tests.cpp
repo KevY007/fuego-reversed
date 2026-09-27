@@ -1,4 +1,5 @@
 // tests/i18n_tests.cpp
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -14,8 +15,9 @@ void test_provider_breaker();
 void test_join_url();
 void test_engine();
 void test_config();
+void test_names();
 int main() {
-    test_json(); test_charset(); test_protect(); test_detect(); test_cache(); test_validate();
+    test_json(); test_charset(); test_protect(); test_names(); test_detect(); test_cache(); test_validate();
     test_provider_breaker();
     test_join_url();
     test_engine();
@@ -312,4 +314,31 @@ void test_config() {
     // Explicit source language adds a hint naming that language.
     std::string srcPrompt = build_system_prompt(1033, false, 1049); // target EN, source Russian
     CHECK(srcPrompt.find("written in Russian") != std::string::npos, "explicit sourceLang must hint 'Russian'");
+}
+
+void test_names() {
+    using namespace i18n::protect;
+    auto v = name_variants({ "Khalid_Ahmed", "John_Black", "The_Man", "KevY007", "Al" });
+    auto has = [&](const char* s) { return std::find(v.begin(), v.end(), std::string(s)) != v.end(); };
+    CHECK(has("Khalid_Ahmed") && has("Khalid Ahmed") && has("Khalid") && has("Ahmed"), "RP name: exact, spaced, parts");
+    CHECK(has("John_Black") && has("John Black") && has("John") && !has("Black"), "common-word part not protected alone");
+    CHECK(has("The_Man") && has("The Man") && !has("The") && !has("Man"), "'The'/'Man' parts not protected alone");
+    CHECK(has("KevY007"), "non-RP name protected exactly");
+    CHECK(!has("Al"), "names shorter than 3 chars skipped");
+    CHECK(v.front().size() >= v.back().size(), "sorted longest first");
+
+    set_names(name_variants({ "Khalid_Ahmed" }));
+    Masked m = mask("tell khalid to come to the bank");
+    CHECK(std::find(m.tokens.begin(), m.tokens.end(), std::string("khalid")) != m.tokens.end(), "lowercase first name masked");
+    CHECK(m.text.find("khalid") == std::string::npos, "name hidden from the model");
+    CHECK_EQ(unmask(m.text, m.tokens), std::string("tell khalid to come to the bank"));
+
+    Masked m2 = mask("Khalid Ahmed wants his car back");
+    CHECK(std::find(m2.tokens.begin(), m2.tokens.end(), std::string("Khalid Ahmed")) != m2.tokens.end(),
+          "spaced full name masked as one token");
+
+    Masked m3 = mask("khalidx is a different word");
+    CHECK(m3.text.find("khalidx") != std::string::npos, "word boundary: 'khalidx' untouched");
+
+    set_names({}); // reset global state for the tests that follow
 }

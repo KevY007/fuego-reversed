@@ -4,6 +4,7 @@
 #include "config.h"
 #include "outbound.h"
 #include "lab.h"
+#include "names.h"
 
 #include "../samp/samp.h"
 #include "../samp/addresses.h"
@@ -161,7 +162,8 @@ void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const ch
 // main thread every frame (see engine::pump()'s contract).
 void pump_tick( IDirect3DDevice9 * ) {
 	i18n::engine::pump();
-	i18n::lab::on_frame(); // debug lab: main-thread chat-flip / dialog-re-show experiments
+	i18n::names::tick( GetTickCount() ); // live player names -> masked, never translated
+	i18n::lab::on_frame();               // debug lab (read-only logging)
 }
 
 } // namespace

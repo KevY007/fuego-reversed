@@ -60,5 +60,8 @@ tests/i18n_tests.exe
 tests/*.obj
 test_cfg.cfg
 test_tm.txt
+test_tm_v1.txt
+test_tm_v1.txt.v1.bak
+test_tm_v2.txt
 engine_test_tm.txt
 /samp.dll

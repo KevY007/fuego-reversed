@@ -105,7 +105,8 @@ void pump();
 // language, nothing translatable) or because a later step couldn't be
 // trusted (provider failure, corrupted placeholders, garbage output). On
 // true, `displayOut` holds the finished, capped, display-codepage-encoded
-// text, and the cache has been updated.
+// text (never empty), and the cache has been updated. A cached entry that is
+// empty once capped for display is treated as a miss, never returned.
 bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
                   const std::string& sysPrompt, std::string& displayOut,
                   int targetLang = 1033, int displayCp = 1252,
@@ -140,8 +141,12 @@ RespStats response_stats();
 // independently of whatever cap a different consumer used when the entry was
 // written. Returns false on a miss -- the caller then queues a fill job (a
 // normal submit() with a cache-fill surface) and shows the original this time;
-// the next identical string is an instant hit. Safe to call from the main/net
-// thread (cache is internally locked). Returns false if the engine isn't running.
+// the next identical string is an instant hit. An entry that is empty once
+// capped for display is a miss too (it would blank the text it replaces). Safe to
+// call from the main/net thread (cache is internally locked). It never checks
+// whether the engine is running: it reads the translation memory directly (loaded
+// at startup), keyed with the provider profile of the last engine::start() ("" if
+// the engine was never started), so a hit is possible with the engine stopped.
 bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::string& out, int capBytes = 144);
 
 // The same pre-network declines process_one() makes (already empty, already the

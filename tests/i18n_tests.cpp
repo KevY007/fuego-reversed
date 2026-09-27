@@ -37,9 +37,35 @@ void test_validate() {
 }
 
 #include "i18n/cache.h"
+#include <fstream>
+#include <iterator>
+static std::string slurp(const char* path) { // raw bytes, "" if missing
+    std::ifstream f(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+static void write_raw(const char* path, const std::string& bytes) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    f << bytes;
+}
+static std::string first_line(const char* path) { // text mode, like cache::load reads it
+    std::ifstream f(path);
+    std::string line;
+    std::getline(f, line);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    return line;
+}
+static bool exists(const char* path) { std::ifstream f(path); return f.good(); }
+
 void test_cache() {
     using namespace i18n::cache;
     save_path("test_tm.txt"); // isolate
+    // Start from a fresh TM: load() of a missing file creates it holding just the
+    // v2 header, so every put() below appends to a valid v2 file.
+    std::remove("test_tm.txt");
+    clear_for_test();
+    load("test_tm.txt");
+    CHECK(exists("test_tm.txt") && first_line("test_tm.txt") == "#fuego-tm 2",
+          "load() of a missing TM creates it with the '#fuego-tm 2' header");
     uint64_t k = key("привет", 1251, 1033, "ollama:hy-mt2");
     std::string out;
     CHECK(!get(k, out), "cache miss on first query");
@@ -64,6 +90,42 @@ void test_cache() {
     load("test_tm.txt");
     CHECK(get(k_special, out), "cache hit for special char value after reload");
     CHECK_EQ(out, special_value);
+
+    // ---- I1: master wrote EMPTY / truncated values into the TM ----
+    // An empty value is never stored (an empty hit would blank a dialog unit).
+    uint64_t k_empty = key("pusto", 1251, 1033, "test:provider");
+    put(k_empty, "");
+    CHECK(!get(k_empty, out), "an empty put is not returned by get");
+    put(k_special, "");
+    CHECK(get(k_special, out) && out == special_value, "an empty put never overwrites a good entry");
+
+    // A header-less (v1, master) TM is renamed to <path>.v1.bak -- replacing an
+    // older .bak -- and the cache starts empty with a fresh v2 file.
+    const std::string v1 = "123\thello\n456\t\n";
+    std::remove("test_tm_v1.txt");
+    write_raw("test_tm_v1.txt", v1);
+    write_raw("test_tm_v1.txt.v1.bak", "an older backup\n");
+    clear_for_test();
+    load("test_tm_v1.txt");
+    CHECK(!get(123, out) && !get(456, out), "a header-less TM loads nothing (empty map)");
+    CHECK(slurp("test_tm_v1.txt.v1.bak") == v1, "the header-less TM is kept as <path>.v1.bak (old .bak replaced)");
+    CHECK(first_line("test_tm_v1.txt") == "#fuego-tm 2", "a fresh v2 TM replaces the header-less one");
+    load("test_tm_v1.txt"); // the fresh v2 file: nothing to rename, nothing to load
+    CHECK(slurp("test_tm_v1.txt.v1.bak") == v1, "loading the fresh v2 TM again keeps the backup intact");
+
+    // A v2 TM loads its entries; an empty value in it is skipped.
+    std::remove("test_tm_v2.txt");
+    std::remove("test_tm_v2.txt.v1.bak");
+    write_raw("test_tm_v2.txt", "#fuego-tm 2\n123\thello\n456\t\n");
+    clear_for_test();
+    load("test_tm_v2.txt");
+    CHECK(get(123, out) && out == "hello", "a v2 TM loads its entries");
+    CHECK(!get(456, out), "an empty value in the TM is skipped on load");
+    CHECK(!exists("test_tm_v2.txt.v1.bak"), "a v2 TM is never renamed");
+    clear_for_test();
+    std::remove("test_tm_v1.txt");
+    std::remove("test_tm_v1.txt.v1.bak");
+    std::remove("test_tm_v2.txt");
 }
 
 #include "i18n/detect.h"
@@ -199,8 +261,8 @@ void test_charset() {
     // GREEN (fix round 1, controller-found): display text is single-byte-per-char
     // cp1251/cp1252 (config::display_codepage never returns anything else) -- a
     // plain high byte must never be treated as an incomplete UTF-8 lead/
-    // continuation byte and deleted (the OLD cap_and_sanitize did exactly that;
-    // see task-6-report.md's "Fix round 1" for the RED run against it).
+    // continuation byte and deleted (master's old display sanitizer did exactly
+    // that; see task-6-report.md's "Fix round 1" for the RED run against it).
     std::string privet = "\xEF\xF0\xE8\xE2\xE5\xF2";                  // "привет" (cp1251)
     std::string privet_mir = "\xEF\xF0\xE8\xE2\xE5\xF2 \xEC\xE8\xF0"; // "привет мир" (cp1251)
     std::string cafe = "caf\xE9";                                    // "café" (cp1252)

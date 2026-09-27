@@ -5,10 +5,23 @@
 #include <sstream>
 #include <cstdlib>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h> // MoveFileExA (the one-time TM reset's rename-over-an-old-backup)
+
 namespace i18n::cache {
     // FNV-1a parameters
     constexpr uint64_t FNV_OFFSET = 0xCBF29CE484222325ULL;
     constexpr uint64_t FNV_PRIME = 0x100000001B3ULL;
+
+    // First line of every TM file this build writes. A file WITHOUT it predates the
+    // format (master's old sanitizer stored empty and truncated values, e.g. cp1251
+    // "Купить" as "" and "привет мир" as "привет "), so load() sets it aside once.
+    constexpr const char* TM_HEADER = "#fuego-tm 2";
 
     // Global cache state (protected by mutex)
     static std::unordered_map<uint64_t, std::string> g_map;
@@ -115,6 +128,9 @@ namespace i18n::cache {
     }
 
     void put(uint64_t k, const std::string& value) {
+        // Never store an empty translation: a hit on it would blank a dialog unit (an
+        // empty title makes the whole dialog vanish) or go out as empty chat.
+        if (value.empty()) return;
         std::lock_guard<std::mutex> lock(g_mutex);
 
         // Update in-memory map
@@ -131,12 +147,29 @@ namespace i18n::cache {
     void load(const char* path) {
         std::lock_guard<std::mutex> lock(g_mutex);
         std::ifstream ifs(path);
-        if (!ifs.is_open()) {
-            // File doesn't exist; just return
+        std::string line;
+        if (!ifs.is_open() || !std::getline(ifs, line)) {
+            // Missing (or 0-byte, nothing to keep): start a fresh v2 file.
+            ifs.close();
+            std::ofstream ofs(path, std::ios_base::trunc);
+            if (ofs.is_open()) ofs << TM_HEADER << '\n';
+            return;
+        }
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line != TM_HEADER) {
+            // One-time reset of a pre-v2 TM: rename it to <path>.v1.bak (replacing an
+            // older backup) and start empty. The rename IS the backup -- if it fails,
+            // leave the user's file exactly as it is (never overwrite it) and just
+            // start empty this session.
+            ifs.close();
+            const std::string bak = std::string(path) + ".v1.bak";
+            if (MoveFileExA(path, bak.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                std::ofstream ofs(path, std::ios_base::trunc);
+                if (ofs.is_open()) ofs << TM_HEADER << '\n';
+            }
             return;
         }
 
-        std::string line;
         while (std::getline(ifs, line)) {
             // Parse key\tvalue
             size_t tab_pos = line.find('\t');
@@ -156,8 +189,10 @@ namespace i18n::cache {
                 continue;
             }
 
-            // Unescape value and store
-            g_map[k] = unescape_value(value_str);
+            // Unescape value and store (an empty value is never a translation)
+            std::string value = unescape_value(value_str);
+            if (value.empty()) continue;
+            g_map[k] = std::move(value);
         }
         ifs.close();
     }

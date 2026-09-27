@@ -156,10 +156,18 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     // cache always stores the FULL translation (see step 10) -- cap THIS call's
     // hit to its own consumer's limit rather than trusting whatever length the
     // entry happened to be capped to when a different consumer wrote it.
+    // A hit that displays as nothing (master stored "" for some lines; '%'-only
+    // text caps to "") is a MISS -- translate it again instead of blanking the text.
     const size_t cap = (size_t)(capBytes > 0 ? capBytes : 144);
     std::string normSrc = charset::to_utf8(w);
     uint64_t k = cache::key(normSrc, cp2, targetLang, g_profile);
-    if (cache::get(k, displayOut)) { displayOut = charset::cap_display(displayOut, cap); return true; }
+    {
+        std::string hit;
+        if (cache::get(k, hit)) {
+            hit = charset::cap_display(hit, cap);
+            if (!hit.empty()) { displayOut = std::move(hit); return true; }
+        }
+    }
 
     // 5: mask non-translatable spans (commands, colours, names, coords, ...).
     protect::Masked m = protect::mask(normSrc);
@@ -208,9 +216,9 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     // caps it to ITS OWN limit instead of inheriting whatever a different
     // consumer happened to ask for.
     std::string full = charset::cap_display(charset::encode(charset::from_utf8(un), displayCp), 4095);
-    cache::put(k, full);
+    cache::put(k, full); // ignores an empty value
     displayOut = charset::cap_display(full, cap);
-    return true;
+    return !displayOut.empty(); // nothing left to show -> leave the original
 }
 
 void start(const ProviderConfig& cfg, const std::string& systemPrompt,
@@ -359,6 +367,9 @@ bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::stri
     uint64_t k = cache::key(normSrc, cp2, targetLang, g_profile);
     if (!cache::get(k, out)) return false;
     out = charset::cap_display(out, (size_t)(capBytes > 0 ? capBytes : 144));
+    // An entry that displays as nothing is a MISS: an empty dialog unit blanks it
+    // (an empty title makes the whole dialog vanish) and empty text poisons chat.
+    if (out.empty()) return false;
     return true;
 }
 

@@ -14,6 +14,7 @@
 // printed by i18n_tests.cpp's main() still cover these checks too.
 #include "i18n/engine.h"
 #include "i18n/cache.h"
+#include "i18n/charset.h"
 
 #include <cstdio>
 #include <string>
@@ -123,4 +124,24 @@ void test_engine() {
     CHECK(!engine::needs_translation("", 1252, 1033), "empty source -> no translation needed");
     CHECK(!engine::needs_translation("/quit", 1252, 1033),
           "protect::mask()-untranslatable (pure command, per test_protect) -> no translation needed");
+
+    // ---- I1: a cached value that is empty once capped for display (master stored
+    // "" for some cp1251 lines; '%'-only text caps to "") is a MISS, never a hit that
+    // blanks a dialog unit / title or goes out as empty outgoing text. ----
+    cache::clear_for_test();
+    const std::string srcE = "\xEC\xE0\xE3\xE0\xE7\xE8\xED"; // "магазин" (cp1251), never cached above
+    const uint64_t kE = cache::key(charset::to_utf8(charset::decode(srcE, 1251)), 1251, 1033, "");
+    cache::put(kE, "%%");
+    std::string hitE = "stale";
+    CHECK(!engine::cache_lookup(srcE, 1251, 1033, hitE, 1024), "empty-after-cap cached value is a miss (dialog cap)");
+    CHECK(!engine::cache_lookup(srcE, 1251, 1033, hitE), "empty-after-cap cached value is a miss (chat cap)");
+    FakeProvider shop;
+    shop.canned = "shop";
+    std::string dispE;
+    CHECK(engine::process_one(srcE, 1251, &shop, "sys", dispE, 1033, 1252, "", 1024) && dispE == "shop",
+          "process_one: an empty cache hit falls through to the provider");
+    std::string hitE2;
+    CHECK(engine::cache_lookup(srcE, 1251, 1033, hitE2, 1024) && hitE2 == "shop",
+          "the provider's translation replaces the empty entry");
+    cache::clear_for_test();
 }

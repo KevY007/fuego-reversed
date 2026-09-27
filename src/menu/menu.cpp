@@ -14,7 +14,8 @@
 #include "../i18n/engine.h"
 #include "../i18n/provider.h" // list_models (model dropdown) + ProviderConfig
 #include "../i18n/hooks.h"    // apply_config (live-apply translator settings)
-#include "../i18n/outbound.h" // Ctrl+Shift outgoing-chat toggle
+#include "../i18n/outbound.h" // settable-hotkey outgoing-chat + dialog-input toggle (default Ctrl+Shift)
+#include "../i18n/indicator.h" // on-screen "translating..." hints
 
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
@@ -494,13 +495,49 @@ void draw_ui() {
 			ImGui::Combo( "Marker style", &s.marker_style, marker_styles, 3 );
 
 			// --- Outgoing chat translation (my messages -> server language) ---
-			ImGui::SeparatorText( "Outgoing chat (translate MY messages)" );
-			if ( ImGui::Checkbox( "Translate my chat before sending", &s.outbound_enabled ) )
+			ImGui::SeparatorText( "Outgoing (translate MY chat + dialog input)" );
+			if ( ImGui::Checkbox( "Translate my messages before sending", &s.outbound_enabled ) )
 				i18n::hooks::apply_config(); // apply live
 			ImGui::SameLine();
-			HelpMarker( "Your typed chat is translated into the server's language before it is sent. "
-			            "Toggle in-game with Ctrl+Shift. Commands (/...) are never translated. "
-			            "If translation fails, your original message is sent unchanged." );
+			HelpMarker( "Your typed chat AND your text in input dialogs are translated into the server's "
+			            "language before sending. Password dialogs are never touched; picking a row in a "
+			            "translated list always sends the server's original row. Commands (/...) and "
+			            "numbers are never translated. If translation fails, your original text is sent." );
+			{
+				bool c  = ( s.hotkey_mods & 1 ) != 0;
+				bool sh = ( s.hotkey_mods & 2 ) != 0;
+				bool a  = ( s.hotkey_mods & 4 ) != 0;
+				ImGui::TextUnformatted( "Toggle hotkey:" );
+				ImGui::SameLine();
+				if ( ImGui::Checkbox( "Ctrl", &c ) ) s.hotkey_mods ^= 1;
+				ImGui::SameLine();
+				if ( ImGui::Checkbox( "Shift", &sh ) ) s.hotkey_mods ^= 2;
+				ImGui::SameLine();
+				if ( ImGui::Checkbox( "Alt", &a ) ) s.hotkey_mods ^= 4;
+				ImGui::SameLine();
+				static const struct { int vk; const char *name; } kKeys[] = {
+					{ 0, "(no key)" }, { VK_F3, "F3" }, { VK_F4, "F4" }, { VK_F5, "F5" }, { VK_F6, "F6" },
+					{ VK_F9, "F9" }, { VK_F11, "F11" }, { VK_HOME, "Home" }, { VK_END, "End" },
+					{ VK_PRIOR, "PageUp" }, { VK_NEXT, "PageDown" }, { VK_PAUSE, "Pause" } };
+				const char *cur = "(custom)";
+				for ( const auto &k : kKeys )
+					if ( k.vk == s.hotkey_vk ) cur = k.name;
+				ImGui::SetNextItemWidth( 120.0f );
+				if ( ImGui::BeginCombo( "##hotkey_vk", cur ) ) {
+					for ( const auto &k : kKeys )
+						if ( ImGui::Selectable( k.name, k.vk == s.hotkey_vk ) ) s.hotkey_vk = k.vk;
+					ImGui::EndCombo();
+				}
+				ImGui::SameLine();
+				HelpMarker( "One hotkey for outgoing chat AND dialog input. Default Ctrl+Shift with no key. "
+				            "Avoid keys the game uses (F1 help, F2 menu, F7 chat, F8 screenshot, F12). "
+				            "Saved with Save config." );
+			}
+			ImGui::Checkbox( "Show translation indicators", &s.show_translate_indicators );
+			ImGui::SameLine();
+			HelpMarker( "On-screen hints: 'your message will be sent in <language>' while you type in chat "
+			            "or an input dialog with outgoing translation on, and 'translating dialog...' while "
+			            "a dialog is held for translation." );
 			{
 				const auto &langs = i18n::config::language_options();
 				int cur = -1;
@@ -654,14 +691,20 @@ void on_frame( IDirect3DDevice9 *dev ) {
 
 	display_tick(); // uncap FPS + borderless window
 
-	// Ctrl+Shift toggles outgoing chat translation (edge-detected + 400ms cooldown
-	// so a held combo, or an incidental Ctrl+Shift+key, fires the toggle at most
-	// once; toggle() prints a chat notice so it's never silently flipped).
+	// Outgoing-translation hotkey (config hotkey_mods/hotkey_vk, default Ctrl+Shift),
+	// shared by outgoing chat + dialog-input replies. Edge-detected + 400ms cooldown so
+	// a held combo fires once; toggle() prints a chat notice so it's never silent.
 	{
 		static bool  prevCombo  = false;
 		static DWORD lastToggle = 0;
-		bool  combo = ( GetAsyncKeyState( VK_CONTROL ) & 0x8000 ) && ( GetAsyncKeyState( VK_SHIFT ) & 0x8000 );
-		DWORD now   = GetTickCount();
+		const auto  &hk   = i18n::config::get();
+		auto         down = []( int vk ) { return ( GetAsyncKeyState( vk ) & 0x8000 ) != 0; };
+		bool combo = ( hk.hotkey_mods || hk.hotkey_vk ) &&
+		             ( !( hk.hotkey_mods & 1 ) || down( VK_CONTROL ) ) &&
+		             ( !( hk.hotkey_mods & 2 ) || down( VK_SHIFT ) ) &&
+		             ( !( hk.hotkey_mods & 4 ) || down( VK_MENU ) ) &&
+		             ( !hk.hotkey_vk || down( hk.hotkey_vk ) );
+		DWORD now = GetTickCount();
 		if ( combo && !prevCombo && ( now - lastToggle ) > 400 ) {
 			i18n::outbound::toggle();
 			lastToggle = now;
@@ -683,6 +726,8 @@ void on_frame( IDirect3DDevice9 *dev ) {
 	}
 
 	visuals::draw(); // ESP + other on-screen cheats (background draw list)
+	if ( !render::overlay_hidden() && !fx::g_set.cheat_panic )
+		i18n::indicator::draw(); // "will be translated" / "translating dialog..." hints
 
 	// Use SA:MP's cursor (shown by toggle_cursor) as the single visible cursor;
 	// don't also draw ImGui's software one.

@@ -6,7 +6,8 @@
 // server's language, config.outbound_target_lang) via the shared engine using a
 // per-job prompt/target override, and sends the translation (or the original, if
 // translation fails) through the real RakClient. Commands (/...) always pass
-// through untranslated. Toggled live with Ctrl+Shift or the menu; default off.
+// through untranslated. Toggled live with a settable hotkey (default Ctrl+Shift)
+// or the menu; default off.
 
 namespace i18n::engine { struct Result; }
 
@@ -16,7 +17,7 @@ namespace i18n::outbound {
 // makes the seam live (alongside the other i18n bring-up). Main thread only.
 void install();
 
-// Flip outbound translation on/off (Ctrl+Shift / menu), (re)start the engine if
+// Flip outbound translation on/off (hotkey, default Ctrl+Shift, or menu), (re)start the engine if
 // needed, and print a chat notice so an accidental toggle is always visible.
 void toggle();
 

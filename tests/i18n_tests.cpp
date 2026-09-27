@@ -272,6 +272,7 @@ void test_config() {
     s.provider_kind = 2;   // Anthropic
     s.request_min_gap_ms = 1500;
     s.source_lang = 1049;  // Russian (source hint)
+    s.hotkey_mods = 5; s.hotkey_vk = 0x74; s.show_translate_indicators = false;
 
     // Save to temp file
     save("test_cfg.cfg");
@@ -284,6 +285,7 @@ void test_config() {
     s.provider_kind = 0;   // Custom
     s.request_min_gap_ms = 0;
     s.source_lang = 0;     // Auto
+    s.hotkey_mods = 3; s.hotkey_vk = 0; s.show_translate_indicators = true;
 
     // Load from temp file - should restore original values
     load("test_cfg.cfg");
@@ -295,6 +297,9 @@ void test_config() {
     CHECK_EQ(s.provider_kind, 2);
     CHECK_EQ(s.request_min_gap_ms, 1500);
     CHECK_EQ(s.source_lang, 1049);
+    CHECK_EQ(s.hotkey_mods, 5);
+    CHECK_EQ(s.hotkey_vk, 0x74);
+    CHECK_EQ(s.show_translate_indicators, false);
 
     // Test build_system_prompt(1033) contains "English" and "placeholder"
     std::string prompt = build_system_prompt(1033);

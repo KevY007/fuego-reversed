@@ -112,6 +112,12 @@ void from_text(const std::string& text) {
                 g_settings.outbound_enabled = (value == "true" || value == "1");
             } else if (key == "outbound_target_lang") {
                 g_settings.outbound_target_lang = std::stoi(value);
+            } else if (key == "hotkey_mods") {
+                g_settings.hotkey_mods = std::stoi(value);
+            } else if (key == "hotkey_vk") {
+                g_settings.hotkey_vk = std::stoi(value);
+            } else if (key == "show_translate_indicators") {
+                g_settings.show_translate_indicators = (value == "true" || value == "1");
             } else if (key == "debug_capture") {
                 g_settings.debug_capture = (value == "true" || value == "1");
             } else if (key == "debug_lab") {
@@ -147,6 +153,9 @@ std::string to_text() {
     out << "roman_output=" << (g_settings.roman_output ? "true" : "false") << "\n";
     out << "outbound_enabled=" << (g_settings.outbound_enabled ? "true" : "false") << "\n";
     out << "outbound_target_lang=" << g_settings.outbound_target_lang << "\n";
+    out << "hotkey_mods=" << g_settings.hotkey_mods << "\n";
+    out << "hotkey_vk=" << g_settings.hotkey_vk << "\n";
+    out << "show_translate_indicators=" << (g_settings.show_translate_indicators ? "true" : "false") << "\n";
     out << "debug_capture=" << (g_settings.debug_capture ? "true" : "false") << "\n";
     out << "debug_lab=" << (g_settings.debug_lab ? "true" : "false") << "\n";
     out << "debug_lab_replace=" << (g_settings.debug_lab_replace ? "true" : "false") << "\n";

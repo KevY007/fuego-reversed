@@ -52,12 +52,24 @@ struct Settings {
     // render at all (Urdu, Arabic, Hindi, ...); harmless for Latin languages.
     bool roman_output = false;
 
-    // --- Outbound: translate MY typed chat before it is sent (opposite
-    // direction: my language -> the server's language). Toggled live with
-    // Ctrl+Shift; outbound_enabled persists the last state. outbound_target_lang
-    // is the SERVER's language to translate into. ---
+    // --- Outbound: translate MY typed chat AND my dialog-input replies before
+    // they are sent (opposite direction: my language -> the server's language).
+    // Toggled live with a settable hotkey (hotkey_mods/hotkey_vk below, default
+    // Ctrl+Shift) or the menu; outbound_enabled persists the last state.
+    // outbound_target_lang is the SERVER's language to translate into. ---
     bool outbound_enabled = false;
     int outbound_target_lang = 1049; // default Russian (classic "I speak EN, RU server")
+
+    // Outgoing-translation toggle hotkey -- ONE key shared by outgoing chat AND
+    // outgoing dialog-input replies (both use outbound_enabled). hotkey_mods is a
+    // bitmask (1 Ctrl, 2 Shift, 4 Alt); hotkey_vk an extra virtual key (0 = the
+    // modifiers alone). Default Ctrl+Shift (the original toggle).
+    int hotkey_mods = 3;
+    int hotkey_vk = 0;
+
+    // Draw the on-screen translation hints ("your message will be sent in ...",
+    // "translating dialog..."). Default ON.
+    bool show_translate_indicators = true;
 
     // Debug: log raw bytes (+ decoded plain fields) of incoming dialog/label/
     // textdraw/gametext RPCs to fuego_reversed.log, so their exact wire format

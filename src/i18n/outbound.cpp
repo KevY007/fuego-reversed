@@ -93,7 +93,7 @@ void toggle() {
 	s.outbound_enabled = !s.outbound_enabled;
 	i18n::hooks::apply_config(); // start the worker engine if it isn't already running
 	samp::chat( s.outbound_enabled
-		? "{33FF33}[translate] {FFFFFF}Outgoing translation ON -- your chat is sent in the server's language."
+		? "{33FF33}[translate] {FFFFFF}Outgoing translation ON -- your chat and dialog input go out in the server's language."
 		: "{FF6D70}[translate] {FFFFFF}Outgoing translation OFF." );
 	Log( "[i18n] outbound = %s (target_lang=%d).", s.outbound_enabled ? "ON" : "OFF", s.outbound_target_lang );
 }

@@ -280,6 +280,21 @@ bool parse_units(const std::string& body, std::vector<Unit>& out) {
     }
 }
 
+bool reply_truncated(const std::string& chatCompletionJson) {
+    const size_t choices = chatCompletionJson.find("\"choices\"");
+    if (choices == std::string::npos) return false;
+    size_t pos = chatCompletionJson.find("\"finish_reason\"", choices);
+    if (pos == std::string::npos) return false;
+    pos = skip_ws(chatCompletionJson, pos + 15); // skip "finish_reason"
+    if (pos >= chatCompletionJson.size() || chatCompletionJson[pos] != ':') return false;
+    pos = skip_ws(chatCompletionJson, pos + 1);
+    if (pos >= chatCompletionJson.size() || chatCompletionJson[pos] != '"') return false; // null / missing
+    std::string reason;
+    ++pos; // past the opening quote
+    if (!unescape_string(chatCompletionJson, pos, reason)) return false;
+    return reason == "length" || reason == "max_tokens";
+}
+
 bool extract_message_content(const std::string& chatCompletionJson, std::string& out) {
     out.clear();
     size_t pos = 0;

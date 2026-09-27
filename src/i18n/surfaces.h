@@ -130,13 +130,16 @@ std::vector<std::vector<size_t>> chunk_groups(const DialogPlan& plan,
                                               size_t maxItems, size_t maxBytes);
 
 // Would holding a dialog for its translation likely take longer than budgetMs?
-// avgMs/count: the engine's measured provider response time (count 0 = nothing
-// measured yet -> optimistic: hold). backlog: priority jobs already queued ahead;
-// jobs: this dialog's batch jobs; items: its cells; workers: engine threads.
-// Estimate = avgMs x rounds of work (ceil((backlog + jobs) / workers)) x a size
-// factor (1 + cells per job / 10: a longer list is a longer answer).
-bool likely_too_slow(unsigned long avgMs, uint64_t count, size_t backlog, size_t jobs, size_t items,
-                     int workers, unsigned long budgetMs);
+// single*/batch*: the engine's recency-weighted response time of single-text and
+// of batch requests (engine::latency(); "known" false = not measured yet). busy:
+// work already ahead (engine::backlog()); jobs: this dialog's engine jobs; items:
+// its cells; workers: engine threads. Per job: a job of one cell is a single
+// request (single time; the batch time if only that is known), a bigger job a
+// batch (batch time; before any batch was measured, the single time x (1 + cells
+// per job / 10), a longer list being a longer answer). Estimate = that x rounds of
+// work (ceil((busy + jobs) / workers)). Nothing measured -> false (hold: optimistic).
+bool likely_too_slow(bool singleKnown, double singleMs, bool batchKnown, double batchMs,
+                     size_t busy, size_t jobs, size_t items, int workers, unsigned long budgetMs);
 
 // Remove {RRGGBB} colour codes (SA:MP strips them from a list row's response text).
 std::string strip_colors(const std::string& s);
@@ -207,8 +210,13 @@ bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, s
 // Called from the incoming RPC-dispatch chokepoint (compat::HandleRPCPacketFunc).
 // ShowDialog (translate_dialogs): fully cached + nothing held -> rewritten in
 // place and shown now (returns false). Otherwise HELD: returns true (the caller
-// must NOT pass the RPC to SA:MP); it is translated unit by unit and released
-// later through SA:MP's own Show, in arrival order with its original timing.
+// must NOT pass the RPC to SA:MP); its missing cells are translated in batch
+// requests (one per chunk of up to 20 cells; one per cell while batching is off)
+// and it is released later through SA:MP's own Show, in arrival order with its
+// original timing. If the measured provider latency says it can't be translated
+// in time (likely_too_slow) and nothing is held ahead, it is NOT held: shown now
+// with what the translation memory has (returns false), the rest translated in
+// the background (surface-2 fills) for next time.
 // Without a running pump (hooks::pump_ready()) nothing is ever held: SA:MP shows
 // the original (or the in-place rewrite when fully cached). Close signals are
 // never translated (a password dialog's text is; the typed password never is).

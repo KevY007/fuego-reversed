@@ -98,6 +98,23 @@ unsigned long g_respLastMs  = 0;
 // the next start(). Reset by any batch that keeps its layout.
 constexpr int    kBatchGiveUp = 2;
 std::atomic<int> g_batchBroken{0};
+// When batching was switched off (steady-clock ms; 0 = on). After kBatchReprobeMs
+// one more batch is tried (see batching_enabled()).
+constexpr int64_t    kBatchReprobeMs = 10 * 60 * 1000;
+std::atomic<int64_t> g_batchOffAt{0};
+
+// Recency-weighted latency per request kind, for the held-dialog estimate.
+// Guarded by g_statsMutex.
+LatencyTracker g_latSingle;
+LatencyTracker g_latBatch;
+
+// Jobs a worker is processing right now (popped, result not yet pushed).
+std::atomic<int> g_active{0};
+
+int64_t now_ms() {
+    return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // ---- the per-text pipeline, shared by process_one and process_batch ---------
 
@@ -157,6 +174,13 @@ bool call_provider(IProvider* prov, const std::vector<std::string>& texts, const
     bool callOk = prov->translate(texts, sysPrompt, rollingCtx, out, err);
     unsigned long dt = (unsigned long)std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - t0).count();
+    // Latency for the held-dialog estimate: every answered request, AND a timeout
+    // (the provider reports "timeout"): a provider that doesn't answer in time is
+    // the slowest provider of all, not one to leave out of the estimate.
+    if (callOk || err == "timeout") {
+        std::lock_guard<std::mutex> lk(g_statsMutex);
+        (texts.size() > 1 ? g_latBatch : g_latSingle).add((double)dt);
+    }
     if (callOk) {
         g_status.store("local ok", std::memory_order_relaxed);
         { std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr.clear(); }
@@ -209,6 +233,7 @@ void worker_loop() {
             g_jobCv.wait(lock, [] { return !g_running.load() || !g_jobs.empty(); });
             if (!g_running.load()) return; // shutting down: abandon anything still queued
             g_jobs.pop(job);               // priority lane (outbound chat, dialog units/replies) first
+            g_active.fetch_add(1);         // counted as work ahead of new jobs until its result is out
         }
 
         // Per-job direction overrides (outbound uses them); fall back to the
@@ -249,6 +274,7 @@ void worker_loop() {
             std::lock_guard<std::mutex> lock(g_resultMutex);
             g_results.push_back(std::move(r));
         }
+        g_active.fetch_sub(1);
         if (!job.noDedup && job.units.empty()) { // batch jobs were never entered into the set
             std::lock_guard<std::mutex> lock(g_jobMutex);
             g_inFlight.erase(std::hash<std::string>{}(job.sourceBytes) * 31u + (size_t)job.surface);
@@ -304,7 +330,7 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
     // a normal single request). Each returned item is finished on its own; an item
     // that is missing or fails validation is retried alone below.
     std::vector<size_t> retry;
-    if (need.size() >= 2 && g_batchBroken.load() < kBatchGiveUp) {
+    if (need.size() >= 2 && batching_enabled()) {
         std::vector<std::string> texts;
         texts.reserve(need.size());
         for (size_t i : need) texts.push_back(prep[i].masked.text);
@@ -322,10 +348,14 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
                 any = true;
             }
         }
-        // The provider hands back ALL-empty items when the reply lost its numbered
-        // layout (batch.h's strict parse). Two in a row: this model can't keep a list.
-        if (layoutKept) g_batchBroken.store(0);
-        else g_batchBroken.fetch_add(1);
+        // The provider hands back ALL-empty items when the batch failed on its own
+        // (a broken numbered layout, a timeout, a cut-off or rejected request). Two
+        // in a row: this model/server can't do lists -- switch batching off.
+        if (layoutKept) {
+            g_batchBroken.store(0);
+        } else if (g_batchBroken.fetch_add(1) + 1 == kBatchGiveUp) {
+            g_batchOffAt.store(now_ms());
+        }
     } else {
         retry = need;
     }
@@ -343,8 +373,37 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
     return any;
 }
 
+bool batching_enabled() {
+    if (g_batchBroken.load() < kBatchGiveUp) return true;
+    const int64_t off = g_batchOffAt.load();
+    if (off != 0 && now_ms() - off >= kBatchReprobeMs) {
+        // Give it one more try after a while (a model reload, other menus, ...): a
+        // kept layout turns batching back on for good; one more broken layout
+        // switches it off again for another interval.
+        g_batchOffAt.store(0);
+        g_batchBroken.store(kBatchGiveUp - 1);
+        return true;
+    }
+    return false;
+}
+
 void reset_batch_for_test() {
     g_batchBroken.store(0);
+    g_batchOffAt.store(0);
+}
+
+void expire_batch_off_for_test() {
+    if (g_batchOffAt.load() != 0) g_batchOffAt.store(now_ms() - kBatchReprobeMs - 1);
+}
+
+Latency latency() {
+    std::lock_guard<std::mutex> lk(g_statsMutex);
+    Latency l;
+    l.singleKnown = g_latSingle.known();
+    l.singleMs    = g_latSingle.ewma;
+    l.batchKnown  = g_latBatch.known();
+    l.batchMs     = g_latBatch.ewma;
+    return l;
 }
 
 void start(const ProviderConfig& cfg, const std::string& systemPrompt,
@@ -361,8 +420,14 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt,
     g_status.store("idle", std::memory_order_relaxed);
     // Reset response-time stats: a new provider/model has its own latency profile,
     // so don't average across a switch (e.g. local Hy-MT2 -> a cloud endpoint).
-    { std::lock_guard<std::mutex> lk(g_statsMutex); g_respCount = 0; g_respTotalMs = 0; g_respLastMs = 0; }
+    {
+        std::lock_guard<std::mutex> lk(g_statsMutex);
+        g_respCount = 0; g_respTotalMs = 0; g_respLastMs = 0;
+        g_latSingle.reset(); // the new provider/model's first request is a cold load again
+        g_latBatch.reset();
+    }
     g_batchBroken.store(0); // a new model/provider gets a fresh chance to keep numbered lists
+    g_batchOffAt.store(0);
 
     // Safe without g_jobMutex, unlike stop()'s flip: stop() above (if we
     // were running) already joined every prior worker before returning, and
@@ -484,7 +549,8 @@ std::string last_error() {
 
 size_t backlog() {
     std::lock_guard<std::mutex> lock(g_jobMutex);
-    return g_jobs.prio.size();
+    const int active = g_active.load();
+    return g_jobs.prio.size() + (size_t)(active > 0 ? active : 0);
 }
 
 int worker_count() {

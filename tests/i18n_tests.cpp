@@ -248,6 +248,15 @@ void test_detect() {
 #include "i18n/json_min.h"
 void test_json() {
     using namespace i18n::json;
+    // A reply cut off by max_tokens (finish_reason "length"; "max_tokens" on some
+    // compat layers) must never be trusted as a complete batch.
+    CHECK(reply_truncated("{\"choices\":[{\"message\":{\"content\":\"x\"},\"finish_reason\":\"length\"}]}"),
+          "json: finish_reason length = truncated");
+    CHECK(reply_truncated("{\"choices\":[{\"finish_reason\" : \"max_tokens\",\"message\":{\"content\":\"x\"}}]}"),
+          "json: finish_reason max_tokens = truncated");
+    CHECK(!reply_truncated("{\"choices\":[{\"message\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}"),
+          "json: finish_reason stop = complete");
+    CHECK(!reply_truncated("{\"choices\":[{\"message\":{\"content\":\"x\"}}]}"), "json: no finish_reason = complete");
     // Original tests
     CHECK_EQ(escape("a\"b\\c\n"), std::string("a\\\"b\\\\c\\n"));
     CHECK_EQ(build_units({"hi","yo"}), std::string("[{\"id\":0,\"text\":\"hi\"},{\"id\":1,\"text\":\"yo\"}]"));

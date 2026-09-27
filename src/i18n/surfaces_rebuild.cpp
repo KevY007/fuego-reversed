@@ -275,14 +275,23 @@ std::vector<std::vector<size_t>> chunk_groups(const DialogPlan& plan,
     return chunks;
 }
 
-bool likely_too_slow(unsigned long avgMs, uint64_t count, size_t backlog, size_t jobs, size_t items,
-                     int workers, unsigned long budgetMs) {
-    if (count == 0 || jobs == 0) return false; // nothing measured yet / nothing to wait for
-    const size_t w       = workers > 0 ? (size_t)workers : 1;
-    const size_t rounds  = (backlog + jobs + w - 1) / w;
-    const size_t perJob  = (items + jobs - 1) / jobs;
-    const double estimate = (double)avgMs * (double)rounds * (1.0 + (double)perJob / 10.0);
-    return estimate > (double)budgetMs;
+bool likely_too_slow(bool singleKnown, double singleMs, bool batchKnown, double batchMs,
+                     size_t busy, size_t jobs, size_t items, int workers, unsigned long budgetMs) {
+    if (jobs == 0) return false; // nothing to wait for
+    const size_t perJob = (items + jobs - 1) / jobs;
+    double jobMs;
+    if (perJob <= 1) {
+        if (singleKnown)     jobMs = singleMs;
+        else if (batchKnown) jobMs = batchMs;
+        else                 return false; // nothing measured yet: hold (optimistic)
+    } else {
+        if (batchKnown)       jobMs = batchMs;
+        else if (singleKnown) jobMs = singleMs * (1.0 + (double)perJob / 10.0);
+        else                  return false;
+    }
+    const size_t w      = workers > 0 ? (size_t)workers : 1;
+    const size_t rounds = (busy + jobs + w - 1) / w;
+    return jobMs * (double)rounds > (double)budgetMs;
 }
 
 std::vector<std::vector<size_t>> group_by_core(const DialogPlan& d, const std::vector<size_t>& missing) {

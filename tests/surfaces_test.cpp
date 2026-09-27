@@ -608,13 +608,21 @@ int main() {
     }
 
     // ---- early release: don't hold a dialog the translator can't finish in time ----
+    // likely_too_slow(singleKnown, singleMs, batchKnown, batchMs, busy, jobs, items, workers, budget)
     {
-        check(!likely_too_slow(0, 0, 0, 1, 20, 3, 6000), "early: no measurements yet -> hold (optimistic)");
-        check(!likely_too_slow(600, 50, 0, 1, 20, 3, 6000), "early: a fast provider holds a 20-cell dialog");
-        check(likely_too_slow(4500, 50, 0, 1, 20, 3, 6000), "early: a slow provider shows a 20-cell dialog now");
-        check(!likely_too_slow(4500, 50, 0, 1, 1, 3, 6000), "early: a single cell on the same provider still holds");
-        check(likely_too_slow(1000, 50, 6, 1, 20, 3, 6000), "early: a queue of work ahead pushes it past the budget");
-        check(!likely_too_slow(1000, 50, 0, 3, 20, 3, 6000), "early: three batches run in parallel on three workers");
+        check(!likely_too_slow(false, 0, false, 0, 0, 1, 20, 3, 6000), "early: nothing measured yet -> hold (optimistic)");
+        // Measured batches: their own time counts, no extra size factor on top.
+        check(!likely_too_slow(true, 600, true, 3000, 0, 1, 20, 3, 6000), "early: a 3 s batch provider holds a 20-cell dialog");
+        check(likely_too_slow(true, 600, true, 7000, 0, 1, 20, 3, 6000), "early: a 7 s batch provider shows it now");
+        // Only single requests measured so far: scale by the list size.
+        check(!likely_too_slow(true, 600, false, 0, 0, 1, 20, 3, 6000), "early: fast singles hold a 20-cell dialog");
+        check(likely_too_slow(true, 4500, false, 0, 0, 1, 20, 3, 6000), "early: slow singles show a 20-cell dialog now");
+        // One cell per job (batching off / a lone missing cell): the single-request time.
+        check(!likely_too_slow(true, 4500, true, 9000, 0, 1, 1, 3, 6000), "early: a lone cell on a 4.5 s provider holds");
+        check(likely_too_slow(true, 4500, true, 9000, 3, 1, 1, 3, 6000), "early: work ahead (a second round) tips it over");
+        // Parallel jobs: 20 single-cell jobs on 3 workers = 7 rounds.
+        check(likely_too_slow(true, 1000, false, 0, 0, 20, 20, 3, 6000), "early: 20 sequential-ish cells at 1 s don't fit");
+        check(!likely_too_slow(true, 500, false, 0, 0, 20, 20, 3, 6000), "early: 20 cells at 0.5 s on 3 workers fit");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

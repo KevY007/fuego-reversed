@@ -270,5 +270,42 @@ void test_engine() {
         fb.fail = false;
         cache::clear_for_test();
         engine::reset_batch_for_test();
+
+        // Switched off after two broken layouts, batching gets another chance after a
+        // while (re-probe): one kept layout turns it on for good, one more broken
+        // layout switches it off again.
+        fb.breakLayout = true;
+        engine::process_batch(three, 1251, &fb, "sys", out); cache::clear_for_test();
+        engine::process_batch(three, 1251, &fb, "sys", out); cache::clear_for_test();
+        CHECK(!engine::batching_enabled(), "batch: off after two broken layouts");
+        engine::expire_batch_off_for_test();
+        CHECK(engine::batching_enabled(), "batch: re-probed after the off interval");
+        engine::process_batch(three, 1251, &fb, "sys", out); cache::clear_for_test();
+        CHECK(!engine::batching_enabled(), "batch: one more broken layout -> off again");
+        engine::expire_batch_off_for_test();
+        fb.breakLayout = false;
+        fb.calls.clear();
+        engine::process_batch(three, 1251, &fb, "sys", out); cache::clear_for_test();
+        CHECK(fb.calls == std::vector<size_t>({ 3 }) && engine::batching_enabled(),
+              "batch: a kept layout on the re-probe turns batching back on");
+        engine::reset_batch_for_test();
+    }
+
+    // ---- provider latency for the held-dialog estimate (recency-weighted) ----
+    {
+        engine::LatencyTracker t;
+        CHECK(!t.known(), "latency: unknown with no samples");
+        t.add(20000); // the cold model load after a (re)start: dropped
+        t.add(500);
+        t.add(500);
+        CHECK(!t.known(), "latency: still unknown after two real samples");
+        t.add(500);
+        CHECK(t.known() && t.ewma > 499 && t.ewma < 501, "latency: the cold first sample never counts");
+        t.add(10000); // a sudden slowdown moves the estimate quickly (alpha 0.3)
+        CHECK(t.ewma > 3000, "latency: a recent slow response weighs heavily");
+        for (int i = 0; i < 10; ++i) t.add(500);
+        CHECK(t.ewma < 700, "latency: recovers after the slowdown passes");
+        t.reset();
+        CHECK(!t.known(), "latency: reset -> unknown");
     }
 }

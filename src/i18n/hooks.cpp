@@ -88,8 +88,9 @@ void apply_result( const i18n::engine::Result &r ) {
 	if ( r.surface == 3 ) { i18n::surfaces::on_part_result( r ); return; }
 	// Outgoing dialog-input translations (surface 4) are sent to the server.
 	if ( r.surface == 4 ) { i18n::surfaces::on_response_result( r ); return; }
-	// Surface 2: translation-memory fill for labels/HUD -- already cached by
-	// process_one(); nothing to show.
+	// Surface 2: translation-memory fill (labels/HUD, and the background batches of
+	// a dialog shown right away because translating it would take too long) --
+	// already cached by process_one()/process_batch(); nothing to show.
 	if ( r.surface != 0 ) return;
 
 	// Inbound chat (surface 0): overwrite the rows the original line became with the

@@ -212,11 +212,17 @@ private:
             userContent += "\n\n";
             userContent += batch::numbered_block(units);
         }
-        // Room for every item's translation: a batch answers many lines at once.
+        // Room for every item's translation: a batch answers many lines at once, so
+        // size its budget from the SOURCE TEXT (a few long message-box lines need
+        // far more than a list of short buttons), never below the single-line
+        // budget. A reply that still runs out is caught (finish_reason) and its
+        // cells retried one by one -- never cached cut off.
         int maxTokens = cfg_.maxTokens;
         if (units.size() > 1) {
-            maxTokens += 64 * (int)(units.size() - 1);
-            if (maxTokens > 4096) maxTokens = 4096;
+            size_t srcBytes = 0;
+            for (const std::string& u : units) srcBytes += u.size();
+            const size_t want = 128 + 16 * units.size() + srcBytes * 3 / 2;
+            if (want > (size_t)maxTokens) maxTokens = (int)(want > 4096 ? 4096 : want);
         }
 
         std::string body = "{";
@@ -242,6 +248,21 @@ private:
     bool do_translate(const std::vector<std::string>& units, const std::string& systemPrompt,
                        const std::string& rollingCtx, std::vector<std::string>& out, std::string& err) {
         std::string body = build_request_body(units, systemPrompt, rollingCtx);
+
+        // A BATCH that fails for a reason of its own -- too slow to answer in one go
+        // (timeout), too big for the server (HTTP 400/413/422), cut off by
+        // max_tokens, or a reply that is malformed, empty, un-numbered or simply the
+        // input echoed back -- does not mean the provider is down. Report success
+        // with every item empty: the engine then retries the cells one by one (and
+        // counts it towards switching batching off), and the circuit breaker, which
+        // guards chat translation too, is not tripped by it. A single-text request
+        // keeps failing hard exactly as before.
+        const bool isBatch = units.size() > 1;
+        auto batchSoftFail = [&](const char* why) {
+            err = why;
+            out.assign(units.size(), std::string());
+            return true;
+        };
 
         // Pace request starts across all workers (stay under a provider's RPM
         // limit -- free-tier cloud keys throttle hard). No-op when disabled (0).
@@ -317,7 +338,18 @@ private:
                                             body.empty() ? nullptr : (LPVOID)body.data(), (DWORD)body.size(),
                                             (DWORD)body.size(), 0);
             if (!sent) { err = "WinHttpSendRequest failed"; return false; }
-            if (!WinHttpReceiveResponse(hRequest, nullptr)) { err = "WinHttpReceiveResponse failed"; return false; }
+            if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+                // A read timeout (no full reply within readMs; with stream:false nothing
+                // arrives before the model has finished) is reported as "timeout" so the
+                // engine can count it as a (very) slow response.
+                if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
+                    if (isBatch) return batchSoftFail("timeout (batch)");
+                    err = "timeout";
+                    return false;
+                }
+                err = "WinHttpReceiveResponse failed";
+                return false;
+            }
 
             statusCode = 0;
             DWORD statusSize = sizeof(statusCode);
@@ -327,19 +359,41 @@ private:
             if (statusCode == 200) {
                 responseBody.clear();
                 bool readOk = true;
+                bool timedOut = false;
                 for (;;) {
                     DWORD avail = 0;
-                    if (!WinHttpQueryDataAvailable(hRequest, &avail)) { err = "WinHttpQueryDataAvailable failed"; readOk = false; break; }
+                    if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
+                        timedOut = (GetLastError() == ERROR_WINHTTP_TIMEOUT);
+                        err = "WinHttpQueryDataAvailable failed";
+                        readOk = false;
+                        break;
+                    }
                     if (avail == 0) break;
                     std::string chunk(avail, '\0');
                     DWORD read = 0;
-                    if (!WinHttpReadData(hRequest, chunk.data(), avail, &read)) { err = "WinHttpReadData failed"; readOk = false; break; }
+                    if (!WinHttpReadData(hRequest, chunk.data(), avail, &read)) {
+                        timedOut = (GetLastError() == ERROR_WINHTTP_TIMEOUT);
+                        err = "WinHttpReadData failed";
+                        readOk = false;
+                        break;
+                    }
                     chunk.resize(read);
                     responseBody += chunk;
                 }
-                if (!readOk) return false;
+                if (!readOk) {
+                    if (timedOut) {
+                        if (isBatch) return batchSoftFail("timeout (batch)");
+                        err = "timeout";
+                    }
+                    return false;
+                }
                 break; // success
             }
+
+            // Too big / not accepted as a batch (e.g. prompt + max_tokens beyond a small
+            // server's context): the cells still fit one at a time.
+            if (isBatch && (statusCode == 400 || statusCode == 413 || statusCode == 422))
+                return batchSoftFail("batch rejected by the server");
 
             bool retryable = (statusCode == 429 || statusCode == 500 ||
                               statusCode == 502 || statusCode == 503 || statusCode == 504);
@@ -356,29 +410,46 @@ private:
 
         std::string content;
         if (!json::extract_message_content(responseBody, content)) {
+            if (isBatch) return batchSoftFail("batch reply malformed");
             err = "failed to extract message content from reply";
             return false;
         }
+        // A batch reply cut off by max_tokens may still parse (the cut can land inside
+        // the last item): never trust it -- that line would be cached cut off.
+        if (isBatch && json::reply_truncated(responseBody)) return batchSoftFail("batch reply cut off");
 
         // Native MT reply is plain text -- drop any <think> block, then strip code
         // fences / surrounding quotes the model may have added around it.
         std::string translation = trim_ws_quotes(strip_code_fences(strip_think(content)));
         if (translation.empty()) {
+            if (isBatch) return batchSoftFail("batch reply empty");
             err = "empty translation in reply";
             return false;
         }
 
         out.assign(units.size(), std::string());
-        if (units.size() == 1) {
+        if (!isBatch) {
             out[0] = translation;
             return true;
         }
-        // A batch: split the numbered reply back into its items. A reply that broke
-        // the layout still means the provider WORKED (so the breaker must not count
-        // it as a failure): every item stays "" and the engine retries them one at a
-        // time -- a strict parse never lets one item's text land on another's row.
+        // A batch: split the numbered reply back into its items -- strictly, so one
+        // item's text can never land on another's row (batch.h).
         std::vector<std::string> items;
-        if (batch::parse_numbered(translation, units.size(), items)) out = std::move(items);
+        if (!batch::parse_numbered(translation, units.size(), items))
+            return batchSoftFail("batch layout broken");
+        // Each item gets the same quote cleanup a single reply gets (unless its
+        // source was itself quoted); a reply that just echoes every source line back
+        // untranslated is no translation at all.
+        bool allEcho = true;
+        for (size_t i = 0; i < items.size(); ++i) {
+            const std::string& src = units[i];
+            const bool srcQuoted = src.size() >= 2 && (src.front() == '"' || src.front() == '\'') &&
+                                   src.back() == src.front();
+            items[i] = srcQuoted ? trim_ws(items[i]) : trim_ws_quotes(items[i]);
+            if (items[i] != src) allEcho = false;
+        }
+        if (allEcho) return batchSoftFail("batch came back untranslated");
+        out = std::move(items);
         return true;
     }
 };

@@ -91,6 +91,34 @@ struct JobQueue {
     void clear() { prio.clear(); normal.clear(); }
 };
 
+// Recency-weighted response time of ONE kind of provider request (a single text,
+// or a batch) for the held-dialog estimate (surfaces::likely_too_slow). The first
+// sample after a (re)start is dropped -- it is usually a cold model load, which
+// would otherwise make every dialog of a new session look "too slow" -- and fewer
+// than kMinSamples real samples mean "unknown". A recent slowdown (a rate limit, a
+// model reload, a timeout counted as a sample) moves it within a few requests.
+// PURE; the engine guards its two instances with its stats mutex.
+struct LatencyTracker {
+    static constexpr double kAlpha      = 0.3;
+    static constexpr int    kMinSamples = 3;
+    int    seen = 0;   // samples offered, including the dropped first one
+    double ewma = 0.0; // ms
+    void add(double ms) {
+        if (++seen == 1) return;
+        ewma = (seen == 2) ? ms : ewma + kAlpha * (ms - ewma);
+    }
+    bool known() const { return seen - 1 >= kMinSamples; }
+    void reset() { seen = 0; ewma = 0.0; }
+};
+
+// Snapshot of both trackers (thread-safe copy).
+struct Latency {
+    bool   singleKnown = false;
+    double singleMs    = 0.0;
+    bool   batchKnown  = false;
+    double batchMs     = 0.0;
+};
+
 // Starts the worker pool against the given provider config + cacheable
 // system prompt. targetLang keys the cache + drives the "already target
 // language" skip; displayCp is the Windows codepage finished text is encoded
@@ -166,11 +194,24 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
                    const std::string& sysPrompt, std::vector<std::string>& out,
                    int targetLang = 1033, int displayCp = 1252, int capBytes = 144);
 
-// Test-only: turn batching back on (forget the broken-layout streak).
-void reset_batch_for_test();
+// Whether a dialog's cells may go out as one batch right now: false after two
+// broken layouts in a row -- until, 10 minutes later, one more batch is tried
+// (a kept layout turns batching back on; another broken one switches it off for
+// another 10 minutes). While it is off, a held dialog sends one job per cell so
+// the cells run in parallel on the workers. Thread-safe.
+bool batching_enabled();
 
-// Priority-lane jobs queued and not yet picked up by a worker, and the number of
-// worker threads -- inputs for the held-dialog latency estimate. Thread-safe.
+// Test-only: turn batching back on (forget the broken-layout streak), and make the
+// 10-minute re-probe due now.
+void reset_batch_for_test();
+void expire_batch_off_for_test();
+
+// The recency-weighted provider latency (see LatencyTracker). Thread-safe.
+Latency latency();
+
+// Work ahead of a new priority job: priority-lane jobs still queued plus jobs the
+// workers are processing right now; and the number of worker threads -- inputs for
+// the held-dialog latency estimate. Thread-safe.
 size_t backlog();
 int worker_count();
 

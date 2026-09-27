@@ -219,6 +219,32 @@ void submit_batches(const DialogPlan& d, const std::vector<std::vector<size_t>>&
     }
 }
 
+// Cores a background fill was sent for recently (core -> GetTickCount() at submit):
+// re-opening the same dialog while a slow provider is still on it must not queue
+// the same fill again (and run duplicates in parallel).
+std::unordered_map<std::string, uint32_t> g_recentFills;
+constexpr uint32_t kFillMemoryMs = 60000;
+
+// The groups whose core has no background fill from the last kFillMemoryMs, now
+// marked as filled.
+std::vector<std::vector<size_t>> not_recently_filled(const DialogPlan& d,
+                                                     const std::vector<std::vector<size_t>>& groups, uint32_t now) {
+    if (g_recentFills.size() > 512) {
+        for (auto it = g_recentFills.begin(); it != g_recentFills.end();)
+            it = (now - it->second >= kFillMemoryMs) ? g_recentFills.erase(it) : std::next(it);
+        if (g_recentFills.size() > 512) g_recentFills.clear();
+    }
+    std::vector<std::vector<size_t>> out;
+    for (const std::vector<size_t>& g : groups) {
+        const std::string& core = d.units[g.front()].core;
+        auto it = g_recentFills.find(core);
+        if (it != g_recentFills.end() && now - it->second < kFillMemoryMs) continue;
+        g_recentFills[core] = now;
+        out.push_back(g);
+    }
+    return out;
+}
+
 // A ShowDialog arrived (translate_dialogs on). True = we SWALLOWED it (it will be
 // released later through the queue); false = let SA:MP show it now (possibly
 // rewritten in place from the translation memory).
@@ -276,20 +302,24 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
 
     // The missing cells, grouped (a repeated label -- "Buy" on every row -- is
     // translated once and fills every unit that has it) and split into batch
-    // requests: a whole dialog is usually ONE request, not one per cell.
+    // requests: a whole dialog is usually ONE request, not one per cell. While
+    // batching is off (this model can't keep a numbered list), one job per cell,
+    // so the cells run in parallel on the workers instead of one after another.
+    const size_t maxItems = i18n::engine::batching_enabled() ? kBatchMaxItems : 1;
     const std::vector<std::vector<size_t>> groups = group_by_core(d, missing);
-    const std::vector<std::vector<size_t>> chunks = chunk_groups(d, groups, kBatchMaxItems, kBatchMaxBytes);
+    const std::vector<std::vector<size_t>> chunks = chunk_groups(d, groups, maxItems, kBatchMaxBytes);
 
     // Nothing held ahead, but the translator measurably can't finish this one in
-    // time (its response time x the work queued ahead x the list size): don't make
-    // the player wait for nothing. Show it NOW -- with whatever the translation
-    // memory already has -- and translate the rest in the background, so the next
-    // time it opens it is translated at once.
+    // time (its recent response time x the work already ahead): don't make the
+    // player wait for nothing. Show it NOW -- with whatever the translation memory
+    // already has -- and translate the rest in the background, so the next time it
+    // opens it is translated at once.
     if (g_dlgq.empty() && !chunks.empty()) {
-        const i18n::engine::RespStats st = i18n::engine::response_stats();
-        if (likely_too_slow(st.avgMs, st.count, i18n::engine::backlog(), chunks.size(), groups.size(),
-                            i18n::engine::worker_count(), kEarlyReleaseMs)) {
-            submit_batches(d, groups, chunks, 0, /*fillOnly=*/true);
+        const i18n::engine::Latency lat = i18n::engine::latency();
+        if (likely_too_slow(lat.singleKnown, lat.singleMs, lat.batchKnown, lat.batchMs, i18n::engine::backlog(),
+                            chunks.size(), groups.size(), i18n::engine::worker_count(), kEarlyReleaseMs)) {
+            const std::vector<std::vector<size_t>> fill = not_recently_filled(d, groups, GetTickCount());
+            submit_batches(d, fill, chunk_groups(d, fill, maxItems, kBatchMaxBytes), 0, /*fillOnly=*/true);
             if (anyTranslated) {
                 std::vector<uint8_t> pkt = assemble_dialog(d, fit_list_budgets(d, cores));
                 commit(rpc, pkt);
@@ -297,9 +327,9 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
             } else {
                 note_shown(original, nullptr);
             }
-            Log("[i18n] dialog %d shown right away: translating it would take too long now (avg %lu ms per "
-                "request); it is translated in the background for next time.",
-                (int)(int16_t)d.id, st.avgMs);
+            Log("[i18n] dialog %d shown right away: translating it would take too long now (recent requests "
+                "~%.0f ms); it is translated in the background for next time.",
+                (int)(int16_t)d.id, lat.batchKnown ? lat.batchMs : lat.singleMs);
             return false;
         }
     }
@@ -495,6 +525,7 @@ void discard_session() {
     g_dlgq = i18n::dlgq::Queue(kMaxHoldMs, kMaxHeldDialogs); // held dialogs: never shown
     g_pendingDialogs.clear();
     g_partJobs.clear();
+    g_recentFills.clear();
     g_pendingResponses.clear();                              // INPUT replies: never sent
     g_shownRows.clear();                                     // no remap against the old dialogs' rows
     const size_t chat = i18n::outbound::discard_pending();   // outgoing chat: never sent

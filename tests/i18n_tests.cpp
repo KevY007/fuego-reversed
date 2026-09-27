@@ -230,6 +230,11 @@ void test_detect() {
         L"At",       // Turkish: horse
         L"to",       // Roman Urdu: so / then
         L"Rent",     // Norwegian: clean
+        L"Map",      // Dutch: folder
+        L"Car",      // French: coach / because
+        L"Los",      // Polish: fate; Spanish: the
+        L"On",       // Russian translit: he
+        L"Bail",     // French: lease
     };
     for (const wchar_t* w : falseFriends)
         CHECK(!is_english_ui_text(w), "ui: a false friend is still translated");

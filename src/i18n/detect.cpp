@@ -112,10 +112,12 @@ namespace {
 //   German   gift art also fast kind arm brand boot rat hut bad hell die was war man
 //            hat tag rot gang(gear) last(load) fee(fairy)
 //   French   chat(cat) or(gold) store(blind) location(rental) resume(summary)
-//   Spanish  sale once pan red con sin solo fin real    Italian come dove camera fine(end)
-//   Polish/Czech list(letter) ty(you) no(yeah)          Romanian an(year)
+//            car(coach/because) bail(lease)
+//   Spanish  sale once pan red con sin solo fin real los/las(the)
+//   Italian  come dove camera fine(end)                 Dutch map(folder)
+//   Polish/Czech list(letter) ty(you) no(yeah) los(fate) Romanian an(year)
 //   Indonesian ban(tyre)    Turkish sat(sell) al(take) at(horse)    Norwegian rent(clean)
-//   Roman Urdu/Hindi main par bas log(people) to(so)    Russian translit net da by
+//   Roman Urdu/Hindi main par bas log(people) to(so)    Russian translit net da by on(he)
 const char* const kUiWords[] = {
     // buttons / actions
     "ok", "okay", "yes", "cancel", "close", "back", "next", "previous", "prev",
@@ -130,7 +132,7 @@ const char* const kUiWords[] = {
     "upgrade", "repair", "refill", "lock", "unlock", "buy", "sell", "purchase",
     "rental", "pay", "withdraw", "deposit", "transfer", "claim", "collect", "redeem",
     "vote", "apply", "create", "add", "set", "clear", "toggle", "enable", "disable",
-    "enabled", "disabled", "on", "off",
+    "enabled", "disabled", "off",
     // money / shops / property
     "balance", "account", "money", "cash", "bank", "price", "cost", "total", "amount",
     "tax", "taxes", "salary", "payday", "shop", "market", "item", "items",
@@ -139,7 +141,7 @@ const char* const kUiWords[] = {
     "key", "keys",
     // gear / vehicles
     "weapon", "weapons", "gun", "guns", "ammo", "armour", "armor", "health", "vehicle",
-    "vehicles", "car", "cars", "bike", "bikes", "boat", "boats", "plane", "planes",
+    "vehicles", "bike", "bikes", "boat", "boats", "plane", "planes",
     "bus", "taxi", "fuel", "engine", "lights", "trunk", "hood", "park", "parking",
     "impound", "tow", "tuning", "paint", "nitro", "wheels",
     // players / server / social
@@ -150,19 +152,19 @@ const char* const kUiWords[] = {
     "teams", "clan", "clans", "rank", "ranks", "skin", "skins", "color", "colour",
     "colors", "online", "offline", "welcome", "hello", "hi", "thanks", "thank",
     "please", "sorry", "police", "cop", "cops", "medic", "mechanic", "hospital", "jail",
-    "prison", "wanted", "bail", "fines",
+    "prison", "wanted", "fines",
     // game systems / places
     "job", "jobs", "work", "level", "levels", "score", "stats", "statistics", "status",
     "skill", "skills", "experience", "exp", "xp", "respect", "points", "point", "reward",
     "rewards", "bonus", "daily", "weekly", "event", "events", "mission", "missions",
     "quest", "quests", "race", "races", "lottery", "casino", "license", "licence",
     "licenses", "driving", "flying", "fishing", "mining", "delivery", "time", "weather",
-    "hours", "minutes", "seconds", "day", "days", "gps", "map",
+    "hours", "minutes", "seconds", "day", "days", "gps",
     "teleport", "destination", "closest", "nearest", "zone", "zones",
     "area", "city", "interior", "general", "tutorial", "guide", "faq", "support",
     "discord", "forum", "website", "achievement", "achievements", "topic", "topics",
     "system", "overview", "first", "new", "old", "other", "all", "none",
-    "los", "santos", "san", "fierro", "las", "venturas", "andreas",
+    "santos", "san", "fierro", "venturas", "andreas",
     // glue words that only ever pass when EVERY other word is on this list too
     "my", "your", "the", "a", "of", "for", "and", "in", "with", "from",
     // universal gaming chat

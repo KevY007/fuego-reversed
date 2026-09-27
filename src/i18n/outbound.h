@@ -1,13 +1,17 @@
 #pragma once
 // i18n/outbound.h -- translate MY outgoing chat before it is sent.
 //
-// Registers a net send-seam handler on RPC_Chat: while enabled, it swallows the
-// player's typed chat line, translates it the OPPOSITE way (my language -> the
-// server's language, config.outbound_target_lang) via the shared engine using a
-// per-job prompt/target override, and sends the translation (or the original, if
-// translation fails) through the real RakClient. Commands (/...) always pass
-// through untranslated. Toggled live with a settable hotkey (default Ctrl+Shift)
-// or the menu; default off.
+// Registers a net send-seam handler on RPC_Chat: while enabled (and only while the
+// per-frame pump runs -- hooks::pump_ready()), it swallows the player's typed chat
+// line, translates it the OPPOSITE way (my language -> the server's language,
+// config.outbound_target_lang) via the shared engine using a per-job prompt/target
+// override, and sends the translation through the real RakClient. A swallowed line
+// ALWAYS reaches the server: as typed if the translation fails, hasn't landed
+// within 5 s (tick), or the engine is about to be restarted/stopped
+// (flush_pending). Commands (/...) always pass through untranslated. Toggled live
+// with a settable hotkey (default Ctrl+Shift) or the menu; default off.
+
+#include <cstdint>
 
 namespace i18n::engine { struct Result; }
 
@@ -26,7 +30,17 @@ bool enabled();
 
 // Delivers a finished outbound translation: called from hooks::apply_result for
 // Result.surface == 1, on the main thread. Sends the translated line (or the
-// original on failure) via RakClient.
+// original on failure) via RakClient. A result whose line was already sent as
+// typed (deadline / flush) is ignored.
 void on_result(const i18n::engine::Result& r);
+
+// Guaranteed delivery: sends the ORIGINAL of every swallowed line still waiting
+// for its translation after 5 s. Call every frame (hooks::pump_tick). Main thread.
+void tick(uint32_t nowMs);
+
+// Sends the ORIGINAL of every swallowed line right now, in the order typed, and
+// forgets them. Call before the engine is stopped or restarted (engine::stop()/
+// start() drop every queued job). Main thread.
+void flush_pending();
 
 } // namespace i18n::outbound

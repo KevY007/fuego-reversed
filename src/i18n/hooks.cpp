@@ -194,6 +194,7 @@ void pump_tick( IDirect3DDevice9 * ) {
 	try {
 		i18n::engine::pump();
 		const uint32_t now = GetTickCount();
+		i18n::outbound::tick( now ); // swallowed chat past its deadline goes out as typed
 		i18n::names::tick( now );    // live player names -> masked, never translated
 		i18n::surfaces::tick( now ); // release held dialogs that are due
 		i18n::lab::on_frame();       // debug lab (read-only logging)
@@ -242,6 +243,7 @@ void apply_config() {
 	if ( !s.inbound_chat && !s.outbound_enabled && !s.translate_dialogs && !s.translate_hud ) {
 		if ( g_engineOn ) {
 			i18n::surfaces::flush_responses(); // about to drop the queue -- never lose a swallowed reply
+			i18n::outbound::flush_pending();   // ... or a swallowed chat line
 			i18n::engine::stop();
 			g_engineOn = false;
 			g_engineSig.clear();
@@ -273,6 +275,7 @@ void apply_config() {
 	}
 
 	i18n::surfaces::flush_responses(); // the queue below is about to be dropped
+	i18n::outbound::flush_pending();
 	i18n::engine::start( pc, prompt, s.target_lang, dispCp );
 	g_engineOn  = true;
 	g_engineSig = std::move( sig );

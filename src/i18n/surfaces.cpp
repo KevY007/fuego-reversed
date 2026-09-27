@@ -51,22 +51,32 @@ void queue_fill(const std::string& src) {
     i18n::engine::submit(j);
 }
 
-// Longest text each surface holds: a cache hit is capped to it (the cache keeps the
-// full translation). A textdraw holds 800 bytes (szText[801]), a 3D label far more
-// than a chat line, a chat bubble a chat line's 144. (Capping these to chat's 144
-// used to cut long translated labels/textdraws, e.g. a two-line ATM prompt.)
-constexpr int kCapLabel    = 1024;
-constexpr int kCapTextDraw = 800;
-constexpr int kCapGameText = 400;
-constexpr int kCapBubble   = 144;
+// The longest text each surface really accepts (SA:MP 0.3.DL, verified in samp.dll):
+//   gametext    <= 200 bytes -- the RPC 73 handler drops anything longer
+//   textdraw    <  800 bytes (RPC 134: len < 800; RPC 105's buffer is 800), and only
+//               <= 255 with ~k~ key codes (CTextDraw::SetText rejects longer)
+//   3D label    ~k~ codes only expand below 400 bytes; the decoder holds 2048
+//   chat bubble <= 144
+// (Capping these to chat's 144 cut long translated labels/textdraws, e.g. a
+// two-line ATM prompt; a flat 400/800 overshot the real limits.)
+bool has_key_code(const std::string& s) { return s.find("~k") != std::string::npos || s.find("~K") != std::string::npos; }
+int limit_label(const std::string& src)    { return has_key_code(src) ? 399 : 1024; }
+int limit_textdraw(const std::string& src) { return has_key_code(src) ? 255 : 799; }
+int limit_gametext(const std::string&)     { return 200; }
+int limit_bubble(const std::string&)       { return 144; }
 
 // TM-first translator for a piece of text: cache hit -> out=translation, true;
 // trivial string (<2 chars, e.g. a lone space) -> keep as-is, true; miss -> queue
-// a fill and return false (caller shows the original this time).
-bool tm_translate(const std::string& src, std::string& out, int cap) {
+// a fill and return false (caller shows the original this time). A translation
+// LONGER than the surface's limit is never cut (a cut can split a ~x~ code -- SA:MP
+// then shows "Error: unmatched tilde", or drops the text): the original is shown.
+bool tm_translate(const std::string& src, std::string& out, int limit) {
     if (src.size() < 2) { out = src; return true; }
     auto& s = i18n::config::get();
-    if (i18n::engine::cache_lookup(src, s.source_cp, s.target_lang, out, cap)) {
+    std::string t;
+    if (i18n::engine::cache_lookup(src, s.source_cp, s.target_lang, t, 4095)) {
+        if ((int)t.size() > limit) return false; // too long for this surface: keep the original
+        out = std::move(t);
         return true;
     }
     queue_fill(src);
@@ -76,13 +86,13 @@ bool tm_translate(const std::string& src, std::string& out, int cap) {
 // HUD variant: additionally SKIP dynamic/numeric-heavy strings (timers, counters,
 // stats) so a textdraw that updates every tick with a changing number never spams
 // the translator -- return false (pass original) without queueing anything.
-bool tm_translate_hud(const std::string& src, std::string& out, int cap) {
+bool tm_translate_hud(const std::string& src, std::string& out, int limit) {
     if (is_dynamic_text(src)) return false;
-    return tm_translate(src, out, cap);
+    return tm_translate(src, out, limit);
 }
 
-Translator hud_translator(int cap) {
-    return [cap](const std::string& a, std::string& b) { return tm_translate_hud(a, b, cap); };
+Translator hud_translator(int (*limit)(const std::string&)) {
+    return [limit](const std::string& a, std::string& b) { return tm_translate_hud(a, b, limit(a)); };
 }
 
 // Replace the RPC's payload with `pkt` (all byte-aligned). Mirrors compat's
@@ -573,14 +583,14 @@ bool on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
         std::vector<uint8_t> out;
         bool ok = false;
         if (s.translate_dialogs && id == 36) {
-            ok = rebuild_label(p, n, [](const std::string& a, std::string& b) { return tm_translate(a, b, kCapLabel); },
+            ok = rebuild_label(p, n, [](const std::string& a, std::string& b) { return tm_translate(a, b, limit_label(a)); },
                                out);
         } else if (s.translate_hud && (id == 73 || id == 59 || id == 105 || id == 134)) {
             switch (id) {
-                case 73:  ok = rebuild_gametext(p, n, hud_translator(kCapGameText), out); break;
-                case 59:  ok = rebuild_chatbubble(p, n, hud_translator(kCapBubble), out); break;
-                case 105: ok = rebuild_textdraw_setstring(p, n, hud_translator(kCapTextDraw), out); break;
-                case 134: ok = rebuild_textdraw_show(p, n, hud_translator(kCapTextDraw), out); break;
+                case 73:  ok = rebuild_gametext(p, n, hud_translator(limit_gametext), out); break;
+                case 59:  ok = rebuild_chatbubble(p, n, hud_translator(limit_bubble), out); break;
+                case 105: ok = rebuild_textdraw_setstring(p, n, hud_translator(limit_textdraw), out); break;
+                case 134: ok = rebuild_textdraw_show(p, n, hud_translator(limit_textdraw), out); break;
             }
         } else {
             return false;

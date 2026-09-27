@@ -41,12 +41,13 @@ std::string profile_copy() {
 }
 
 // ---- threaded engine state ------------------------------------------------
-// g_provider/g_sysPrompt/g_profile above are written only by start(), and
-// only before any worker thread is created (std::thread's constructor
-// establishes a happens-before edge with the new thread's first
-// instruction), and never mutated again while a worker could be reading
-// them -- stop() only resets g_provider after join()ing every worker. So
-// worker threads need no extra synchronization to read them safely.
+// g_provider/g_sysPrompt below are written only by start(), and only before
+// any worker thread is created (std::thread's constructor establishes a
+// happens-before edge with the new thread's first instruction), and never
+// mutated again while a worker could be reading them -- stop() only resets
+// g_provider after join()ing every worker. So worker threads need no extra
+// synchronization to read them. g_profile is the exception: the game thread
+// reads it too (cache_lookup), so it goes through g_profileMutex.
 std::unique_ptr<IProvider> g_provider;
 std::string g_sysPrompt;
 int g_targetLang = 1033;  // written only by start() (same publication rules as g_sysPrompt)
@@ -673,8 +674,8 @@ void submit(const Job& job) {
     // reuse as future context (raw cp1251/cp1252 bytes would corrupt the
     // request body). Short chat strings -> negligible cost on the game thread.
     std::string utf8Line;
-    const bool ctx = g_ctxEnabled.load(); // read once: both uses below agree
-    if (ctx && !isBatch && !job.skipContext) {
+    const bool useCtx = g_ctxEnabled.load(); // read once: both uses below agree
+    if (useCtx && !isBatch && !job.skipContext) {
         int cp = (job.srcCodepage != 0) ? job.srcCodepage : charset::guess_codepage(job.sourceBytes);
         utf8Line = charset::to_utf8(charset::decode(job.sourceBytes, cp));
     }
@@ -687,7 +688,7 @@ void submit(const Job& job) {
     // player is composing, translated the other way) opt out via skipContext so
     // they neither read nor pollute the inbound context ring. Only for providers
     // whose models read context instead of translating it (context_for_provider).
-    if (ctx && !job.skipContext && !isBatch) {
+    if (useCtx && !job.skipContext && !isBatch) {
         // Attach the recent conversation (oldest -> newest) as background context
         // for this job, BEFORE recording the current line so a line is never its
         // own context.

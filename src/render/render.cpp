@@ -28,7 +28,11 @@ DWORD             g_overlayHideUntil = 0; // GetTickCount() deadline for the F8 
 bool              g_maxFullscreenHz  = false; // force highest refresh in exclusive fullscreen
 std::atomic<bool> g_refreshPending{ false };  // re-apply the refresh setting (see apply_refresh)
 UINT              g_injectedHz       = 0;     // the refresh hkReset last put into RW's params (0 = none)
-UINT              g_badHz            = 0;     // a rate whose Reset failed: never injected again
+UINT              g_badHz = 0, g_badW = 0, g_badH = 0; // a rate this resolution refused: never injected again
+
+bool refused_rate( UINT hz, const D3DPRESENT_PARAMETERS *pp ) {
+	return hz != 0 && hz == g_badHz && pp->BackBufferWidth == g_badW && pp->BackBufferHeight == g_badH;
+}
 
 // Posted to the game window by set_max_fullscreen_refresh (from any thread), and a
 // timer that retries while the game is still loading or not in front. Both are
@@ -92,7 +96,7 @@ bool refresh_reset_needed() {
 	if ( !g_device || pp->Windowed ) return false;
 	if ( g_maxFullscreenHz ) {
 		const UINT best = best_fullscreen_refresh( g_device, pp );
-		return best > 0 && best != pp->FullScreen_RefreshRateInHz;
+		return best > 0 && !refused_rate( best, pp ) && best != pp->FullScreen_RefreshRateInHz;
 	}
 	return g_injectedHz != 0 && pp->FullScreen_RefreshRateInHz == g_injectedHz;
 }
@@ -190,7 +194,7 @@ HRESULT __stdcall hkReset( IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp ) {
 	bool injected = false;
 	if ( g_maxFullscreenHz && pp && pp->Windowed == FALSE ) {
 		UINT hz = best_fullscreen_refresh( dev, pp );
-		if ( hz > 0 && hz != g_badHz && hz != pp->FullScreen_RefreshRateInHz ) {
+		if ( hz > 0 && !refused_rate( hz, pp ) && hz != pp->FullScreen_RefreshRateInHz ) {
 			Log( "[render] fullscreen refresh: %u -> %u Hz (%ux%u).",
 			     pp->FullScreen_RefreshRateInHz, hz, pp->BackBufferWidth, pp->BackBufferHeight );
 			gtaHz    = pp->FullScreen_RefreshRateInHz;
@@ -207,12 +211,24 @@ HRESULT __stdcall hkReset( IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp ) {
 	// never leave a black screen -- retry once at GTA's own rate, and don't offer that
 	// rate again this session.
 	if ( FAILED( hr ) && injected && hr != D3DERR_DEVICELOST ) {
-		Log( "[render] the %u Hz reset failed (0x%08lX); back to GTA's %u Hz.",
-		     pp->FullScreen_RefreshRateInHz, (unsigned long) hr, gtaHz );
-		g_badHz = pp->FullScreen_RefreshRateInHz;
+		const UINT    tried = pp->FullScreen_RefreshRateInHz;
+		const HRESULT first = hr;
 		pp->FullScreen_RefreshRateInHz = gtaHz;
 		g_injectedHz = 0;
 		hr = g_origReset( dev, pp );
+		if ( SUCCEEDED( hr ) ) {
+			// Only now is it clear the RATE was the problem: never offer it again at this
+			// resolution (a failure for another reason -- e.g. another overlay still
+			// holding a resource -- would fail at GTA's rate too, and blacklist nothing).
+			g_badHz = tried;
+			g_badW  = pp->BackBufferWidth;
+			g_badH  = pp->BackBufferHeight;
+			Log( "[render] %u Hz was refused at %ux%u (0x%08lX); running at GTA's %u Hz instead.", tried,
+			     pp->BackBufferWidth, pp->BackBufferHeight, (unsigned long) first, gtaHz );
+		} else {
+			Log( "[render] the display reset failed at %u Hz (0x%08lX) and at GTA's %u Hz (0x%08lX).", tried,
+			     (unsigned long) first, gtaHz, (unsigned long) hr );
+		}
 	}
 	for ( auto fn : resetCbs() ) fn( dev, false );  // post-reset: recreate
 	return hr;

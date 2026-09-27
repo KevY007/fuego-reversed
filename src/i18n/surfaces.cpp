@@ -111,11 +111,25 @@ i18n::dlgq::Queue  g_dlgq(kMaxHoldMs, kMaxHeldDialogs);
 struct PendingDialog {
     DialogPlan               plan;
     std::vector<std::string> cores;
-    int                      outstanding = 0; // engine JOBS still out (one per distinct missing core)
+    int                      outstanding = 0; // engine BATCH jobs still out (one per chunk of missing cells)
 };
 std::unordered_map<uint64_t, PendingDialog> g_pendingDialogs; // seq -> dialog
-// job -> (seq, every unit whose core that job translates -- identical cores share one job)
-std::unordered_map<uint64_t, std::pair<uint64_t, std::vector<size_t>>> g_partJobs;
+
+// One batch job of a held dialog: groups[i] = every unit whose core is the batch's
+// i-th text (identical cores share one entry), filled from Result::unitOut[i].
+struct PartJob {
+    uint64_t                         seq = 0;
+    std::vector<std::vector<size_t>> groups;
+};
+std::unordered_map<uint64_t, PartJob> g_partJobs; // engine job handle -> its dialog + units
+
+// Batch requests: at most this many cells / this much source text per request, so
+// a long list is a few requests (running in parallel), not one oversized answer.
+constexpr size_t kBatchMaxItems = 20;
+constexpr size_t kBatchMaxBytes = 1500;
+// Don't hold a dialog the translator measurably can't finish within this long:
+// show it right away and translate it in the background for next time.
+constexpr unsigned long kEarlyReleaseMs = 6000;
 
 // List/tablist rows of the translated dialog now on screen, per dialog id, so a
 // DialogResponse can be mapped back to the ORIGINAL row (on_send_dialogresponse).
@@ -179,6 +193,32 @@ void show_payload(const std::vector<uint8_t>& pkt) {
 // pass and the fill jobs below can never disagree with each other.
 constexpr int kDialogUnitCap = 1024;
 
+// One engine BATCH job per chunk (chunk_groups): the chunk's distinct missing cores
+// go out as one numbered-list request. A HELD dialog's jobs (surface 3, priority
+// lane) report back through on_part_result; a background fill (surface 2, normal
+// lane -- the dialog is already on screen) only fills the translation memory.
+void submit_batches(const DialogPlan& d, const std::vector<std::vector<size_t>>& groups,
+                    const std::vector<std::vector<size_t>>& chunks, uint64_t seq, bool fillOnly) {
+    const auto& s = i18n::config::get();
+    for (const std::vector<size_t>& chunk : chunks) {
+        i18n::engine::Job j;
+        j.handle      = g_seq.fetch_add(1, std::memory_order_relaxed);
+        j.surface     = fillOnly ? 2 : 3;
+        j.srcCodepage = s.source_cp;
+        j.skipContext = true;
+        j.noDedup     = true;           // every held dialog must get its own result back
+        j.capBytes    = kDialogUnitCap; // dialog lines can be longer than a chat line
+        PartJob pj;
+        pj.seq = seq;
+        for (size_t g : chunk) {
+            j.units.push_back(d.units[groups[g].front()].core);
+            pj.groups.push_back(groups[g]);
+        }
+        if (!fillOnly) g_partJobs[j.handle] = std::move(pj);
+        i18n::engine::submit(j);
+    }
+}
+
 // A ShowDialog arrived (translate_dialogs on). True = we SWALLOWED it (it will be
 // released later through the queue); false = let SA:MP show it now (possibly
 // rewritten in place from the translation memory).
@@ -234,6 +274,36 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         return false;
     }
 
+    // The missing cells, grouped (a repeated label -- "Buy" on every row -- is
+    // translated once and fills every unit that has it) and split into batch
+    // requests: a whole dialog is usually ONE request, not one per cell.
+    const std::vector<std::vector<size_t>> groups = group_by_core(d, missing);
+    const std::vector<std::vector<size_t>> chunks = chunk_groups(d, groups, kBatchMaxItems, kBatchMaxBytes);
+
+    // Nothing held ahead, but the translator measurably can't finish this one in
+    // time (its response time x the work queued ahead x the list size): don't make
+    // the player wait for nothing. Show it NOW -- with whatever the translation
+    // memory already has -- and translate the rest in the background, so the next
+    // time it opens it is translated at once.
+    if (g_dlgq.empty() && !chunks.empty()) {
+        const i18n::engine::RespStats st = i18n::engine::response_stats();
+        if (likely_too_slow(st.avgMs, st.count, i18n::engine::backlog(), chunks.size(), groups.size(),
+                            i18n::engine::worker_count(), kEarlyReleaseMs)) {
+            submit_batches(d, groups, chunks, 0, /*fillOnly=*/true);
+            if (anyTranslated) {
+                std::vector<uint8_t> pkt = assemble_dialog(d, fit_list_budgets(d, cores));
+                commit(rpc, pkt);
+                note_shown(original, &pkt);
+            } else {
+                note_shown(original, nullptr);
+            }
+            Log("[i18n] dialog %d shown right away: translating it would take too long now (avg %lu ms per "
+                "request); it is translated in the background for next time.",
+                (int)(int16_t)d.id, st.avgMs);
+            return false;
+        }
+    }
+
     // Hold it: translate what's missing; release in order with the original timing.
     const uint64_t seq = g_seq.fetch_add(1, std::memory_order_relaxed);
     if (!g_dlgq.push(seq, GetTickCount(), original)) {
@@ -250,10 +320,7 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
     // the original, at the latest once the hold limit passes), so it is reported as
     // held even if something throws -- letting SA:MP show it now too would show it twice.
     try {
-        // One engine job per DISTINCT missing core: a repeated label ("Buy" on every
-        // row) is translated once and fills every unit that has it.
-        const std::vector<std::vector<size_t>> jobs = group_by_core(d, missing);
-        if (jobs.empty()) { // ready now (cached / close signal) -- waits for its turn
+        if (chunks.empty()) { // ready now (cached / close signal) -- waits for its turn
             g_dlgq.resolve(seq, anyTranslated ? assemble_dialog(d, fit_list_budgets(d, cores)) : std::vector<uint8_t>{});
             return true;
         }
@@ -262,20 +329,9 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         PendingDialog pd;
         pd.plan        = d;
         pd.cores       = std::move(cores);
-        pd.outstanding = (int)jobs.size(); // counts JOBS, not units
+        pd.outstanding = (int)chunks.size(); // counts BATCH jobs, not units
         g_pendingDialogs[seq] = std::move(pd);
-        for (const std::vector<size_t>& units : jobs) {
-            i18n::engine::Job j;
-            j.handle      = g_seq.fetch_add(1, std::memory_order_relaxed);
-            j.surface     = 3;          // dialog unit -> priority lane -> hooks::apply_result -> on_part_result
-            j.sourceBytes = d.units[units.front()].core;
-            j.srcCodepage = s.source_cp;
-            j.skipContext = true;
-            j.noDedup     = true;       // every held dialog must get its own result back
-            j.capBytes    = kDialogUnitCap; // dialog lines can be longer than a chat line
-            g_partJobs[j.handle] = { seq, units };
-            i18n::engine::submit(j);
-        }
+        submit_batches(d, groups, chunks, seq, /*fillOnly=*/false); // -> priority lane -> on_part_result
     } catch (...) {
         // Still held (see above): it is released as the original once its hold expires.
     }
@@ -494,16 +550,20 @@ bool on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
 void on_part_result(const i18n::engine::Result& r) {
     auto pj = g_partJobs.find(r.handle);
     if (pj == g_partJobs.end()) return;
-    const uint64_t            seq   = pj->second.first;
-    const std::vector<size_t> units = std::move(pj->second.second); // every unit sharing this job's core
+    const uint64_t                         seq    = pj->second.seq;
+    const std::vector<std::vector<size_t>> groups = std::move(pj->second.groups);
     g_partJobs.erase(pj);
     auto it = g_pendingDialogs.find(seq);
     if (it == g_pendingDialogs.end()) return; // already released (timed out)
     PendingDialog& pd = it->second;
-    if (r.ok && !r.displayBytes.empty())
-        for (size_t unit : units)
-            if (unit < pd.cores.size()) pd.cores[unit] = r.displayBytes;
-    if (--pd.outstanding > 0) return; // other jobs of this dialog still out
+    // The batch's i-th text fills every unit of groups[i]; "" (or a missing tail,
+    // e.g. after an internal error) keeps those units' original text.
+    for (size_t g = 0; g < groups.size(); ++g) {
+        if (g >= r.unitOut.size() || r.unitOut[g].empty()) continue;
+        for (size_t unit : groups[g])
+            if (unit < pd.cores.size()) pd.cores[unit] = r.unitOut[g];
+    }
+    if (--pd.outstanding > 0) return; // other batch jobs of this dialog still out
     g_dlgq.resolve(seq, assemble_dialog(pd.plan, fit_list_budgets(pd.plan, pd.cores)));
     g_pendingDialogs.erase(it);
 }

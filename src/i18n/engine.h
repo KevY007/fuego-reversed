@@ -48,6 +48,11 @@ struct Job {
     // Max bytes of the finished translation. Chat's 144 by default; dialog units
     // (a body line can be longer than one chat line) pass more.
     int capBytes = 144;
+    // BATCH (a dialog's cells): when non-empty, this job translates these texts in
+    // ONE provider request (see process_batch) and sourceBytes is ignored; the
+    // Result carries one entry per text in unitOut. A batch job is never
+    // deduplicated and never touches the rolling chat context.
+    std::vector<std::string> units;
 };
 
 struct Result {
@@ -55,6 +60,10 @@ struct Result {
     int surface;
     std::string displayBytes;
     bool ok; // false => pipeline declined to translate; caller should leave the original text as-is
+    // BATCH jobs only: the finished text for Job::units[i] ("" = keep that original).
+    // May be shorter than units (e.g. empty after an internal error) -> treat the
+    // missing tail as "".
+    std::vector<std::string> unitOut;
 };
 
 // The engine's two-lane job queue. PURE (the engine guards its one instance with
@@ -142,6 +151,28 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
                   const std::string& sysPrompt, std::string& displayOut,
                   int targetLang = 1033, int displayCp = 1252,
                   const std::string& rollingCtx = "", int capBytes = 144);
+
+// The same pipeline for MANY texts (the cells of one dialog) with ONE provider
+// request: every text is skipped / served from the cache / masked exactly like
+// process_one, the ones still needing the model go out together as a numbered
+// list (batch.h), and each returned item is validated, unmasked and cached on its
+// own. An item the batch didn't bring back (the model broke the numbered layout,
+// or that line failed validation) is retried alone; if the batch request itself
+// fails (provider down) nothing is retried. After two broken layouts in a row
+// batching is switched off until the next start() -- that model can't keep a
+// numbered list, so texts go one per request. out[i] = the finished text for
+// units[i], or "" to keep its original. Returns true if any text was translated.
+bool process_batch(const std::vector<std::string>& units, int cp, IProvider* prov,
+                   const std::string& sysPrompt, std::vector<std::string>& out,
+                   int targetLang = 1033, int displayCp = 1252, int capBytes = 144);
+
+// Test-only: turn batching back on (forget the broken-layout streak).
+void reset_batch_for_test();
+
+// Priority-lane jobs queued and not yet picked up by a worker, and the number of
+// worker threads -- inputs for the held-dialog latency estimate. Thread-safe.
+size_t backlog();
+int worker_count();
 
 // Short human-readable status for the menu (Task 12), e.g. "local ok" or
 // "offline - retrying". Reflects the outcome of the most recent provider

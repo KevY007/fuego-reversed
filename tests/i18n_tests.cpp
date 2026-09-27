@@ -13,6 +13,7 @@ void test_charset();  void test_protect();  void test_detect();
 void test_cache();    void test_json();     void test_validate();
 void test_provider_breaker();
 void test_join_url();
+void test_batch();
 void test_engine();
 void test_config();
 void test_names();
@@ -20,6 +21,7 @@ int main() {
     test_json(); test_charset(); test_protect(); test_names(); test_detect(); test_cache(); test_validate();
     test_provider_breaker();
     test_join_url();
+    test_batch();
     test_engine();
     test_config();
     std::printf("\n%d checks, %d failures\n", g_ran, g_fail);
@@ -420,6 +422,36 @@ void test_join_url() {
     // produce a doubled '/' at the seam -- many servers 404 on "//".
     CHECK_EQ(join_url("http://x/v1/", "/chat/completions"), std::string("http://x/v1/chat/completions"));
     CHECK_EQ(join_url("http://x/v1", "/chat/completions"), std::string("http://x/v1/chat/completions"));
+}
+
+#include "i18n/batch.h"
+void test_batch() {
+    using namespace i18n::batch;
+    CHECK_EQ(numbered_block({ "Withdraw", "Deposit", "Balance" }),
+             std::string("1. Withdraw\n2. Deposit\n3. Balance\n"));
+
+    std::vector<std::string> out;
+    // The exact layout comes back: each item on its own line, in order.
+    CHECK(parse_numbered("1. Retirar\n2. Depositar\n3. Saldo", 3, out) && out.size() == 3 &&
+          out[0] == "Retirar" && out[1] == "Depositar" && out[2] == "Saldo", "batch: exact layout parses");
+    // Tolerated: blank lines, CRLF, leading spaces, "1)" / "1:" / "[1]" markers.
+    CHECK(parse_numbered("\r\n 1) One\r\n\r\n2: Two\r\n[3] Three\r\n", 3, out) &&
+          out[0] == "One" && out[1] == "Two" && out[2] == "Three", "batch: tolerant markers + blank lines");
+    // An item the model left empty stays empty (the engine retries just that one).
+    CHECK(parse_numbered("1. One\n2.\n3. Three", 3, out) && out[1].empty() && out[2] == "Three",
+          "batch: an empty item is kept empty, not shifted");
+    // A number inside the item text is part of the text.
+    CHECK(parse_numbered("1. 2 players online\n2. Top 10", 2, out) && out[0] == "2 players online" &&
+          out[1] == "Top 10", "batch: digits after the marker are item text");
+    // STRICT: anything that could shift one item's translation onto another row fails.
+    CHECK(!parse_numbered("1. One\n2. Two", 3, out) && out.empty(), "batch: a missing item fails (merged lines)");
+    CHECK(!parse_numbered("1. One\n2. Two\n3. Three\n4. Four", 3, out), "batch: an extra item fails (split line)");
+    CHECK(!parse_numbered("1. One\n3. Three\n2. Two", 3, out), "batch: out of order fails");
+    CHECK(!parse_numbered("1. One\n1. Uno\n2. Two", 2, out), "batch: a repeated number fails");
+    CHECK(!parse_numbered("1. One\ncontinued here\n2. Two", 2, out), "batch: an unnumbered line fails");
+    CHECK(!parse_numbered("Here you go:\n1. One\n2. Two", 2, out), "batch: a chatty preamble fails");
+    CHECK(!parse_numbered("", 2, out), "batch: an empty reply fails");
+    CHECK(!batch_instruction(3).empty(), "batch: the instruction is not empty");
 }
 
 #include "i18n/config.h"

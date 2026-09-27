@@ -576,6 +576,47 @@ int main() {
               "remap: a >255-byte row before the pick shifts the index -> no remap (never a wrong row)");
     }
 
+    // ---- batched dialogs: chunking the missing cells into batch requests ----
+    {
+        DialogPlan d;
+        std::vector<std::vector<size_t>> groups;
+        for (size_t k = 0; k < 48; ++k) {
+            Unit u;
+            u.core = "cell " + std::to_string(k);
+            u.translate = true;
+            d.units.push_back(u);
+            if (k >= 3) groups.push_back({ k }); // 45 missing cells (units 3..47)
+        }
+        std::vector<std::vector<size_t>> c = chunk_groups(d, groups, 20, 100000);
+        check(c.size() == 3 && c[0].size() == 20 && c[1].size() == 20 && c[2].size() == 5,
+              "batch: 45 cells -> batches of 20, 20 and 5");
+        check(c[0].front() == 0 && c[2].back() == 44, "batch: chunks list group indices in order");
+
+        DialogPlan big;
+        std::vector<std::vector<size_t>> bg;
+        for (size_t k = 0; k < 5; ++k) {
+            Unit u;
+            u.core = std::string(k == 2 ? 2000 : 600, (char)('a' + k));
+            u.translate = true;
+            big.units.push_back(u);
+            bg.push_back({ k });
+        }
+        std::vector<std::vector<size_t>> bc = chunk_groups(big, bg, 20, 1500);
+        check(bc.size() == 3 && bc[0] == std::vector<size_t>({ 0, 1 }) && bc[1] == std::vector<size_t>({ 2 }) &&
+              bc[2] == std::vector<size_t>({ 3, 4 }), "batch: the byte budget splits chunks; an oversized cell goes alone");
+        check(chunk_groups(d, {}, 20, 1500).empty(), "batch: nothing missing -> no chunks");
+    }
+
+    // ---- early release: don't hold a dialog the translator can't finish in time ----
+    {
+        check(!likely_too_slow(0, 0, 0, 1, 20, 3, 6000), "early: no measurements yet -> hold (optimistic)");
+        check(!likely_too_slow(600, 50, 0, 1, 20, 3, 6000), "early: a fast provider holds a 20-cell dialog");
+        check(likely_too_slow(4500, 50, 0, 1, 20, 3, 6000), "early: a slow provider shows a 20-cell dialog now");
+        check(!likely_too_slow(4500, 50, 0, 1, 1, 3, 6000), "early: a single cell on the same provider still holds");
+        check(likely_too_slow(1000, 50, 6, 1, 20, 3, 6000), "early: a queue of work ahead pushes it past the budget");
+        check(!likely_too_slow(1000, 50, 0, 3, 20, 3, 6000), "early: three batches run in parallel on three workers");
+    }
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

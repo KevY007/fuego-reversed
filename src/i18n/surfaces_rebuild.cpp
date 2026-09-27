@@ -254,6 +254,37 @@ std::vector<std::string> fit_list_budgets(const DialogPlan& d, std::vector<std::
     return cores;
 }
 
+std::vector<std::vector<size_t>> chunk_groups(const DialogPlan& plan,
+                                              const std::vector<std::vector<size_t>>& groups,
+                                              size_t maxItems, size_t maxBytes) {
+    std::vector<std::vector<size_t>> chunks;
+    std::vector<size_t> cur;
+    size_t bytes = 0;
+    for (size_t g = 0; g < groups.size(); ++g) {
+        const size_t b = (!groups[g].empty() && groups[g].front() < plan.units.size())
+                             ? plan.units[groups[g].front()].core.size() : 0;
+        if (!cur.empty() && (cur.size() >= maxItems || bytes + b > maxBytes)) {
+            chunks.push_back(std::move(cur));
+            cur.clear();
+            bytes = 0;
+        }
+        cur.push_back(g);
+        bytes += b;
+    }
+    if (!cur.empty()) chunks.push_back(std::move(cur));
+    return chunks;
+}
+
+bool likely_too_slow(unsigned long avgMs, uint64_t count, size_t backlog, size_t jobs, size_t items,
+                     int workers, unsigned long budgetMs) {
+    if (count == 0 || jobs == 0) return false; // nothing measured yet / nothing to wait for
+    const size_t w       = workers > 0 ? (size_t)workers : 1;
+    const size_t rounds  = (backlog + jobs + w - 1) / w;
+    const size_t perJob  = (items + jobs - 1) / jobs;
+    const double estimate = (double)avgMs * (double)rounds * (1.0 + (double)perJob / 10.0);
+    return estimate > (double)budgetMs;
+}
+
 std::vector<std::vector<size_t>> group_by_core(const DialogPlan& d, const std::vector<size_t>& missing) {
     std::vector<std::vector<size_t>> groups;
     std::unordered_map<std::string, size_t> groupOf; // core -> index into groups

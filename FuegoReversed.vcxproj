@@ -112,6 +112,9 @@
     <ClCompile Include="src\i18n\validate.cpp">
       <ObjectFileName>$(IntDir)i18n_validate.obj</ObjectFileName>
     </ClCompile>
+    <ClCompile Include="src\i18n\batch.cpp">
+      <ObjectFileName>$(IntDir)i18n_batch.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="src\i18n\provider.cpp">
       <ObjectFileName>$(IntDir)i18n_provider.obj</ObjectFileName>
     </ClCompile>

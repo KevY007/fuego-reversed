@@ -92,6 +92,114 @@ uint64_t      g_respCount   = 0;
 uint64_t      g_respTotalMs = 0;
 unsigned long g_respLastMs  = 0;
 
+// Batch replies that came back with their numbered layout broken, in a row. At
+// kBatchGiveUp the model evidently can't keep a numbered list: process_batch stops
+// sending batches (each would just be thrown away and retried item by item) until
+// the next start(). Reset by any batch that keeps its layout.
+constexpr int    kBatchGiveUp = 2;
+std::atomic<int> g_batchBroken{0};
+
+// ---- the per-text pipeline, shared by process_one and process_batch ---------
+
+// Steps 1-5 for one text. Skip: not worth translating / nothing translatable
+// survives masking. Hit: the cache already has it (`hit` = the capped display
+// text). Need: send `masked.text` to the provider, then finish().
+struct Prepared {
+    enum Kind { Skip, Hit, Need } kind = Skip;
+    std::string     hit;
+    uint64_t        key = 0;
+    protect::Masked masked;
+};
+
+Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap) {
+    Prepared p;
+    // 1-2: pick the source codepage and decode to a wide string.
+    int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
+    std::wstring w = charset::decode(srcBytes, cp2);
+
+    // 3: skip anything not worth translating (empty, digits/punct-only, or
+    // already the target language -- only cheaply detectable for English).
+    if (!detect::worth_translating(w, /*targetIsEnglish=*/targetLang == 1033)) return p;
+
+    // 4: cache lookup keyed on the normalized (UTF-8) source text + target. The
+    // cache always stores the FULL translation (see finish()) -- cap THIS call's
+    // hit to its own consumer's limit rather than trusting whatever length the
+    // entry happened to be capped to when a different consumer wrote it.
+    // A hit that displays as nothing (master stored "" for some lines; '%'-only
+    // text caps to "") is a MISS -- translate it again instead of blanking the text.
+    std::string normSrc = charset::to_utf8(w);
+    p.key = cache::key(normSrc, cp2, targetLang, g_profile);
+    {
+        std::string hit;
+        if (cache::get(p.key, hit)) {
+            hit = charset::cap_display(hit, cap);
+            if (!hit.empty()) {
+                p.kind = Prepared::Hit;
+                p.hit  = std::move(hit);
+                return p;
+            }
+        }
+    }
+
+    // 5: mask non-translatable spans (commands, colours, names, coords, ...).
+    p.masked = protect::mask(normSrc);
+    if (!p.masked.translatable) return p;
+    p.kind = Prepared::Need;
+    return p;
+}
+
+// Step 6: one provider request, with the status / last-error / response-time
+// bookkeeping. False = the request itself failed (network, HTTP, breaker open).
+bool call_provider(IProvider* prov, const std::vector<std::string>& texts, const std::string& sysPrompt,
+                   const std::string& rollingCtx, std::vector<std::string>& out) {
+    std::string err;
+    auto t0 = std::chrono::steady_clock::now();
+    bool callOk = prov->translate(texts, sysPrompt, rollingCtx, out, err);
+    unsigned long dt = (unsigned long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - t0).count();
+    if (callOk) {
+        g_status.store("local ok", std::memory_order_relaxed);
+        { std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr.clear(); }
+        std::lock_guard<std::mutex> lk(g_statsMutex);
+        g_respCount++; g_respTotalMs += dt; g_respLastMs = dt;
+    } else {
+        g_status.store("error - retrying", std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr = err;
+    }
+    return callOk;
+}
+
+// Steps 7-10 for one text's model output. "" = it can't be trusted: keep the
+// original.
+std::string finish(const Prepared& p, const std::string& modelOut, int targetLang, int displayCp, size_t cap) {
+    if (modelOut.empty()) return std::string();
+
+    // 7: sanity-check the model's output (placeholders intact, non-empty,
+    // not wildly longer than the source) before trusting it.
+    if (!validate::result_ok(p.masked.text, modelOut, p.masked.tokens.size())) return std::string();
+
+    // 8: restore the masked spans. unmask() returns "" if a placeholder was
+    // lost/duplicated/corrupted; when there were no placeholders to begin
+    // with it just returns the text unchanged, so un can only be empty here
+    // if tokens was non-empty and something really did go wrong.
+    std::string un = protect::unmask(modelOut, p.masked.tokens);
+    if (un.empty() && !p.masked.tokens.empty()) return std::string();
+
+    // 9: glossary pass -- canonicalises GTA:SA vehicle + San Andreas place
+    // names so they never come back mistranslated or misspelled.
+    un = protect::apply_glossary(un, targetLang);
+
+    // 10: encode for display; cache the FULL translation (capped only to a
+    // generous absolute ceiling, not to this call's consumer-specific limit) so
+    // a LATER call with a DIFFERENT capBytes (e.g. a dialog unit reusing a
+    // chat-translated string, or vice versa) reads back the untruncated text and
+    // caps it to ITS OWN limit instead of inheriting whatever a different
+    // consumer happened to ask for.
+    std::string full = charset::cap_display(charset::encode(charset::from_utf8(un), displayCp), 4095);
+    cache::put(p.key, full); // ignores an empty value
+    return charset::cap_display(full, cap); // nothing left to show -> "" -> keep the original
+}
+
 void worker_loop() {
     for (;;) {
         Job job;
@@ -110,10 +218,15 @@ void worker_loop() {
         int dcp = job.displayCpOverride  ? job.displayCpOverride  : g_displayCp;
 
         std::string disp;
+        std::vector<std::string> unitOut;
         bool ok = false;
         try {
-            ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), sp, disp,
-                             tl, dcp, job.rollingCtx, job.capBytes);
+            if (!job.units.empty())
+                ok = process_batch(job.units, job.srcCodepage, g_provider.get(), sp, unitOut,
+                                   tl, dcp, job.capBytes);
+            else
+                ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), sp, disp,
+                                 tl, dcp, job.rollingCtx, job.capBytes);
         } catch (...) {
             // Realistically only std::bad_alloc anywhere in this call graph
             // (string/vector/wstring allocations along the pipeline). An
@@ -127,13 +240,16 @@ void worker_loop() {
             // source.
             ok = false;
             disp.clear();
+            unitOut.clear(); // a batch consumer treats missing items as "keep the original"
         }
 
         {
+            Result r{ job.handle, job.surface, disp, ok };
+            r.unitOut = std::move(unitOut);
             std::lock_guard<std::mutex> lock(g_resultMutex);
-            g_results.push_back(Result{ job.handle, job.surface, disp, ok });
+            g_results.push_back(std::move(r));
         }
-        if (!job.noDedup) {
+        if (!job.noDedup && job.units.empty()) { // batch jobs were never entered into the set
             std::lock_guard<std::mutex> lock(g_jobMutex);
             g_inFlight.erase(std::hash<std::string>{}(job.sourceBytes) * 31u + (size_t)job.surface);
         }
@@ -145,81 +261,90 @@ void worker_loop() {
 bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
                   const std::string& sysPrompt, std::string& displayOut,
                   int targetLang, int displayCp, const std::string& rollingCtx, int capBytes) {
-    // 1-2: pick the source codepage and decode to a wide string.
-    int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
-    std::wstring w = charset::decode(srcBytes, cp2);
-
-    // 3: skip anything not worth translating (empty, digits/punct-only, or
-    // already the target language -- only cheaply detectable for English).
-    if (!detect::worth_translating(w, /*targetIsEnglish=*/targetLang == 1033)) return false;
-
-    // 4: cache lookup keyed on the normalized (UTF-8) source text + target. The
-    // cache always stores the FULL translation (see step 10) -- cap THIS call's
-    // hit to its own consumer's limit rather than trusting whatever length the
-    // entry happened to be capped to when a different consumer wrote it.
-    // A hit that displays as nothing (master stored "" for some lines; '%'-only
-    // text caps to "") is a MISS -- translate it again instead of blanking the text.
     const size_t cap = (size_t)(capBytes > 0 ? capBytes : 144);
-    std::string normSrc = charset::to_utf8(w);
-    uint64_t k = cache::key(normSrc, cp2, targetLang, g_profile);
-    {
-        std::string hit;
-        if (cache::get(k, hit)) {
-            hit = charset::cap_display(hit, cap);
-            if (!hit.empty()) { displayOut = std::move(hit); return true; }
-        }
-    }
-
-    // 5: mask non-translatable spans (commands, colours, names, coords, ...).
-    protect::Masked m = protect::mask(normSrc);
-    if (!m.translatable) return false;
+    Prepared p = prepare(srcBytes, cp, targetLang, cap); // steps 1-5
+    if (p.kind == Prepared::Hit) { displayOut = std::move(p.hit); return true; }
+    if (p.kind == Prepared::Skip) return false;
 
     // 6: translate the masked text, passing recent chat as background context.
     // No provider, a network failure, or an empty reply all mean "can't trust
     // this" -- leave the original text.
     if (!prov) return false;
     std::vector<std::string> out;
-    std::string err;
-    auto t0 = std::chrono::steady_clock::now();
-    bool callOk = prov->translate({ m.text }, sysPrompt, rollingCtx, out, err);
-    unsigned long dt = (unsigned long)std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - t0).count();
-    if (callOk) {
-        g_status.store("local ok", std::memory_order_relaxed);
-        { std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr.clear(); }
-        std::lock_guard<std::mutex> lk(g_statsMutex);
-        g_respCount++; g_respTotalMs += dt; g_respLastMs = dt;
-    } else {
-        g_status.store("error - retrying", std::memory_order_relaxed);
-        std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr = err;
+    if (!call_provider(prov, { p.masked.text }, sysPrompt, rollingCtx, out) || out.empty()) return false;
+
+    std::string s = finish(p, out[0], targetLang, displayCp, cap); // steps 7-10
+    if (s.empty()) return false;
+    displayOut = std::move(s);
+    return true;
+}
+
+bool process_batch(const std::vector<std::string>& units, int cp, IProvider* prov,
+                   const std::string& sysPrompt, std::vector<std::string>& out,
+                   int targetLang, int displayCp, int capBytes) {
+    const size_t cap = (size_t)(capBytes > 0 ? capBytes : 144);
+    out.assign(units.size(), std::string());
+
+    // Steps 1-5 per text: skips and cache hits never reach the provider.
+    std::vector<Prepared> prep(units.size());
+    std::vector<size_t> need;
+    bool any = false;
+    for (size_t i = 0; i < units.size(); ++i) {
+        prep[i] = prepare(units[i], cp, targetLang, cap);
+        if (prep[i].kind == Prepared::Hit) {
+            out[i] = std::move(prep[i].hit);
+            any = true;
+        } else if (prep[i].kind == Prepared::Need) {
+            need.push_back(i);
+        }
     }
-    if (!callOk || out.empty()) return false;
+    if (need.empty() || !prov) return any;
 
-    // 7: sanity-check the model's output (placeholders intact, non-empty,
-    // not wildly longer than the source) before trusting it.
-    if (!validate::result_ok(m.text, out[0], m.tokens.size())) return false;
+    // One numbered-list request for everything still missing (a lone text goes as
+    // a normal single request). Each returned item is finished on its own; an item
+    // that is missing or fails validation is retried alone below.
+    std::vector<size_t> retry;
+    if (need.size() >= 2 && g_batchBroken.load() < kBatchGiveUp) {
+        std::vector<std::string> texts;
+        texts.reserve(need.size());
+        for (size_t i : need) texts.push_back(prep[i].masked.text);
+        std::vector<std::string> res;
+        if (!call_provider(prov, texts, sysPrompt, std::string(), res)) return any; // provider down: no retry storm
+        bool layoutKept = false;
+        for (size_t j = 0; j < need.size(); ++j) {
+            const std::string item = (j < res.size()) ? res[j] : std::string();
+            if (!item.empty()) layoutKept = true;
+            std::string s = finish(prep[need[j]], item, targetLang, displayCp, cap);
+            if (s.empty()) {
+                retry.push_back(need[j]);
+            } else {
+                out[need[j]] = std::move(s);
+                any = true;
+            }
+        }
+        // The provider hands back ALL-empty items when the reply lost its numbered
+        // layout (batch.h's strict parse). Two in a row: this model can't keep a list.
+        if (layoutKept) g_batchBroken.store(0);
+        else g_batchBroken.fetch_add(1);
+    } else {
+        retry = need;
+    }
 
-    // 8: restore the masked spans. unmask() returns "" if a placeholder was
-    // lost/duplicated/corrupted; when there were no placeholders to begin
-    // with it just returns the text unchanged, so un can only be empty here
-    // if tokens was non-empty and something really did go wrong.
-    std::string un = protect::unmask(out[0], m.tokens);
-    if (un.empty() && !m.tokens.empty()) return false;
+    for (size_t i : retry) {
+        std::vector<std::string> res;
+        if (!call_provider(prov, { prep[i].masked.text }, sysPrompt, std::string(), res)) break; // provider down: stop
+        if (res.empty()) continue;
+        std::string s = finish(prep[i], res[0], targetLang, displayCp, cap);
+        if (!s.empty()) {
+            out[i] = std::move(s);
+            any = true;
+        }
+    }
+    return any;
+}
 
-    // 9: glossary pass -- canonicalises GTA:SA vehicle + San Andreas place
-    // names so they never come back mistranslated or misspelled.
-    un = protect::apply_glossary(un, targetLang);
-
-    // 10: encode for display; cache the FULL translation (capped only to a
-    // generous absolute ceiling, not to this call's consumer-specific limit) so
-    // a LATER call with a DIFFERENT capBytes (e.g. a dialog unit reusing a
-    // chat-translated string, or vice versa) reads back the untruncated text and
-    // caps it to ITS OWN limit instead of inheriting whatever a different
-    // consumer happened to ask for.
-    std::string full = charset::cap_display(charset::encode(charset::from_utf8(un), displayCp), 4095);
-    cache::put(k, full); // ignores an empty value
-    displayOut = charset::cap_display(full, cap);
-    return !displayOut.empty(); // nothing left to show -> leave the original
+void reset_batch_for_test() {
+    g_batchBroken.store(0);
 }
 
 void start(const ProviderConfig& cfg, const std::string& systemPrompt,
@@ -237,6 +362,7 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt,
     // Reset response-time stats: a new provider/model has its own latency profile,
     // so don't average across a switch (e.g. local Hy-MT2 -> a cloud endpoint).
     { std::lock_guard<std::mutex> lk(g_statsMutex); g_respCount = 0; g_respTotalMs = 0; g_respLastMs = 0; }
+    g_batchBroken.store(0); // a new model/provider gets a fresh chance to keep numbered lists
 
     // Safe without g_jobMutex, unlike stop()'s flip: stop() above (if we
     // were running) already joined every prior worker before returning, and
@@ -287,22 +413,28 @@ void stop() {
 }
 
 void submit(const Job& job) {
+    // A batch (a dialog's cells) has no sourceBytes of its own: it is never
+    // deduplicated and never part of the rolling chat context.
+    const bool isBatch = !job.units.empty();
     size_t h = std::hash<std::string>{}(job.sourceBytes) * 31u + (size_t)job.surface;
 
     // Decode this line to UTF-8 once, outside the lock, so it's JSON-safe to
     // reuse as future context (raw cp1251/cp1252 bytes would corrupt the
     // request body). Short chat strings -> negligible cost on the game thread.
-    int cp = (job.srcCodepage != 0) ? job.srcCodepage : charset::guess_codepage(job.sourceBytes);
-    std::string utf8Line = charset::to_utf8(charset::decode(job.sourceBytes, cp));
+    std::string utf8Line;
+    if (!isBatch && !job.skipContext) {
+        int cp = (job.srcCodepage != 0) ? job.srcCodepage : charset::guess_codepage(job.sourceBytes);
+        utf8Line = charset::to_utf8(charset::decode(job.sourceBytes, cp));
+    }
 
     Job j = job;
     std::lock_guard<std::mutex> lock(g_jobMutex);
-    if (!job.noDedup && !g_inFlight.insert(h).second) return; // identical source already queued/in-flight: dedup
+    if (!job.noDedup && !isBatch && !g_inFlight.insert(h).second) return; // identical source already queued/in-flight: dedup
 
     // Rolling context is the inbound chat conversation. Outbound jobs (which the
     // player is composing, translated the other way) opt out via skipContext so
     // they neither read nor pollute the inbound context ring.
-    if (!job.skipContext) {
+    if (!job.skipContext && !isBatch) {
         // Attach the recent conversation (oldest -> newest) as background context
         // for this job, BEFORE recording the current line so a line is never its
         // own context.
@@ -348,6 +480,15 @@ const char* status() {
 std::string last_error() {
     std::lock_guard<std::mutex> lk(g_errMutex);
     return g_lastErr;
+}
+
+size_t backlog() {
+    std::lock_guard<std::mutex> lock(g_jobMutex);
+    return g_jobs.prio.size();
+}
+
+int worker_count() {
+    return kWorkerCount;
 }
 
 RespStats response_stats() {

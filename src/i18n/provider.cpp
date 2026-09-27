@@ -1,4 +1,5 @@
 #include "i18n/provider.h"
+#include "i18n/batch.h"
 #include "i18n/breaker.h"
 #include "i18n/json_min.h"
 #include "i18n/url_util.h"
@@ -205,10 +206,17 @@ private:
         if (units.size() == 1) {
             userContent += units[0];
         } else {
-            // Multi-unit batching isn't used by the chat path; number them so a
-            // future caller at least gets a deterministic layout.
-            for (size_t i = 0; i < units.size(); ++i)
-                userContent += "[" + std::to_string(i) + "] " + units[i] + "\n";
+            // A batch (the cells of one dialog): a numbered list the reply must keep,
+            // split back strictly by batch::parse_numbered in do_translate().
+            userContent += batch::batch_instruction(units.size());
+            userContent += "\n\n";
+            userContent += batch::numbered_block(units);
+        }
+        // Room for every item's translation: a batch answers many lines at once.
+        int maxTokens = cfg_.maxTokens;
+        if (units.size() > 1) {
+            maxTokens += 64 * (int)(units.size() - 1);
+            if (maxTokens > 4096) maxTokens = 4096;
         }
 
         std::string body = "{";
@@ -220,7 +228,7 @@ private:
         // (Hy-MT2) keep top_p as an extra anti-runaway guard. See ProviderConfig.
         if (cfg_.providerKind == 0 || cfg_.providerKind == 4)
             body += "\"top_p\":" + fmt_double(cfg_.topP) + ",";
-        body += "\"max_tokens\":" + std::to_string(cfg_.maxTokens) + ",";
+        body += "\"max_tokens\":" + std::to_string(maxTokens) + ",";
         body += "\"stream\":false,";
         // NOTE: reasoning_effort is deliberately NOT sent -- OpenAI 400s on it
         // ("Unrecognized request argument"), Ollama ignores it, and we suppress
@@ -360,11 +368,17 @@ private:
             return false;
         }
 
-        // The chat path always sends exactly one unit; put the reply there.
-        // (A multi-unit batch can't be split out of one plain-text reply, and
-        // nothing uses multi-unit batching, so out[0] is what the engine reads.)
         out.assign(units.size(), std::string());
-        if (!out.empty()) out[0] = translation;
+        if (units.size() == 1) {
+            out[0] = translation;
+            return true;
+        }
+        // A batch: split the numbered reply back into its items. A reply that broke
+        // the layout still means the provider WORKED (so the breaker must not count
+        // it as a failure): every item stays "" and the engine retries them one at a
+        // time -- a strict parse never lets one item's text land on another's row.
+        std::vector<std::string> items;
+        if (batch::parse_numbered(translation, units.size(), items)) out = std::move(items);
         return true;
     }
 };

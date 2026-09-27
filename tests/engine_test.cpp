@@ -17,6 +17,7 @@
 #include "i18n/charset.h"
 
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,33 @@ struct FakeProvider : i18n::IProvider {
         return true;
     }
     const char* name() const override { return "fake"; }
+};
+
+// Records every request's item count. Single-item requests (and, unless the
+// layout is broken, each item of a batch) are answered from `single`, keyed by the
+// masked text the engine sends. breakLayout: a batch reply loses its numbering
+// (the provider hands back all-empty items). batchSkip: that one item comes back
+// empty from a batch. fail: every request fails (the network is down).
+struct FakeBatch : i18n::IProvider {
+    std::vector<size_t> calls;
+    std::map<std::string, std::string> single;
+    bool breakLayout = false;
+    bool fail = false;
+    std::string batchSkip;
+    bool translate(const std::vector<std::string>& u, const std::string&, const std::string&,
+                   std::vector<std::string>& out, std::string& err) override {
+        calls.push_back(u.size());
+        if (fail) { err = "down"; return false; }
+        out.assign(u.size(), std::string());
+        if (u.size() > 1 && breakLayout) return true;
+        for (size_t i = 0; i < u.size(); ++i) {
+            if (u.size() > 1 && u[i] == batchSkip) continue;
+            auto it = single.find(u[i]);
+            if (it != single.end()) out[i] = it->second;
+        }
+        return true;
+    }
+    const char* name() const override { return "fake-batch"; }
 };
 
 void test_engine() {
@@ -171,5 +199,76 @@ void test_engine() {
         CHECK(engine::JobQueue::is_priority(1) && engine::JobQueue::is_priority(3) &&
               engine::JobQueue::is_priority(4) && !engine::JobQueue::is_priority(0) &&
               !engine::JobQueue::is_priority(2), "priority surfaces are exactly 1, 3 and 4");
+    }
+
+    // ---- batched dialogs: one request for many cells, strict fallback ----
+    {
+        // cp1251 sources and their UTF-8 (the masked text the provider receives).
+        const std::string privet  = "\xEF\xF0\xE8\xE2\xE5\xF2";                     // привет
+        const std::string mir     = "\xEC\xE8\xF0";                                 // мир
+        const std::string bank    = "\xE1\xE0\xED\xEA";                             // банк
+        const std::string privet8 = "\xD0\xBF\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82";
+        const std::string mir8    = "\xD0\xBC\xD0\xB8\xD1\x80";
+        const std::string bank8   = "\xD0\xB1\xD0\xB0\xD0\xBD\xD0\xBA";
+        FakeBatch fb;
+        fb.single = { { privet8, "hello" }, { mir8, "world" }, { bank8, "bank" } };
+        const std::vector<std::string> three = { privet, mir, bank };
+        const std::vector<std::string> done3 = { "hello", "world", "bank" };
+        std::vector<std::string> out;
+
+        // A kept layout: ONE request for all three; every cell cached on its own.
+        cache::clear_for_test();
+        engine::reset_batch_for_test();
+        CHECK(engine::process_batch(three, 1251, &fb, "sys", out) && out == done3, "batch: three cells translated");
+        CHECK(fb.calls == std::vector<size_t>({ 3 }), "batch: ONE provider request for three cells");
+        std::string hit;
+        CHECK(engine::cache_lookup(mir, 1251, 1033, hit) && hit == "world", "batch: each cell is cached on its own");
+
+        // A broken layout: every cell is retried alone (and still translated).
+        cache::clear_for_test();
+        fb.calls.clear();
+        fb.breakLayout = true;
+        CHECK(engine::process_batch(three, 1251, &fb, "sys", out) && out == done3, "batch: broken layout -> per-cell fallback");
+        CHECK(fb.calls == std::vector<size_t>({ 3, 1, 1, 1 }), "batch: one batch request, then one per cell");
+
+        // Two broken layouts in a row: batching is switched off (no wasted request).
+        cache::clear_for_test();
+        fb.calls.clear();
+        engine::process_batch(three, 1251, &fb, "sys", out);
+        CHECK(fb.calls == std::vector<size_t>({ 3, 1, 1, 1 }), "batch: a second broken layout");
+        cache::clear_for_test();
+        fb.calls.clear();
+        CHECK(engine::process_batch(three, 1251, &fb, "sys", out) && out == done3, "batch: still translated with batching off");
+        CHECK(fb.calls == std::vector<size_t>({ 1, 1, 1 }), "batch: after two broken layouts, cells go one by one");
+        engine::reset_batch_for_test();
+        fb.breakLayout = false;
+
+        // Mixed: a cached cell, an English cell (skipped), one missing cell -> a single call.
+        cache::clear_for_test();
+        std::string d;
+        engine::process_one(privet, 1251, &fb, "sys", d); // caches "hello"
+        fb.calls.clear();
+        CHECK(engine::process_batch({ privet, "the door is open", mir }, 1251, &fb, "sys", out) &&
+              out == std::vector<std::string>({ "hello", "", "world" }), "batch: cached + skipped + missing");
+        CHECK(fb.calls == std::vector<size_t>({ 1 }), "batch: a lone missing cell is one single request");
+
+        // One cell missing from an otherwise good batch: only that cell is retried.
+        cache::clear_for_test();
+        fb.calls.clear();
+        fb.batchSkip = mir8;
+        CHECK(engine::process_batch(three, 1251, &fb, "sys", out) && out == done3, "batch: a skipped cell is retried");
+        CHECK(fb.calls == std::vector<size_t>({ 3, 1 }), "batch: only the skipped cell gets its own request");
+        fb.batchSkip.clear();
+
+        // The provider is down: no per-cell retry storm, nothing translated.
+        cache::clear_for_test();
+        fb.calls.clear();
+        fb.fail = true;
+        CHECK(!engine::process_batch(three, 1251, &fb, "sys", out) &&
+              out == std::vector<std::string>({ "", "", "" }), "batch: provider down -> originals");
+        CHECK(fb.calls == std::vector<size_t>({ 3 }), "batch: a failed request is not retried per cell");
+        fb.fail = false;
+        cache::clear_for_test();
+        engine::reset_batch_for_test();
     }
 }

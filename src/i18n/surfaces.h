@@ -6,9 +6,14 @@
 //  * DIALOGS: decoded into units (title, buttons, every body row/cell). Fully in
 //    the translation memory (and nothing held ahead of it) -> rewritten in place
 //    and shown now. Otherwise the ShowDialog is HELD (swallowed), its missing
-//    units are translated, and it is released through SA:MP's own Show strictly
-//    in arrival order, with the original gap between dialogs -- or as the original
-//    if it isn't translated within 10 s. Close signals are never translated; a
+//    units are translated -- as ONE numbered-list request per chunk of up to 20
+//    cells (engine::process_batch), not one request per cell -- and it is
+//    released through SA:MP's own Show strictly in arrival order, with the
+//    original gap between dialogs -- or as the original if it isn't translated
+//    within 10 s. When the measured response time says it can't be done in time
+//    (likely_too_slow), it isn't held at all: shown at once with what the
+//    translation memory has, and translated in the background for next time.
+//    Close signals are never translated; a
 //    password dialog's text is, but the password the player types never is. A
 //    picked list row is sent back as the ORIGINAL row's text.
 //  * 3D LABELS / HUD: translation-memory-first -- a cache hit is rewritten in
@@ -115,6 +120,23 @@ std::vector<std::string> fit_list_budgets(const DialogPlan& plan, std::vector<st
 // label ("Buy" on every row, the same word as a button and a cell) with ONE
 // engine job whose result fills every unit of its group.
 std::vector<std::vector<size_t>> group_by_core(const DialogPlan& plan, const std::vector<size_t>& missing);
+
+// Split a dialog's missing groups (group_by_core) into BATCH requests: each chunk
+// lists group indices, in order, with at most maxItems groups and at most maxBytes
+// of source text (a single group bigger than maxBytes gets a chunk of its own).
+// One engine batch job per chunk -- a big list becomes a few requests, not dozens.
+std::vector<std::vector<size_t>> chunk_groups(const DialogPlan& plan,
+                                              const std::vector<std::vector<size_t>>& groups,
+                                              size_t maxItems, size_t maxBytes);
+
+// Would holding a dialog for its translation likely take longer than budgetMs?
+// avgMs/count: the engine's measured provider response time (count 0 = nothing
+// measured yet -> optimistic: hold). backlog: priority jobs already queued ahead;
+// jobs: this dialog's batch jobs; items: its cells; workers: engine threads.
+// Estimate = avgMs x rounds of work (ceil((backlog + jobs) / workers)) x a size
+// factor (1 + cells per job / 10: a longer list is a longer answer).
+bool likely_too_slow(unsigned long avgMs, uint64_t count, size_t backlog, size_t jobs, size_t items,
+                     int workers, unsigned long budgetMs);
 
 // Remove {RRGGBB} colour codes (SA:MP strips them from a list row's response text).
 std::string strip_colors(const std::string& s);

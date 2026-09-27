@@ -376,6 +376,14 @@ int main() {
     check(!should_translate_input("john@mail.com"), "should_translate_input: email (single token) -> false");
     check(should_translate_input("hello there"), "should_translate_input: a real phrase -> true");
     check(should_translate_input("deposit\tmoney"), "should_translate_input: tab-separated phrase -> true");
+    // An ATM / phone PIN typed into a plain INPUT dialog is data: never translated,
+    // whatever the spacing (a PASSWORD-style dialog's reply is never even read).
+    check(!should_translate_input("1234"), "PIN: 1234 -> sent as typed");
+    check(!should_translate_input("0000"), "PIN: 0000 -> sent as typed");
+    check(!should_translate_input("12 34"), "PIN: 12 34 -> sent as typed");
+    check(!should_translate_input(" 1234 "), "PIN: padded -> sent as typed");
+    check(!should_translate_input("PIN 1234"), "PIN: 'PIN 1234' -> sent as typed");
+    check(!should_translate_input("500 000"), "amount: 500 000 -> sent as typed");
 
     // ---- C1: a translation must never change a list's ITEM COUNT / row indices ----
     {   // Real LIST (291): one row translates to 300 bytes, another to "".

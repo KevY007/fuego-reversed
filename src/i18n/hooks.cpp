@@ -201,6 +201,15 @@ void pump_tick( IDirect3DDevice9 * ) {
 		i18n::names::tick( now );    // live player names -> masked, never translated
 		i18n::surfaces::tick( now ); // release held dialogs that are due
 		i18n::lab::on_frame();       // debug lab (read-only logging)
+
+		// Why texts were NOT translated (a lost placeholder, a provider timeout, ...),
+		// about once a second -- so a line that stayed in the original says why.
+		static uint32_t lastNotes = 0;
+		if ( now - lastNotes >= 1000 ) {
+			lastNotes = now;
+			for ( const std::string &n : i18n::engine::drain_failure_notes() )
+				Log( "[i18n] not translated -- %s", n.c_str() );
+		}
 	} catch ( ... ) {
 	}
 }

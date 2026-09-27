@@ -43,6 +43,7 @@ std::unique_ptr<IProvider> g_provider;
 std::string g_sysPrompt;
 int g_targetLang = 1033;  // written only by start() (same publication rules as g_sysPrompt)
 int g_displayCp  = 1252;
+bool g_ctxEnabled = false; // send recent chat as context (context_for_provider); set by start(), read by submit() -- both main thread
 std::vector<std::thread> g_workers;
 std::atomic<bool> g_running{false};
 
@@ -126,16 +127,82 @@ int64_t now_ms() {
                std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// ---- why a text was not translated (drained into the log on the main thread) ----
+std::mutex              g_noteMutex;
+std::deque<std::string> g_notes;
+size_t                  g_notesDropped = 0;
+constexpr size_t        kMaxNotes = 20;
+
+void note_failure(const std::string& why, const std::string& src) {
+    std::string s = why + ": '" + src.substr(0, 80) + (src.size() > 80 ? "...'" : "'");
+    std::lock_guard<std::mutex> lk(g_noteMutex);
+    if (!g_notes.empty() && g_notes.back() == s) return; // the same text failing again
+    if (g_notes.size() >= kMaxNotes) {
+        ++g_notesDropped;
+        return;
+    }
+    g_notes.push_back(std::move(s));
+}
+
 // ---- the per-text pipeline, shared by process_one and process_batch ---------
+
+// Length of the placeholder ("\x01" digits "\x02") starting at t[i], or 0.
+size_t placeholder_len(const std::string& t, size_t i) {
+    if (i >= t.size() || t[i] != '\x01') return 0;
+    size_t j = i + 1;
+    while (j < t.size() && t[j] >= '0' && t[j] <= '9') ++j;
+    return (j > i + 1 && j < t.size() && t[j] == '\x02') ? j + 1 - i : 0;
+}
+
+// Split masked text into lead + core + trail: the placeholders (colour / format /
+// key codes, names, ...) and spaces at the very START and END are kept out of what
+// the model sees and re-attached verbatim afterwards. Models tend to drop exactly
+// those (live: Hy-MT2 dropped the leading ~W~ of "~W~Press ~Y~~k~~...~ ~W~to open
+// hood" every time, so the reply failed validation and the textdraw never got
+// translated); inner placeholders still go to the model, which has to keep them.
+// Spaces are only held back together with an edge code (the space in "<name> says:"
+// must survive); plain leading/trailing spaces go to the model as before.
+void split_edges(const std::string& t, std::string& lead, std::string& core, std::string& trail) {
+    size_t a = 0;
+    bool leadCode = false;
+    for (;;) {
+        if (a < t.size() && (t[a] == ' ' || t[a] == '\t')) { ++a; continue; }
+        const size_t n = placeholder_len(t, a);
+        if (n == 0) break;
+        a += n;
+        leadCode = true;
+    }
+    if (!leadCode) a = 0;
+    size_t b = t.size();
+    bool trailCode = false;
+    for (;;) {
+        if (b > a && (t[b - 1] == ' ' || t[b - 1] == '\t')) { --b; continue; }
+        if (b > a && t[b - 1] == '\x02') {
+            const size_t k = t.rfind('\x01', b - 1);
+            if (k != std::string::npos && k >= a && placeholder_len(t, k) == b - k) {
+                b = k;
+                trailCode = true;
+                continue;
+            }
+        }
+        break;
+    }
+    if (!trailCode) b = t.size();
+    lead  = t.substr(0, a);
+    core  = t.substr(a, b - a);
+    trail = t.substr(b);
+}
 
 // Steps 1-5 for one text. Skip: not worth translating / nothing translatable
 // survives masking. Hit: the cache already has it (`hit` = the capped display
-// text). Need: send `masked.text` to the provider, then finish().
+// text). Need: send `send` (the masked text without its edge codes) to the
+// provider, then finish().
 struct Prepared {
     enum Kind { Skip, Hit, Need } kind = Skip;
     std::string     hit;
     uint64_t        key = 0;
     protect::Masked masked;
+    std::string     lead, send, trail; // masked.text = lead + send + trail (see split_edges)
 };
 
 Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap) {
@@ -168,9 +235,11 @@ Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap
         }
     }
 
-    // 5: mask non-translatable spans (commands, colours, names, coords, ...).
+    // 5: mask non-translatable spans (commands, colours, names, coords, ...); the
+    // codes at the very edges stay out of the model's input (split_edges).
     p.masked = protect::mask(normSrc);
     if (!p.masked.translatable) return p;
+    split_edges(p.masked.text, p.lead, p.send, p.trail);
     p.kind = Prepared::Need;
     return p;
 }
@@ -178,8 +247,8 @@ Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap
 // Step 6: one provider request, with the status / last-error / response-time
 // bookkeeping. False = the request itself failed (network, HTTP, breaker open).
 bool call_provider(IProvider* prov, const std::vector<std::string>& texts, const std::string& sysPrompt,
-                   const std::string& rollingCtx, std::vector<std::string>& out) {
-    std::string err;
+                   const std::string& rollingCtx, std::vector<std::string>& out, std::string& err) {
+    err.clear();
     const int64_t startMs = now_ms();
     auto t0 = std::chrono::steady_clock::now();
     bool callOk = prov->translate(texts, sysPrompt, rollingCtx, out, err);
@@ -211,21 +280,37 @@ bool call_provider(IProvider* prov, const std::vector<std::string>& texts, const
     return callOk;
 }
 
-// Steps 7-10 for one text's model output. "" = it can't be trusted: keep the
-// original.
-std::string finish(const Prepared& p, const std::string& modelOut, int targetLang, int displayCp, size_t cap) {
-    if (modelOut.empty()) return std::string();
+// Steps 7-10 for one text's model output (the translation of p.send; the edge codes
+// are put back around it first). "" = it can't be trusted: keep the original --
+// `why` (if given) then says what was wrong, for the log.
+std::string finish(const Prepared& p, const std::string& modelOut, int targetLang, int displayCp, size_t cap,
+                   const char** why = nullptr) {
+    auto reject = [&](const char* reason) {
+        if (why) *why = reason;
+        return std::string();
+    };
+    if (modelOut.empty()) return reject("empty reply");
+    const std::string full = p.lead + modelOut + p.trail;
+
+    // A one-line text answered with several lines: the model translated something
+    // else as well -- typically the chat context it was only meant to read.
+    if (full.find('\n') != std::string::npos && p.masked.text.find('\n') == std::string::npos)
+        return reject("reply has extra lines (it translated something else, e.g. the chat context)");
 
     // 7: sanity-check the model's output (placeholders intact, non-empty,
     // not wildly longer than the source) before trusting it.
-    if (!validate::result_ok(p.masked.text, modelOut, p.masked.tokens.size())) return std::string();
+    if (!validate::result_ok(p.masked.text, full, p.masked.tokens.size())) {
+        return reject(protect::placeholders_intact(full, p.masked.tokens.size())
+                          ? "reply much longer than the source"
+                          : "reply lost or repeated a placeholder (a command, name, colour or number)");
+    }
 
     // 8: restore the masked spans. unmask() returns "" if a placeholder was
     // lost/duplicated/corrupted; when there were no placeholders to begin
     // with it just returns the text unchanged, so un can only be empty here
     // if tokens was non-empty and something really did go wrong.
-    std::string un = protect::unmask(modelOut, p.masked.tokens);
-    if (un.empty() && !p.masked.tokens.empty()) return std::string();
+    std::string un = protect::unmask(full, p.masked.tokens);
+    if (un.empty() && !p.masked.tokens.empty()) return reject("placeholders could not be restored");
 
     // 9: glossary pass -- canonicalises GTA:SA vehicle + San Andreas place
     // names so they never come back mistranslated or misspelled.
@@ -237,9 +322,11 @@ std::string finish(const Prepared& p, const std::string& modelOut, int targetLan
     // chat-translated string, or vice versa) reads back the untruncated text and
     // caps it to ITS OWN limit instead of inheriting whatever a different
     // consumer happened to ask for.
-    std::string full = charset::cap_display(charset::encode(charset::from_utf8(un), displayCp), 4095);
-    cache::put(p.key, full); // ignores an empty value
-    return charset::cap_display(full, cap); // nothing left to show -> "" -> keep the original
+    std::string disp = charset::cap_display(charset::encode(charset::from_utf8(un), displayCp), 4095);
+    cache::put(p.key, disp); // ignores an empty value
+    std::string capped = charset::cap_display(disp, cap);
+    if (capped.empty()) return reject("nothing left to show after encoding"); // keep the original
+    return capped;
 }
 
 void worker_loop() {
@@ -315,10 +402,18 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     // this" -- leave the original text.
     if (!prov) return false;
     std::vector<std::string> out;
-    if (!call_provider(prov, { p.masked.text }, sysPrompt, rollingCtx, out) || out.empty()) return false;
+    std::string err;
+    if (!call_provider(prov, { p.send }, sysPrompt, rollingCtx, out, err) || out.empty()) {
+        note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", srcBytes);
+        return false;
+    }
 
-    std::string s = finish(p, out[0], targetLang, displayCp, cap); // steps 7-10
-    if (s.empty()) return false;
+    const char* why = nullptr;
+    std::string s = finish(p, out[0], targetLang, displayCp, cap, &why); // steps 7-10
+    if (s.empty()) {
+        note_failure(why ? why : "reply rejected", srcBytes);
+        return false;
+    }
     displayOut = std::move(s);
     return true;
 }
@@ -351,9 +446,15 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
     if (need.size() >= 2 && batching_enabled()) {
         std::vector<std::string> texts;
         texts.reserve(need.size());
-        for (size_t i : need) texts.push_back(prep[i].masked.text);
+        for (size_t i : need) texts.push_back(prep[i].send);
         std::vector<std::string> res;
-        if (!call_provider(prov, texts, sysPrompt, std::string(), res)) return any; // provider down: no retry storm
+        std::string err;
+        if (!call_provider(prov, texts, sysPrompt, std::string(), res, err)) { // provider down: no retry storm
+            note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ") for a dialog of " +
+                             std::to_string(need.size()) + " lines, first",
+                         units[need.front()]);
+            return any;
+        }
         bool layoutKept = false;
         for (size_t j = 0; j < need.size(); ++j) {
             const std::string item = (j < res.size()) ? res[j] : std::string();
@@ -381,15 +482,37 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
     for (size_t i : retry) {
         if (g_stopping.load()) break; // a settings change is waiting for this worker
         std::vector<std::string> res;
-        if (!call_provider(prov, { prep[i].masked.text }, sysPrompt, std::string(), res)) break; // provider down: stop
+        std::string err;
+        if (!call_provider(prov, { prep[i].send }, sysPrompt, std::string(), res, err)) { // provider down: stop
+            note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", units[i]);
+            break;
+        }
         if (res.empty()) continue;
-        std::string s = finish(prep[i], res[0], targetLang, displayCp, cap);
-        if (!s.empty()) {
+        const char* why = nullptr;
+        std::string s = finish(prep[i], res[0], targetLang, displayCp, cap, &why);
+        if (s.empty()) {
+            note_failure(why ? why : "reply rejected", units[i]);
+        } else {
             out[i] = std::move(s);
             any = true;
         }
     }
     return any;
+}
+
+bool context_for_provider(int providerKind) {
+    return providerKind == 1 || providerKind == 2 || providerKind == 3;
+}
+
+std::vector<std::string> drain_failure_notes() {
+    std::lock_guard<std::mutex> lk(g_noteMutex);
+    std::vector<std::string> v(g_notes.begin(), g_notes.end());
+    g_notes.clear();
+    if (g_notesDropped) {
+        v.push_back("(" + std::to_string(g_notesDropped) + " more not shown)");
+        g_notesDropped = 0;
+    }
+    return v;
 }
 
 bool batching_enabled() {
@@ -443,6 +566,8 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt,
     g_sysPrompt = systemPrompt;
     g_targetLang = targetLang;
     g_displayCp = displayCp;
+    g_ctxEnabled = context_for_provider(cfg.providerKind);
+    { std::lock_guard<std::mutex> lock(g_jobMutex); g_recentCtx.clear(); }
     g_status.store("idle", std::memory_order_relaxed);
     // Reset response-time stats: a new provider/model has its own latency profile,
     // so don't average across a switch (e.g. local Hy-MT2 -> a cloud endpoint).
@@ -516,7 +641,7 @@ void submit(const Job& job) {
     // reuse as future context (raw cp1251/cp1252 bytes would corrupt the
     // request body). Short chat strings -> negligible cost on the game thread.
     std::string utf8Line;
-    if (!isBatch && !job.skipContext) {
+    if (g_ctxEnabled && !isBatch && !job.skipContext) {
         int cp = (job.srcCodepage != 0) ? job.srcCodepage : charset::guess_codepage(job.sourceBytes);
         utf8Line = charset::to_utf8(charset::decode(job.sourceBytes, cp));
     }
@@ -527,8 +652,9 @@ void submit(const Job& job) {
 
     // Rolling context is the inbound chat conversation. Outbound jobs (which the
     // player is composing, translated the other way) opt out via skipContext so
-    // they neither read nor pollute the inbound context ring.
-    if (!job.skipContext && !isBatch) {
+    // they neither read nor pollute the inbound context ring. Only for providers
+    // whose models read context instead of translating it (context_for_provider).
+    if (g_ctxEnabled && !job.skipContext && !isBatch) {
         // Attach the recent conversation (oldest -> newest) as background context
         // for this job, BEFORE recording the current line so a line is never its
         // own context.

@@ -291,6 +291,97 @@ void test_engine() {
         engine::reset_batch_for_test();
     }
 
+    // ---- formatting codes at the EDGES never go to the model ----
+    // Live finding (local Hy-MT2, target Spanish): for the textdraw
+    // "~W~Press ~Y~~k~~CONVERSATION_YES~ ~W~to open hood" the model keeps the inner
+    // key codes but drops the LEADING ~W~ -- validation rejects the reply (a lost
+    // placeholder) and the textdraw stayed English on every show.
+    {
+        struct EdgeFake : i18n::IProvider {
+            std::vector<std::string> seen;
+            bool translate(const std::vector<std::string>& u, const std::string&, const std::string&,
+                           std::vector<std::string>& out, std::string&) override {
+                seen = u;
+                out.clear();
+                for (const std::string& t : u) {
+                    std::string s = t; // like the real model: a leading placeholder is dropped
+                    if (!s.empty() && s[0] == '\x01') s = s.substr(s.find('\x02') + 1);
+                    out.push_back("X " + s);
+                }
+                return true;
+            }
+            const char* name() const override { return "edge"; }
+        } ef;
+        cache::clear_for_test();
+        const std::string td = "~W~Press ~Y~~k~~CONVERSATION_YES~ ~W~to open hood";
+        std::string d;
+        CHECK(engine::process_one(td, 1252, &ef, "sys", d, 1034), "edge: a textdraw with a leading code is translated");
+        CHECK(ef.seen.size() == 1 && !ef.seen[0].empty() && ef.seen[0][0] != '\x01',
+              "edge: the leading code is not sent to the model");
+        CHECK(d.rfind("~W~X Press ", 0) == 0, "edge: the leading code is put back in front");
+        CHECK(d.find("~k~~CONVERSATION_YES~") != std::string::npos, "edge: inner codes survive");
+        const std::string tail = "Dinero: $500{FFFFFF}";
+        CHECK(engine::process_one(tail, 1252, &ef, "sys", d, 1033) && d.size() >= 8 &&
+              d.compare(d.size() - 8, 8, "{FFFFFF}") == 0, "edge: a trailing code is put back at the end");
+        cache::clear_for_test();
+    }
+
+    // ---- recent-chat context confuses a dedicated translation model ----
+    // Live (local Hy-MT2, "Use /actions to view your 'action log' ..." with three
+    // context lines): 5 of 6 replies were the CONTEXT translated instead of the line.
+    // Context goes only to the cloud chat-model presets; and a one-line text whose
+    // reply has several lines is rejected, whatever the model.
+    CHECK(!engine::context_for_provider(0) && engine::context_for_provider(1) &&
+          engine::context_for_provider(2) && engine::context_for_provider(3) &&
+          !engine::context_for_provider(4), "context: cloud presets only (not Custom, not Local)");
+    {
+        struct CtxEcho : i18n::IProvider {
+            bool translate(const std::vector<std::string>& u, const std::string&, const std::string&,
+                           std::vector<std::string>& out, std::string&) override {
+                out.assign(u.size(), "xerohero: hola\ns1mple estuvo en pausa");
+                return true;
+            }
+            const char* name() const override { return "ctx-echo"; }
+        } ce;
+        cache::clear_for_test();
+        engine::drain_failure_notes();
+        std::string d;
+        CHECK(!engine::process_one("\xEF\xF0\xE8\xE2\xE5\xF2 \xEC\xE8\xF0", 1251, &ce, "sys", d),
+              "context: a multi-line reply to a one-line text is rejected");
+        std::vector<std::string> notes = engine::drain_failure_notes();
+        CHECK(notes.size() == 1 && notes[0].find("extra lines") != std::string::npos, "context: the reason is noted");
+        cache::clear_for_test();
+    }
+
+    // ---- why a text was NOT translated reaches the log (drain_failure_notes) ----
+    {
+        struct Lossy : i18n::IProvider {
+            bool translate(const std::vector<std::string>& u, const std::string&, const std::string&,
+                           std::vector<std::string>& out, std::string&) override {
+                out.assign(u.size(), "Usa para ver tu registro."); // the /actions placeholder is lost
+                return true;
+            }
+            const char* name() const override { return "lossy"; }
+        } lossy;
+        cache::clear_for_test();
+        engine::drain_failure_notes(); // start clean
+        std::string d;
+        CHECK(!engine::process_one("Use /actions to view your log.", 1252, &lossy, "sys", d, 1034),
+              "notes: a reply that lost a placeholder is rejected");
+        std::vector<std::string> notes = engine::drain_failure_notes();
+        CHECK(notes.size() == 1 && notes[0].find("placeholder") != std::string::npos &&
+              notes[0].find("Use /actions") != std::string::npos, "notes: the reason and the text are noted");
+        CHECK(engine::drain_failure_notes().empty(), "notes: draining empties the list");
+
+        FakeBatch down;
+        down.fail = true;
+        CHECK(!engine::process_one("\xEC\xE8\xF0", 1251, &down, "sys", d), "notes: provider down");
+        notes = engine::drain_failure_notes();
+        CHECK(notes.size() == 1 && notes[0].find("down") != std::string::npos,
+              "notes: a provider failure is noted with its error");
+        cache::clear_for_test();
+    }
+
     // ---- provider latency for the held-dialog estimate (recency-weighted) ----
     {
         engine::LatencyTracker t;

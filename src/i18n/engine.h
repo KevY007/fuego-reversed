@@ -216,6 +216,20 @@ Latency latency();
 // next answered request counts as the cold one again).
 void reset_latency_for_test();
 
+// Whether chat translation sends the recent conversation as background context:
+// only for the cloud chat-model presets (1 Google, 2 Anthropic, 3 OpenAI). A
+// dedicated translation model -- the local default, Hy-MT2 -- translates the context
+// lines INSTEAD of the line (live: 5 of 6 replies), so Custom (0) and Local (4) get
+// none. PURE.
+bool context_for_provider(int providerKind);
+
+// Why texts were NOT translated since the last call, oldest first -- e.g.
+// "reply lost a placeholder: 'Use /actions to view ...'" or "provider failed
+// (timeout): '...'" -- for the log (hooks::pump_tick drains it about once a second).
+// Capped, so a provider outage can't flood the log: a last entry says how many were
+// left out. The same failure twice in a row is noted once. Thread-safe.
+std::vector<std::string> drain_failure_notes();
+
 // Work ahead of a new priority job: priority-lane jobs still queued plus about half
 // of the jobs the workers are processing right now (a running job is, on average,
 // half done); and the number of worker threads -- inputs for the held-dialog

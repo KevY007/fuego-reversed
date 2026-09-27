@@ -20,9 +20,6 @@ using ResetFn   = void ( * )( IDirect3DDevice9 *dev, bool preReset );  // around
 using WndProcFn = bool ( * )( HWND, UINT, WPARAM, LPARAM );            // return true to CONSUME the message
 
 void on_frame( FrameFn );
-// Like on_frame, but drawn in a fresh scene AFTER the game + SA:MP chat -- use this
-// for overlays that must sit ON TOP of the chat (cheat-state text, watermark).
-void on_frame_top( FrameFn );
 void on_reset( ResetFn );
 void on_wndproc( WndProcFn );
 

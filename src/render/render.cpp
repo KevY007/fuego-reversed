@@ -8,7 +8,6 @@ namespace {
 using namespace render;
 
 std::vector<FrameFn>   &frameCbs() { static std::vector<FrameFn> v; return v; }
-std::vector<FrameFn>   &topCbs()   { static std::vector<FrameFn> v; return v; } // drawn AFTER SA:MP chat
 std::vector<ResetFn>   &resetCbs() { static std::vector<ResetFn> v; return v; }
 std::vector<WndProcFn> &wndCbs()   { static std::vector<WndProcFn> v; return v; }
 
@@ -74,22 +73,21 @@ void ensure_window( IDirect3DDevice9 *dev ) {
 }
 
 HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
+	// Re-entrancy guard (render thread only, so a plain static is enough). EndScene is
+	// hooked via the device VTABLE, so anything that calls dev->EndScene() while we're
+	// inside this hook -- a callback, or an extra scene pass -- lands back HERE. Pass it
+	// straight through instead of re-running every callback: an earlier post-chat pass
+	// did exactly that and recursed without bound, freezing the game on the first frame.
+	static bool s_inside = false;
+	if ( s_inside ) return g_origEndScene( dev );
+	s_inside = true;
+
 	if ( !g_device ) { g_device = dev; Log( "[render] device captured (0x%p).", dev ); }
 	ensure_window( dev );
-
-	// Main overlay (menu, ESP, nametags, ...) draws BEFORE the game + SA:MP finish
-	// their scene, so it sits UNDER the SA:MP chat -- the preferred order.
 	for ( auto fn : frameCbs() ) fn( dev );
+	HRESULT hr = g_origEndScene( dev );
 
-	HRESULT hr = g_origEndScene( dev ); // game + SA:MP HUD/chat, then the scene ends
-
-	// TOP overlay (only the cheat-state text + active-cheat watermark) draws AFTER, in
-	// a fresh scene, so just those two sit ON TOP of the chat. Guarded: if BeginScene
-	// can't start we simply skip them this frame -- never a black screen.
-	if ( !topCbs().empty() && SUCCEEDED( dev->BeginScene() ) ) {
-		for ( auto fn : topCbs() ) fn( dev );
-		dev->EndScene();
-	}
+	s_inside = false;
 	return hr;
 }
 
@@ -137,7 +135,6 @@ void **game_device_vtable() {
 namespace render {
 
 void on_frame( FrameFn fn )     { if ( fn ) frameCbs().push_back( fn ); }
-void on_frame_top( FrameFn fn ) { if ( fn ) topCbs().push_back( fn ); } // drawn AFTER SA:MP chat
 void on_reset( ResetFn fn )     { if ( fn ) resetCbs().push_back( fn ); }
 void on_wndproc( WndProcFn fn ) { if ( fn ) wndCbs().push_back( fn ); }
 

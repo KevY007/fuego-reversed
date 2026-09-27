@@ -685,21 +685,6 @@ void on_frame( IDirect3DDevice9 *dev ) {
 	ImGui_ImplDX9_RenderDrawData( ImGui::GetDrawData() );
 }
 
-// Post-chat pass (render::on_frame_top): a SECOND, minimal ImGui frame that draws ONLY
-// the cheat-state text + active-cheat watermark, so they sit ON TOP of the SA:MP chat
-// while everything in on_frame() stays under it. No input here -- the interactive menu
-// lives in on_frame() (which consumes the input); a second static frame is fine.
-void on_frame_top( IDirect3DDevice9 * ) {
-	if ( !g_init ) return;
-	ImGui_ImplDX9_NewFrame();
-	ImGui_ImplWin32_NewFrame();
-	ImGui::NewFrame();
-	visuals::draw_over_chat();
-	ImGui::EndFrame();
-	ImGui::Render();
-	ImGui_ImplDX9_RenderDrawData( ImGui::GetDrawData() );
-}
-
 void on_reset( IDirect3DDevice9 *, bool preReset ) {
 	if ( !g_init ) return;
 	if ( preReset ) ImGui_ImplDX9_InvalidateDeviceObjects();
@@ -746,7 +731,6 @@ void set_open( bool on ) { g_open = on; }
 
 void install() {
 	render::on_frame( on_frame );
-	render::on_frame_top( on_frame_top ); // cheat-state text + watermark, drawn over SA:MP chat
 	render::on_reset( on_reset );
 	render::on_wndproc( on_wndproc );
 	Log( "[menu] registered (INSERT to toggle)." );

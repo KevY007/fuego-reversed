@@ -120,6 +120,14 @@ const char* status();
 // status, parse) instead of just "error - retrying".
 std::string last_error();
 
+// Provider response-time stats for the menu readout. count = successful provider
+// calls since the last start(); avgMs = their running-mean wall time; lastMs = the
+// most recent. avgMs/lastMs are the REAL end-to-end delay -- they include the
+// request-pacer wait and any 429/503 backoff-retries, not just model inference.
+// count 0 means no provider call has completed yet. Thread-safe snapshot.
+struct RespStats { uint64_t count; unsigned long avgMs; unsigned long lastMs; };
+RespStats response_stats();
+
 // Synchronous translation-memory lookup for the non-chat surfaces (dialogs, 3D
 // labels, textdraws, ...). Computes the SAME cache key process_one() uses, so a
 // hit returns the finished, display-codepage-encoded translation a prior job

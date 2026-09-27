@@ -7,6 +7,7 @@
 #include "i18n/validate.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -78,6 +79,17 @@ std::atomic<const char*> g_status{"idle"};
 // next to status() so a failing translate says WHY, not just "error - retrying".
 std::mutex g_errMutex;
 std::string g_lastErr;
+
+// Provider response-time stats for the menu readout. Updated only after an ACTUAL
+// prov->translate() call that SUCCEEDED (cache hits and pre-provider skips never
+// reach the provider, so they don't count). avg = running mean since the last
+// start(); last = the most recent call. Both are wall time around translate(), so
+// they INCLUDE the request-pacer wait and any 429/503 backoff-retries -- i.e. the
+// real end-to-end delay a user feels. Guarded by its own mutex; menu reads a snapshot.
+std::mutex    g_statsMutex;
+uint64_t      g_respCount   = 0;
+uint64_t      g_respTotalMs = 0;
+unsigned long g_respLastMs  = 0;
 
 void worker_loop() {
     for (;;) {
@@ -155,10 +167,15 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     if (!prov) return false;
     std::vector<std::string> out;
     std::string err;
+    auto t0 = std::chrono::steady_clock::now();
     bool callOk = prov->translate({ m.text }, sysPrompt, rollingCtx, out, err);
+    unsigned long dt = (unsigned long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - t0).count();
     if (callOk) {
         g_status.store("local ok", std::memory_order_relaxed);
         { std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr.clear(); }
+        std::lock_guard<std::mutex> lk(g_statsMutex);
+        g_respCount++; g_respTotalMs += dt; g_respLastMs = dt;
     } else {
         g_status.store("error - retrying", std::memory_order_relaxed);
         std::lock_guard<std::mutex> lk(g_errMutex); g_lastErr = err;
@@ -199,6 +216,9 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt,
     g_targetLang = targetLang;
     g_displayCp = displayCp;
     g_status.store("idle", std::memory_order_relaxed);
+    // Reset response-time stats: a new provider/model has its own latency profile,
+    // so don't average across a switch (e.g. local Hy-MT2 -> a cloud endpoint).
+    { std::lock_guard<std::mutex> lk(g_statsMutex); g_respCount = 0; g_respTotalMs = 0; g_respLastMs = 0; }
 
     // Safe without g_jobMutex, unlike stop()'s flip: stop() above (if we
     // were running) already joined every prior worker before returning, and
@@ -310,6 +330,15 @@ const char* status() {
 std::string last_error() {
     std::lock_guard<std::mutex> lk(g_errMutex);
     return g_lastErr;
+}
+
+RespStats response_stats() {
+    std::lock_guard<std::mutex> lk(g_statsMutex);
+    RespStats r;
+    r.count  = g_respCount;
+    r.avgMs  = g_respCount ? (unsigned long)(g_respTotalMs / g_respCount) : 0;
+    r.lastMs = g_respLastMs;
+    return r;
 }
 
 bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::string& out) {

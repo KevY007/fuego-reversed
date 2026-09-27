@@ -523,6 +523,19 @@ void draw_ui() {
 				std::string le = i18n::engine::last_error();
 				if ( !le.empty() ) { ImGui::SameLine(); ImGui::TextDisabled( "(%s)", le.c_str() ); }
 			}
+			{
+				auto rs = i18n::engine::response_stats();
+				if ( rs.count > 0 )
+					ImGui::Text( "Avg response: %lu ms  (last %lu ms, %llu calls)",
+					             rs.avgMs, rs.lastMs, (unsigned long long) rs.count );
+				else
+					ImGui::TextDisabled( "Avg response: (no translations yet)" );
+				ImGui::SameLine();
+				HelpMarker( "Average round-trip delay of translation requests since the last Save, and the "
+				            "most recent one. This is the REAL end-to-end delay -- it includes the Min request "
+				            "gap wait and any 429/503 retry backoff, not just the model's inference time. "
+				            "Cache hits (repeated lines) are instant and not counted." );
+			}
 
 			// Self-test: translate a sample line right now so you can verify the
 			// endpoint/model/prompt without joining a server.

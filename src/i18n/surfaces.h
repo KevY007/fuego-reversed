@@ -28,10 +28,71 @@ namespace i18n::surfaces {
 // `out`); false on a miss. `src`/`out` are raw display-codepage bytes.
 using Translator = std::function<bool(const std::string& src, std::string& out)>;
 
-// Rebuild a ShowDialog (RPC 61) packet with translated title/buttons/body. Returns
-// true and fills `out` only if EVERY translatable piece resolved via `tr` (so the
-// caller shows the original until all pieces are cached). Returns false otherwise.
-// Layout: u16 dialogId, u8 style, u8+title, u8+btn1, u8+btn2, CSTRING szInfo.
+// --- cell-safe dialog translation (pure) ------------------------------------
+// A dialog is translated UNIT BY UNIT, never as one blob: units[0] = title,
+// units[1] = button 1, units[2] = button 2, units[3..] = the body split on EVERY
+// '\n' and '\t' (bodySeps[k] = the separator that followed body unit k). A model
+// can therefore never add, drop or move a row/column separator -- rejoining is
+// byte-exact by construction. Each unit's leading spaces + {RRGGBB} codes
+// (prefix) and trailing spaces (suffix) are re-attached verbatim; only `core` is
+// ever translated.
+struct Unit {
+    std::string prefix;
+    std::string core;
+    std::string suffix;
+    bool        translate = false; // false -> core kept verbatim
+};
+
+struct DialogPlan {
+    uint16_t             id = 0;
+    uint8_t              style = 0;      // 0 msgbox 1 input 2 list 3 password 4 tablist 5 tablist+headers
+    bool                 haveBody = false;
+    std::vector<uint8_t> rawBody;        // undecodable body bytes, kept verbatim
+    std::vector<Unit>    units;
+    std::vector<char>    bodySeps;
+};
+
+// A LIST/TABLIST cell that must stay verbatim: empty, numbers/units/timers
+// ("12m", "1.15km", "$500"), or a single ASCII token that is all-lowercase or
+// carries a digit, '/' or '_' -- shortcodes/commands the player types ("intro",
+// "/help", "cmd_2"). Capitalised words ("Withdraw", "No") and phrases are labels
+// and DO get translated; so is any non-Latin (e.g. cp1251) word.
+bool is_verbatim_cell(const std::string& core);
+
+// Split a raw piece into prefix/core/suffix. `cell` selects the list-cell rule;
+// otherwise a unit is translated unless empty or mostly numeric.
+Unit make_unit(const std::string& raw, bool cell);
+
+// Parse a ShowDialog (RPC 61) payload into units. False if malformed.
+bool plan_dialog(const uint8_t* pkt, size_t n, DialogPlan& out);
+
+// The cores that reproduce the packet unchanged (unit.core for every unit).
+std::vector<std::string> original_cores(const DialogPlan& plan);
+
+// A translated core with '\t' / '\n' turned into spaces and '\r' dropped, so a
+// model's stray separator can never break the dialog's row/column structure.
+std::string clean_translation(const std::string& s);
+
+// prefix + core + suffix, using the ORIGINAL core when the unit isn't
+// translatable or `core` equals it (keeps identity byte-exact), else the
+// cleaned translated core.
+std::string unit_text(const Unit& u, const std::string& core);
+
+// The body text from units[3..] + bodySeps with the given cores.
+std::string assemble_body(const DialogPlan& plan, const std::vector<std::string>& cores);
+
+// Re-encode a full RPC 61 payload. `cores` is indexed like plan.units (a missing
+// entry falls back to the original core).
+std::vector<uint8_t> assemble_dialog(const DialogPlan& plan, const std::vector<std::string>& cores);
+
+// A dialog that must never be translated or held: a PASSWORD dialog (style 3) or
+// the server's CLOSE signal (dialog id < 0 as int16, i.e. 0x8000..0xFFFF).
+bool never_translated(const DialogPlan& d);
+
+// Rebuild a ShowDialog (RPC 61) packet translating it UNIT BY UNIT (plan_dialog):
+// `tr` receives each translatable unit's bare core. Returns true and fills `out`
+// only if EVERY translatable unit resolved via `tr` (so the caller shows the
+// original until all units are cached). Returns false otherwise.
 bool rebuild_dialog(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
 
 // Rebuild a Create3DTextLabel (RPC 36) packet with translated text. 27-byte fixed

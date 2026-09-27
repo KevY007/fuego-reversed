@@ -107,7 +107,9 @@ void apply_result( const i18n::engine::Result &r ) {
 		int first = i18n::chatbuf::find_block( chat, pf.pieces );
 		if ( first < 0 ) return; // scrolled off (or cleared) before the translation came back
 
-		size_t width = 72; // SA:MP's own wrap width -- wider if the original rows were
+		// SA:MP wraps a CHAT line at exactly 72 bytes (verified in samp.dll 0.3.DL) --
+		// use the rows' actual width if the original rows were wider.
+		size_t width = 72;
 		for ( const auto &p : pf.pieces )
 			if ( p.text.size() > width ) width = p.text.size(); // (no std::max: windows.h defines max)
 		i18n::chatbuf::write_block( chat, first,

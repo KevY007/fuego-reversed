@@ -82,8 +82,12 @@ struct Settings {
     bool debug_lab = false;
 
     // Translate incoming DIALOGS + 3D text labels (RPC 61/36 -- Huffman CSTRING
-    // bodies). Translation-memory-first: first sight shows the original + fills the
-    // cache, the next identical dialog/label shows translated. Default OFF.
+    // bodies). A dialog not fully in the translation memory is HELD until it is
+    // translated, then shown in arrival order with the server's original timing
+    // (after 10 s untranslated: shown in the original); password dialogs are never
+    // translated. 3D labels stay translation-memory-first: first sight shows the
+    // original + fills the cache, the next identical label shows translated.
+    // Default OFF.
     bool translate_dialogs = false;
 
     // Translate the HUD: textdraws (RPC 105/134), gametext (73), chat bubbles (59).

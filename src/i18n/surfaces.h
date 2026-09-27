@@ -1,12 +1,18 @@
 #pragma once
 // i18n/surfaces.h -- translate incoming non-chat text surfaces (dialogs, 3D text
-// labels) in place, before the game processes the RPC.
+// labels, HUD text) before the game processes the RPC.
 //
-// Approach (translation-memory-first, so the synchronous RPC hook never blocks on
-// the network): on each dialog/label RPC we decode its text; if a translation is
-// already cached we re-encode the packet with the translated text; if not, we
-// queue a background fill job and pass the ORIGINAL through this time. The next
-// identical dialog/label (they repeat) then hits the cache and shows translated.
+// Approach (the synchronous RPC hook never blocks on the network):
+//  * DIALOGS: decoded into units (title, buttons, every body row/cell). Fully in
+//    the translation memory (and nothing held ahead of it) -> rewritten in place
+//    and shown now. Otherwise the ShowDialog is HELD (swallowed), its missing
+//    units are translated, and it is released through SA:MP's own Show strictly
+//    in arrival order, with the original gap between dialogs -- or as the original
+//    if it isn't translated within 10 s. Password dialogs and close signals are
+//    never translated. A picked list row is sent back as the ORIGINAL row's text.
+//  * 3D LABELS / HUD: translation-memory-first -- a cache hit is rewritten in
+//    place; a miss passes the ORIGINAL through and queues a background fill, so
+//    the next identical label/textdraw shows translated.
 //
 // The packet-rebuild functions below are PURE (byte buffers + a translator
 // callback, no game types) so they are host-tested byte-exact against real
@@ -173,8 +179,10 @@ bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, s
 // place and shown now (returns false). Otherwise HELD: returns true (the caller
 // must NOT pass the RPC to SA:MP); it is translated unit by unit and released
 // later through SA:MP's own Show, in arrival order with its original timing.
-// Password dialogs and close signals are never translated. Labels/HUD: TM-first
-// rewrite in place (returns false). Main thread.
+// Without a running pump (hooks::pump_ready()) nothing is ever held: SA:MP shows
+// the original (or the in-place rewrite when fully cached). Password dialogs and
+// close signals are never translated. Labels/HUD: TM-first rewrite in place
+// (returns false). Main thread.
 bool on_incoming_rpc(unsigned char id, RPCParameters* rpc);
 
 // A dialog unit's translation finished (engine surface 3). Main thread (pump).

@@ -320,10 +320,13 @@ void draw_ui() {
 			if ( ImGui::Checkbox( "Translate dialogs + 3D labels", &s.translate_dialogs ) )
 				i18n::hooks::apply_config(); // live: (re)start the engine if needed
 			ImGui::SameLine();
-			HelpMarker( "Translates incoming dialog boxes and 3D world text labels. Translation-memory-"
-			            "first: the FIRST time a given dialog/label appears it shows in the original while "
-			            "it's translated in the background; the NEXT time it appears (login, menus, repeated "
-			            "labels) it shows translated. One-off text may show once in the original." );
+			HelpMarker( "Translates incoming dialog boxes and 3D world text labels. A dialog you haven't "
+			            "seen translated before is held while it's translated ('translating dialog...' shows), "
+			            "then appears translated -- in the order the server sent them and with the server's "
+			            "original timing between them. If translating takes longer than 10 s, it appears in "
+			            "the original instead. Dialogs seen before appear translated at once. Password "
+			            "dialogs are never translated. 3D labels show in the original the first time and "
+			            "translated from the next time on." );
 			if ( ImGui::Checkbox( "Translate HUD (textdraws, gametext, chat bubbles)", &s.translate_hud ) )
 				i18n::hooks::apply_config();
 			ImGui::SameLine();
@@ -568,8 +571,11 @@ void draw_ui() {
 				else
 					ImGui::TextDisabled( "Avg response: (no translations yet)" );
 				ImGui::SameLine();
-				HelpMarker( "Average round-trip delay of translation requests since the last Save, and the "
-				            "most recent one. This is the REAL end-to-end delay -- it includes the Min request "
+				HelpMarker( "Average round-trip delay of translation requests since the translator engine last "
+				            "(re)started -- turning translation on, or a Save that changes the provider, URL, "
+				            "key, model, languages, romanization or request settings -- and the most recent "
+				            "one. A Save that "
+				            "changes none of those keeps the numbers. This is the REAL end-to-end delay -- it includes the Min request "
 				            "gap wait and any 429/503 retry backoff, not just the model's inference time. "
 				            "Cache hits (repeated lines) are instant and not counted." );
 			}

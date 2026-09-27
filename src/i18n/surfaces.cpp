@@ -115,7 +115,7 @@ std::unordered_map<uint64_t, PendingDialog> g_pendingDialogs; // seq -> dialog
 std::unordered_map<uint64_t, std::pair<uint64_t, std::vector<size_t>>> g_partJobs;
 
 // List/tablist rows of the translated dialog now on screen, per dialog id, so a
-// DialogResponse can be mapped back to the ORIGINAL row (used by Task 7).
+// DialogResponse can be mapped back to the ORIGINAL row (on_send_dialogresponse).
 struct ShownRows {
     uint8_t                  style = 0;
     std::vector<std::string> orig, trans;
@@ -309,6 +309,10 @@ std::unordered_map<uint64_t, PendingResponse> g_pendingResponses;
 // provider, ...) -- a reply must never be lost or delayed indefinitely.
 constexpr uint32_t kResponseDeadlineMs = 5000;
 
+// A translated INPUT reply is capped like the native one: SA:MP's input box never
+// sends more than 128 bytes of text.
+constexpr int kInputReplyCap = 128;
+
 // Wrap-safe "at least ms have elapsed since t0" for GetTickCount()-style clocks
 // (mirrors i18n::dlgq's at_or_after).
 bool elapsed_ms(uint32_t nowMs, uint32_t t0, uint32_t ms) { return (int32_t)(nowMs - t0 - ms) >= 0; }
@@ -410,6 +414,7 @@ bool on_send_dialogresponse(int id, BitStream* params, PacketPriority, PacketRel
             job.promptOverride     = i18n::config::build_system_prompt(s.outbound_target_lang, false);
             job.targetLangOverride = s.outbound_target_lang;
             job.displayCpOverride  = i18n::config::display_codepage(s.outbound_target_lang, false);
+            job.capBytes           = kInputReplyCap; // never longer than native input can be
             g_pendingResponses[job.handle] = { dlgId, resp, listItem, text, GetTickCount() };
             i18n::engine::submit(job);
             return false; // swallow; on_response_result or the tick() deadline sends it

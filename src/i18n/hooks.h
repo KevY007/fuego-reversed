@@ -1,12 +1,14 @@
 #pragma once
 // i18n/hooks.h -- the chat seam (Task 11).
 //
-// Detours SA:MP's CChat::AddEntry (samp::addr::FUNC_ADD_TO_CHAT_WND) so every
-// incoming server chat/info line also gets queued for translation, and
-// registers the main-thread pump (via render::on_frame) that applies a
-// finished translation by re-emitting it (marked) through the SAME
-// trampoline used to show the original line -- never through the hooked
-// entry point itself, so applying a result can never re-trigger translation.
+// Detours SA:MP's CChat::AddEntry (samp::addr::FUNC_ADD_TO_CHAT_WND): an
+// incoming server chat/info line with a translation-memory hit is shown already
+// translated; any other line is shown in the ORIGINAL at once (both through the
+// trampoline -- never the hooked entry point, so nothing re-triggers
+// translation) and queued. The main-thread pump (via render::on_frame) then
+// writes a landed translation IN PLACE over the chat rows that line became
+// (i18n::chatbuf) -- lines above/below never move -- and drives the other
+// surfaces' per-frame work (held dialogs, reply/chat delivery deadlines).
 //
 // The seam is wired ONCE at startup via install() (whether or not translation
 // is currently enabled), so nothing is ever appended to render's frame-callback

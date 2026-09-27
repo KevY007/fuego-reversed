@@ -77,14 +77,9 @@ struct Settings {
     // Read-only; never modifies packets. Default OFF.
     bool debug_capture = false;
 
-    // Debug lab (developer): verify the in-place chat / dialog replacement
-    // mechanisms in-game before the real translate-and-replace feature is built.
-    // debug_lab = read-only logging of chat-entry + dialog internals to the log.
-    // debug_lab_replace = LIVE EXPERIMENT: ~2s after a chat line / dialog appears,
-    // rewrite it to a "[LAB] ..." marked version to confirm the redraw path works.
-    // Both default OFF; turn off after testing (replace marks all incoming text).
+    // Debug lab (developer, read-only): log the newest chat entry + decoded
+    // ShowDialog fields to fuego_reversed.log. Default OFF.
     bool debug_lab = false;
-    bool debug_lab_replace = false;
 
     // Translate incoming DIALOGS + 3D text labels (RPC 61/36 -- Huffman CSTRING
     // bodies). Translation-memory-first: first sight shows the original + fills the

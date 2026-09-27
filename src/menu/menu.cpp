@@ -601,13 +601,6 @@ void draw_ui() {
 			HelpMarker( "Read-only. Logs the newest chat line + decoded ShowDialog fields (id/style/"
 			            "title/buttons/body) to fuego_reversed.log, to verify the in-place replacement "
 			            "offsets on your build. Applies immediately (no Save needed)." );
-			ImGui::Checkbox( "Lab: LIVE replace test (experimental)", &s.debug_lab_replace );
-			ImGui::SameLine();
-			HelpMarker( "EXPERIMENT: ~2s after a chat line or dialog appears, rewrites it to a '[LAB] ...' "
-			            "version in place (chat: edit szText+redraw flag; dialog: re-call SA:MP's own show "
-			            "function). If you SEE the line/dialog change to [LAB], the mechanism works -- then "
-			            "share the log. It marks ALL incoming chat/dialogs while on, so turn it OFF after. "
-			            "Crash-guarded, but it does write game memory -- test on a throwaway session first." );
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();

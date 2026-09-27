@@ -122,8 +122,6 @@ void from_text(const std::string& text) {
                 g_settings.debug_capture = (value == "true" || value == "1");
             } else if (key == "debug_lab") {
                 g_settings.debug_lab = (value == "true" || value == "1");
-            } else if (key == "debug_lab_replace") {
-                g_settings.debug_lab_replace = (value == "true" || value == "1");
             } else if (key == "translate_dialogs") {
                 g_settings.translate_dialogs = (value == "true" || value == "1");
             } else if (key == "translate_hud") {
@@ -158,7 +156,6 @@ std::string to_text() {
     out << "show_translate_indicators=" << (g_settings.show_translate_indicators ? "true" : "false") << "\n";
     out << "debug_capture=" << (g_settings.debug_capture ? "true" : "false") << "\n";
     out << "debug_lab=" << (g_settings.debug_lab ? "true" : "false") << "\n";
-    out << "debug_lab_replace=" << (g_settings.debug_lab_replace ? "true" : "false") << "\n";
     out << "translate_dialogs=" << (g_settings.translate_dialogs ? "true" : "false") << "\n";
     out << "translate_hud=" << (g_settings.translate_hud ? "true" : "false") << "\n";
     return out.str();

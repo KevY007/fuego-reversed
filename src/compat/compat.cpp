@@ -138,8 +138,7 @@ void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback
 	// (no-op unless config.debug_capture is on; never modifies the packet).
 	i18n::capture::on_incoming_rpc( id, rpc );
 
-	// Debug lab (read-only unless debug_lab_replace): decode + log ShowDialog(61)
-	// and queue the in-place re-show experiment. Never modifies the packet here.
+	// Debug lab (read-only): decode + log ShowDialog (61). Never modifies the packet.
 	i18n::lab::on_incoming_rpc( id, rpc );
 
 	// Translate incoming dialogs / 3D labels / HUD text. A ShowDialog that still needs

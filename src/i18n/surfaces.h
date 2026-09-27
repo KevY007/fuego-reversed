@@ -103,6 +103,12 @@ std::vector<uint8_t> assemble_dialog(const DialogPlan& plan, const std::vector<s
 // Apply right before EVERY assemble_dialog of a translated dialog.
 std::vector<std::string> fit_list_budgets(const DialogPlan& plan, std::vector<std::string> cores);
 
+// Groups the unit indices in `missing` by IDENTICAL core (first-seen order; a
+// unit's prefix/suffix doesn't matter), so a held dialog translates a repeated
+// label ("Buy" on every row, the same word as a button and a cell) with ONE
+// engine job whose result fills every unit of its group.
+std::vector<std::vector<size_t>> group_by_core(const DialogPlan& plan, const std::vector<size_t>& missing);
+
 // Remove {RRGGBB} colour codes (SA:MP strips them from a list row's response text).
 std::string strip_colors(const std::string& s);
 

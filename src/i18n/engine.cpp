@@ -46,10 +46,11 @@ int g_displayCp  = 1252;
 std::vector<std::thread> g_workers;
 std::atomic<bool> g_running{false};
 
-// Job queue + in-flight dedup set: both guarded by g_jobMutex.
+// Job queue (two lanes, see JobQueue in engine.h) + in-flight dedup set: both
+// guarded by g_jobMutex.
 std::mutex g_jobMutex;
 std::condition_variable g_jobCv;
-std::deque<Job> g_jobs;
+JobQueue g_jobs;
 std::unordered_set<size_t> g_inFlight; // hash(sourceBytes) queued or being worked on
 
 // Rolling context: the last few incoming lines (UTF-8), so each translation
@@ -96,10 +97,10 @@ void worker_loop() {
         Job job;
         {
             std::unique_lock<std::mutex> lock(g_jobMutex);
+            // g_jobs.empty() covers BOTH lanes.
             g_jobCv.wait(lock, [] { return !g_running.load() || !g_jobs.empty(); });
             if (!g_running.load()) return; // shutting down: abandon anything still queued
-            job = std::move(g_jobs.front());
-            g_jobs.pop_front();
+            g_jobs.pop(job);               // priority lane (outbound chat, dialog units/replies) first
         }
 
         // Per-job direction overrides (outbound uses them); fall back to the
@@ -274,7 +275,7 @@ void stop() {
 
     {
         std::lock_guard<std::mutex> lock(g_jobMutex);
-        g_jobs.clear();
+        g_jobs.clear(); // both lanes
         g_inFlight.clear();
         g_recentCtx.clear();
     }
@@ -320,7 +321,7 @@ void submit(const Job& job) {
         if (g_recentCtx.size() > kCtxLines) g_recentCtx.pop_front();
     }
 
-    g_jobs.push_back(std::move(j));
+    g_jobs.push(std::move(j)); // surfaces 1/3/4 -> the priority lane
     g_jobCv.notify_one();
 }
 

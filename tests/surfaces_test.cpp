@@ -494,6 +494,18 @@ int main() {
         std::vector<std::string> tf = fit_list_budgets(t, tc);
         check(tf[3] == "Big Burger" && tf[5] == "Patatas", "C1: a TABLIST (style 4) cell over 127 bytes is reverted");
     }
+    {   // I5: missing units with an IDENTICAL core share ONE translation job.
+        std::vector<uint8_t> pkt = make_dialog(11, 2, "Shop", "Buy", "Close", "Buy\nSell\nBuy\n{ffffff}Buy");
+        DialogPlan d;
+        plan_dialog(pkt.data(), pkt.size(), d);
+        const std::vector<size_t> missing = { 1, 2, 3, 4, 5, 6 };  // "Buy" "Close" "Buy" "Sell" "Buy" "Buy"
+        const std::vector<std::vector<size_t>> g = group_by_core(d, missing);
+        check(g.size() == 3, "I5: 6 missing units with 3 distinct cores -> 3 jobs");
+        check(g.size() == 3 && g[0] == std::vector<size_t>({ 1, 3, 5, 6 }) && g[1] == std::vector<size_t>({ 2 }) &&
+              g[2] == std::vector<size_t>({ 4 }),
+              "I5: groups in first-seen order; a colour prefix doesn't split an identical core");
+        check(group_by_core(d, {}).empty(), "I5: nothing missing -> no jobs");
+    }
     {   // remap: a data row before the picked one that isn't exactly ONE native item
         // (longer than the 255-byte reader) shifts SA:MP's indices -> never remap.
         std::vector<std::string> orig  = { std::string(300, 'a'), "Bank B", "Bank C" };

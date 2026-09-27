@@ -108,10 +108,11 @@ i18n::dlgq::Queue g_dlgq(10000, 16); // hold at most 10s, at most 16 dialogs
 struct PendingDialog {
     DialogPlan               plan;
     std::vector<std::string> cores;
-    int                      outstanding = 0;
+    int                      outstanding = 0; // engine JOBS still out (one per distinct missing core)
 };
-std::unordered_map<uint64_t, PendingDialog>               g_pendingDialogs; // seq -> dialog
-std::unordered_map<uint64_t, std::pair<uint64_t, size_t>> g_partJobs;       // job -> (seq, unit)
+std::unordered_map<uint64_t, PendingDialog> g_pendingDialogs; // seq -> dialog
+// job -> (seq, every unit whose core that job translates -- identical cores share one job)
+std::unordered_map<uint64_t, std::pair<uint64_t, std::vector<size_t>>> g_partJobs;
 
 // List/tablist rows of the translated dialog now on screen, per dialog id, so a
 // DialogResponse can be mapped back to the ORIGINAL row (used by Task 7).
@@ -242,28 +243,38 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         note_shown(original, nullptr); // this one shows natively (untranslated) too
         return false;
     }
-    if (missing.empty()) { // ready now (cached / close / password) -- waits for its turn
-        g_dlgq.resolve(seq, anyTranslated ? assemble_dialog(d, fit_list_budgets(d, cores)) : std::vector<uint8_t>{});
-        return true;
-    }
+    // From here on the dialog IS held: tick() releases it whatever happens below (as
+    // the original, at the latest once the hold limit passes), so it is reported as
+    // held even if something throws -- letting SA:MP show it now too would show it twice.
+    try {
+        // One engine job per DISTINCT missing core: a repeated label ("Buy" on every
+        // row) is translated once and fills every unit that has it.
+        const std::vector<std::vector<size_t>> jobs = group_by_core(d, missing);
+        if (jobs.empty()) { // ready now (cached / close / password) -- waits for its turn
+            g_dlgq.resolve(seq, anyTranslated ? assemble_dialog(d, fit_list_budgets(d, cores)) : std::vector<uint8_t>{});
+            return true;
+        }
 
-    if (g_partJobs.size() > 512) g_partJobs.clear(); // results that never came back
-    PendingDialog pd;
-    pd.plan        = d;
-    pd.cores       = std::move(cores);
-    pd.outstanding = (int)missing.size();
-    g_pendingDialogs[seq] = std::move(pd);
-    for (size_t k : missing) {
-        i18n::engine::Job j;
-        j.handle      = g_seq.fetch_add(1, std::memory_order_relaxed);
-        j.surface     = 3;          // dialog unit -> hooks::apply_result -> on_part_result
-        j.sourceBytes = d.units[k].core;
-        j.srcCodepage = s.source_cp;
-        j.skipContext = true;
-        j.noDedup     = true;       // every held dialog must get its own result back
-        j.capBytes    = kDialogUnitCap; // dialog lines can be longer than a chat line
-        g_partJobs[j.handle] = { seq, k };
-        i18n::engine::submit(j);
+        if (g_partJobs.size() > 512) g_partJobs.clear(); // results that never came back
+        PendingDialog pd;
+        pd.plan        = d;
+        pd.cores       = std::move(cores);
+        pd.outstanding = (int)jobs.size(); // counts JOBS, not units
+        g_pendingDialogs[seq] = std::move(pd);
+        for (const std::vector<size_t>& units : jobs) {
+            i18n::engine::Job j;
+            j.handle      = g_seq.fetch_add(1, std::memory_order_relaxed);
+            j.surface     = 3;          // dialog unit -> priority lane -> hooks::apply_result -> on_part_result
+            j.sourceBytes = d.units[units.front()].core;
+            j.srcCodepage = s.source_cp;
+            j.skipContext = true;
+            j.noDedup     = true;       // every held dialog must get its own result back
+            j.capBytes    = kDialogUnitCap; // dialog lines can be longer than a chat line
+            g_partJobs[j.handle] = { seq, units };
+            i18n::engine::submit(j);
+        }
+    } catch (...) {
+        // Still held (see above): it is released as the original once its hold expires.
     }
     return true;
 }
@@ -450,14 +461,16 @@ bool on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
 void on_part_result(const i18n::engine::Result& r) {
     auto pj = g_partJobs.find(r.handle);
     if (pj == g_partJobs.end()) return;
-    const uint64_t seq  = pj->second.first;
-    const size_t   unit = pj->second.second;
+    const uint64_t            seq   = pj->second.first;
+    const std::vector<size_t> units = std::move(pj->second.second); // every unit sharing this job's core
     g_partJobs.erase(pj);
     auto it = g_pendingDialogs.find(seq);
     if (it == g_pendingDialogs.end()) return; // already released (timed out)
     PendingDialog& pd = it->second;
-    if (r.ok && !r.displayBytes.empty() && unit < pd.cores.size()) pd.cores[unit] = r.displayBytes;
-    if (--pd.outstanding > 0) return;
+    if (r.ok && !r.displayBytes.empty())
+        for (size_t unit : units)
+            if (unit < pd.cores.size()) pd.cores[unit] = r.displayBytes;
+    if (--pd.outstanding > 0) return; // other jobs of this dialog still out
     g_dlgq.resolve(seq, assemble_dialog(pd.plan, fit_list_budgets(pd.plan, pd.cores)));
     g_pendingDialogs.erase(it);
 }

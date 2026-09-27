@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
+#include <deque>
 #include <string>
+#include <utility>
 #include "i18n/provider.h"
 
 // Async translation engine: submit()/pump() are the hook-facing API (Task
@@ -10,9 +12,12 @@
 // Threading model: submit() and pump() are called from the main (game)
 // thread. A small worker pool drains the job queue and does all
 // charset/detect/mask/network/validate/unmask work off the main thread, so
-// a slow or unreachable provider never stalls a frame. pump() is the only
-// place a translated Result reaches the applier callback, and it must only
-// ever be called from the main thread (see pump() below).
+// a slow or unreachable provider never stalls a frame. The queue has two lanes
+// (JobQueue below): outbound chat, held-dialog units and dialog INPUT replies are
+// always picked before inbound chat flips and TM fills, so a dialog never waits
+// behind a burst of chat. pump() is the only place a translated Result reaches
+// the applier callback, and it must only ever be called from the main thread
+// (see pump() below).
 
 namespace i18n::engine {
 
@@ -52,6 +57,31 @@ struct Result {
     bool ok; // false => pipeline declined to translate; caller should leave the original text as-is
 };
 
+// The engine's two-lane job queue. PURE (the engine guards its one instance with
+// its job mutex), so the pick-next-job rule is host-tested (tests/engine_test.cpp).
+// Surfaces 1 (outbound chat), 3 (held-dialog units) and 4 (dialog INPUT replies)
+// -- text the player or a held dialog is actively WAITING on -- go in the priority
+// lane; everything else (inbound chat flips, which are already on screen in the
+// original, and background TM fills) in the normal lane. A worker always takes
+// the priority lane first; each lane is FIFO.
+struct JobQueue {
+    std::deque<Job> prio;
+    std::deque<Job> normal;
+
+    static bool is_priority(int surface) { return surface == 1 || surface == 3 || surface == 4; }
+    void push(Job job) { (is_priority(job.surface) ? prio : normal).push_back(std::move(job)); }
+    // The next job to work on (priority lane first). False if both lanes are empty.
+    bool pop(Job& out) {
+        std::deque<Job>& lane = !prio.empty() ? prio : normal;
+        if (lane.empty()) return false;
+        out = std::move(lane.front());
+        lane.pop_front();
+        return true;
+    }
+    bool empty() const { return prio.empty() && normal.empty(); }
+    void clear() { prio.clear(); normal.clear(); }
+};
+
 // Starts the worker pool against the given provider config + cacheable
 // system prompt. targetLang keys the cache + drives the "already target
 // language" skip; displayCp is the Windows codepage finished text is encoded
@@ -61,8 +91,8 @@ struct Result {
 void start(const ProviderConfig& cfg, const std::string& systemPrompt,
            int targetLang = 1033, int displayCp = 1252);
 
-// Signals shutdown, joins every worker thread, and clears both queues and
-// the in-flight set. A job a worker has already popped finishes normally
+// Signals shutdown, joins every worker thread, and clears the job queue (both
+// lanes), the result queue and the in-flight set. A job a worker has already popped finishes normally
 // (including its provider call) before that worker exits; jobs still
 // sitting in the queue are abandoned rather than drained, so stop()'s
 // worst-case latency is one in-flight provider call, not the whole queue
@@ -73,8 +103,9 @@ void stop();
 // A job whose sourceBytes hash matches one already queued/in-flight is
 // dropped (dedup): only the first submitter's handle will receive a
 // Result, so a duplicate line doesn't trigger a second, redundant provider
-// call. Must be called after start() (a submit() with no running worker
-// pool just queues the job until/unless start() is called).
+// call. Surfaces 1, 3 and 4 go in the priority lane (see JobQueue). Must be
+// called after start() (a submit() with no running worker pool just queues
+// the job until/unless start() is called).
 void submit(const Job& job);
 
 // Installs the main-thread callback pump() delivers results to. Set-once:

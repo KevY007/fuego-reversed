@@ -144,4 +144,32 @@ void test_engine() {
     CHECK(engine::cache_lookup(srcE, 1251, 1033, hitE2, 1024) && hitE2 == "shop",
           "the provider's translation replaces the empty entry");
     cache::clear_for_test();
+
+    // ---- I5: dialogs (and outgoing text) must not queue behind inbound chat ----
+    {
+        auto mk = [](uint64_t h, int surface) { engine::Job j{}; j.handle = h; j.surface = surface; return j; };
+        engine::JobQueue q;
+        q.push(mk(1, 0)); // inbound chat flip
+        q.push(mk(2, 2)); // TM fill (labels / HUD)
+        q.push(mk(3, 0)); // inbound chat flip
+        q.push(mk(4, 3)); // dialog unit -- submitted AFTER the normal jobs
+        q.push(mk(5, 1)); // outbound chat
+        q.push(mk(6, 4)); // dialog INPUT reply
+        CHECK(!q.empty(), "queue holds the jobs");
+        std::vector<uint64_t> order;
+        engine::Job j{};
+        while (q.pop(j)) order.push_back(j.handle);
+        CHECK(!order.empty() && order.front() == 4,
+              "a dialog-unit job submitted after normal jobs is processed first");
+        CHECK(order == std::vector<uint64_t>({ 4, 5, 6, 1, 2, 3 }),
+              "priority lane (surfaces 1/3/4) drains first, FIFO within each lane");
+        CHECK(q.empty(), "both lanes drained");
+        q.push(mk(7, 0));
+        q.push(mk(8, 3));
+        q.clear();
+        CHECK(q.empty() && !q.pop(j), "clear() empties both lanes");
+        CHECK(engine::JobQueue::is_priority(1) && engine::JobQueue::is_priority(3) &&
+              engine::JobQueue::is_priority(4) && !engine::JobQueue::is_priority(0) &&
+              !engine::JobQueue::is_priority(2), "priority surfaces are exactly 1, 3 and 4");
+    }
 }

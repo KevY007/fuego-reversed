@@ -7,6 +7,7 @@
 #include "huffman.h"
 
 #include <cstdint>
+#include <unordered_map>
 
 namespace i18n::surfaces {
 
@@ -248,6 +249,18 @@ std::vector<std::string> fit_list_budgets(const DialogPlan& d, std::vector<std::
         first = end;
     }
     return cores;
+}
+
+std::vector<std::vector<size_t>> group_by_core(const DialogPlan& d, const std::vector<size_t>& missing) {
+    std::vector<std::vector<size_t>> groups;
+    std::unordered_map<std::string, size_t> groupOf; // core -> index into groups
+    for (size_t k : missing) {
+        if (k >= d.units.size()) continue;
+        auto ins = groupOf.emplace(d.units[k].core, groups.size());
+        if (ins.second) groups.emplace_back();
+        groups[ins.first->second].push_back(k);
+    }
+    return groups;
 }
 
 std::string strip_colors(const std::string& s) {

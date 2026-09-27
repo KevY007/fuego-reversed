@@ -19,6 +19,7 @@ constexpr uint32_t CHAT_INPUT     = 0x2ACA14; // stInputInfo*
 constexpr uint32_t KILL_INFO      = 0x2ACA18; // stKillInfo*
 constexpr uint32_t MISC_INFO      = 0x2ACA3C;
 constexpr uint32_t SCOREBOARD     = 0x2AC9DC;
+constexpr uint32_t DIALOG_INFO    = 0x2AC9E0; // CDialog*
 
 // --- functions (offset from samp.dll base) ---
 constexpr uint32_t FUNC_ADD_TO_CHAT_WND = 0x67650; // CChat::AddEntry (__thiscall)
@@ -29,6 +30,7 @@ constexpr uint32_t FUNC_CNETGAME_DTOR   = 0x9570;  // CNetGame::~CNetGame
 constexpr uint32_t FUNC_RESTART_GAME    = 0xA230;  // CNetGame::ShutDownForGameRestart (reset for reconnect)
 constexpr uint32_t FUNC_TOGGLE_CURSOR   = 0xA0530; // CGame::SetCursorMode(this, mode, unlock) (__thiscall)
 constexpr uint32_t FUNC_UNLOCK_ACTOR_CAM= 0xA0410; // CGame::UnlockActorCam(this) (__thiscall)
+constexpr uint32_t FUNC_DIALOG_SHOW     = 0x6FA50; // CDialog::Show (__thiscall, ret 0x1c)
 
 // --- SA:MP code hook points (for CDetour) ---
 constexpr uint32_t HOOKENTER_HANDLE_RPC    = 0x3A9ED;

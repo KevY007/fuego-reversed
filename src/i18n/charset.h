@@ -23,9 +23,13 @@ std::wstring from_utf8(const std::string& s);
 // Otherwise => cp1252 (Western)
 int guess_codepage(const std::string& bytes);
 
-// Remove all '%' characters and truncate to maxBytes on a UTF-8 boundary
-// (never cut mid-character)
-std::string cap_and_sanitize(const std::string& s, size_t maxBytes);
+// Cap DISPLAY text to maxBytes: strip every '%' (the game's format-string
+// character), then plain-truncate. Display codepages are always single-byte
+// (config::display_codepage only ever returns cp1252 or cp1251), so every
+// byte IS one whole character -- there is no multi-byte boundary to protect,
+// and treating a plain high byte (e.g. cp1251 0xE2 = 'в') as an incomplete
+// UTF-8 lead/continuation byte and deleting it corrupts perfectly valid text.
+std::string cap_display(const std::string& s, size_t maxBytes);
 
 }
 

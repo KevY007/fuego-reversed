@@ -9,6 +9,7 @@
 #include "../net/BitStream.h"
 #include "../core/logger.h"
 #include "../samp/samp.h"
+#include "../samp/addresses.h"
 
 #include <windows.h>
 #include <atomic>
@@ -101,16 +102,12 @@ void commit(RPCParameters* rpc, const std::vector<uint8_t>& pkt) {
 }
 
 // ---- held dialogs: translate, then release in order with the original timing ----
-// samp.dll 0.3.DL, confirmed by disassembly + an in-game test (2026-09-27):
-//   dialog `this`  *(base+0x2AC9E0)
-//   Show           base+0x6FA50  __thiscall(this, int id, int style, char* caption,
-//                  char* body, char* btn1, char* btn2, int bServerside), ret 0x1c
-// The ShowDialog RPC handler only decodes the packet and calls Show (bServerside=1,
-// and only when title AND body are non-empty); the cursor/controls are taken each
-// frame from iIsActive, so calling Show ourselves is exactly equivalent. An id < 0
+// samp.dll 0.3.DL dialog offsets (samp::addr::DIALOG_INFO / FUNC_DIALOG_SHOW),
+// confirmed by disassembly + an in-game test (2026-09-27). The ShowDialog RPC
+// handler only decodes the packet and calls Show (bServerside=1, and only when
+// title AND body are non-empty); the cursor/controls are taken each frame from
+// iIsActive, so calling Show ourselves is exactly equivalent. An id < 0
 // (0x8000..0xFFFF) is the server's CLOSE: Show(-1) hides the dialog.
-constexpr uint32_t kDialogPtr  = 0x2AC9E0;
-constexpr uint32_t kDialogShow = 0x6FA50;
 using ShowFn = void( __thiscall * )( void* self, int id, int style, const char* caption,
                                      const char* body, const char* btn1, const char* btn2, int serverside );
 
@@ -172,12 +169,18 @@ void show_payload(const std::vector<uint8_t>& pkt) {
     if (body.size() > 4095) body.resize(4095);        // the handler's decode limit
     const uint32_t base = samp::base();
     if (!base) return;
-    void* dlg = *reinterpret_cast<void**>(base + kDialogPtr);
+    void* dlg = *reinterpret_cast<void**>(base + samp::addr::DIALOG_INFO);
     if (!dlg) return;
-    if (!safe_show((void*)(base + kDialogShow), dlg, (int)(int16_t)d.id, d.style,
+    if (!safe_show((void*)(base + samp::addr::FUNC_DIALOG_SHOW), dlg, (int)(int16_t)d.id, d.style,
                    title.c_str(), body.c_str(), b1.c_str(), b2.c_str()))
         Log("[i18n] dialog release: Show failed (crash-guarded) for id %d.", (int)(int16_t)d.id);
 }
+
+// Dialog units may be much longer than a chat line; give the engine + the cache
+// a generous cap for them (see Job::capBytes / engine::cache_lookup's capBytes)
+// instead of the chat default of 144. ONE constant so the translation-memory
+// pass and the fill jobs below can never disagree with each other.
+constexpr int kDialogUnitCap = 1024;
 
 // A ShowDialog arrived (translate_dialogs on). True = we SWALLOWED it (it will be
 // released later through the queue); false = let SA:MP show it now (possibly
@@ -195,8 +198,11 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
     if (!passthru) {
         for (size_t k = 0; k < d.units.size(); ++k) {
             if (!d.units[k].translate) continue;
+            // Already the target language / nothing translatable survives protect::mask:
+            // keep the original core -- never a miss, never something to hold for.
+            if (!i18n::engine::needs_translation(d.units[k].core, s.source_cp, s.target_lang)) continue;
             std::string t;
-            if (i18n::engine::cache_lookup(d.units[k].core, s.source_cp, s.target_lang, t)) {
+            if (i18n::engine::cache_lookup(d.units[k].core, s.source_cp, s.target_lang, t, kDialogUnitCap)) {
                 cores[k] = t;
                 anyTranslated = true;
             } else {
@@ -242,7 +248,7 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         j.srcCodepage = s.source_cp;
         j.skipContext = true;
         j.noDedup     = true;       // every held dialog must get its own result back
-        j.capBytes    = 1024;       // dialog lines can be longer than a chat line
+        j.capBytes    = kDialogUnitCap; // dialog lines can be longer than a chat line
         g_partJobs[j.handle] = { seq, k };
         i18n::engine::submit(j);
     }

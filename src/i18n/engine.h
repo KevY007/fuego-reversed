@@ -134,10 +134,22 @@ RespStats response_stats();
 // Synchronous translation-memory lookup for the non-chat surfaces (dialogs, 3D
 // labels, textdraws, ...). Computes the SAME cache key process_one() uses, so a
 // hit returns the finished, display-codepage-encoded translation a prior job
-// cached. Returns false on a miss -- the caller then queues a fill job (a normal
-// submit() with a cache-fill surface) and shows the original this time; the next
-// identical string is an instant hit. Safe to call from the main/net thread
-// (cache is internally locked). Returns false if the engine isn't running.
-bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::string& out);
+// cached -- the cache always stores the FULL translation (see process_one()
+// step 10), so a hit is capped to THIS call's own capBytes (default 144, the
+// chat line limit; dialog units pass a larger cap -- see Job::capBytes)
+// independently of whatever cap a different consumer used when the entry was
+// written. Returns false on a miss -- the caller then queues a fill job (a
+// normal submit() with a cache-fill surface) and shows the original this time;
+// the next identical string is an instant hit. Safe to call from the main/net
+// thread (cache is internally locked). Returns false if the engine isn't running.
+bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::string& out, int capBytes = 144);
+
+// The same pre-network declines process_one() makes (already empty, already the
+// target language, or nothing survives protect::mask()), exposed synchronously
+// and WITHOUT touching the cache or the network, so a caller (e.g. a held
+// dialog's translation-memory pass) can tell "this unit doesn't need
+// translating" up front instead of treating it as a cache miss and holding for
+// a translation that would never change it anyway.
+bool needs_translation(const std::string& srcBytes, int cp, int targetLang);
 
 } // namespace i18n::engine

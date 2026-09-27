@@ -152,10 +152,14 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     // already the target language -- only cheaply detectable for English).
     if (!detect::worth_translating(w, /*targetIsEnglish=*/targetLang == 1033)) return false;
 
-    // 4: cache lookup keyed on the normalized (UTF-8) source text + target.
+    // 4: cache lookup keyed on the normalized (UTF-8) source text + target. The
+    // cache always stores the FULL translation (see step 10) -- cap THIS call's
+    // hit to its own consumer's limit rather than trusting whatever length the
+    // entry happened to be capped to when a different consumer wrote it.
+    const size_t cap = (size_t)(capBytes > 0 ? capBytes : 144);
     std::string normSrc = charset::to_utf8(w);
     uint64_t k = cache::key(normSrc, cp2, targetLang, g_profile);
-    if (cache::get(k, displayOut)) return true;
+    if (cache::get(k, displayOut)) { displayOut = charset::cap_display(displayOut, cap); return true; }
 
     // 5: mask non-translatable spans (commands, colours, names, coords, ...).
     protect::Masked m = protect::mask(normSrc);
@@ -197,10 +201,15 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     // names so they never come back mistranslated or misspelled.
     un = protect::apply_glossary(un, targetLang);
 
-    // 10: encode for display, cap to the chat line limit, remember it.
-    displayOut = charset::cap_and_sanitize(
-        charset::encode(charset::from_utf8(un), displayCp), (size_t)(capBytes > 0 ? capBytes : 144));
-    cache::put(k, displayOut);
+    // 10: encode for display; cache the FULL translation (capped only to a
+    // generous absolute ceiling, not to this call's consumer-specific limit) so
+    // a LATER call with a DIFFERENT capBytes (e.g. a dialog unit reusing a
+    // chat-translated string, or vice versa) reads back the untruncated text and
+    // caps it to ITS OWN limit instead of inheriting whatever a different
+    // consumer happened to ask for.
+    std::string full = charset::cap_display(charset::encode(charset::from_utf8(un), displayCp), 4095);
+    cache::put(k, full);
+    displayOut = charset::cap_display(full, cap);
     return true;
 }
 
@@ -341,14 +350,27 @@ RespStats response_stats() {
     return r;
 }
 
-bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::string& out) {
+bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::string& out, int capBytes) {
     // Mirror process_one()'s key computation EXACTLY so a hit here matches what a
     // fill job stored (decode -> normalized UTF-8 -> key(normSrc, cp, target, profile)).
     if (srcBytes.empty()) return false;
     int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
     std::string normSrc = charset::to_utf8(charset::decode(srcBytes, cp2));
     uint64_t k = cache::key(normSrc, cp2, targetLang, g_profile);
-    return cache::get(k, out);
+    if (!cache::get(k, out)) return false;
+    out = charset::cap_display(out, (size_t)(capBytes > 0 ? capBytes : 144));
+    return true;
+}
+
+bool needs_translation(const std::string& srcBytes, int cp, int targetLang) {
+    // Mirrors process_one()'s pre-network declines (steps 1-3 and 5) EXACTLY,
+    // without ever touching the cache or the network.
+    if (srcBytes.empty()) return false;
+    int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
+    std::wstring w = charset::decode(srcBytes, cp2);
+    if (!detect::worth_translating(w, /*targetIsEnglish=*/targetLang == 1033)) return false;
+    if (!protect::mask(charset::to_utf8(w)).translatable) return false;
+    return true;
 }
 
 } // namespace i18n::engine

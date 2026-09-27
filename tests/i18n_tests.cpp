@@ -174,6 +174,27 @@ void test_detect() {
     CHECK(!worth_translating(L"the door is open", true), "skip English when target EN");
     CHECK(worth_translating(L"\x043F\x0440\x0438\x0432\x0435\x0442", true), "translate Cyrillic");
     CHECK(!worth_translating(L"12345", true), "skip pure digits");
+
+    // Short English UI labels (buttons, titles, list cells) have no stopwords, so the
+    // stopword test misses them; the UI-word list catches them (target English only).
+    CHECK(is_english_ui_text(L"Select"), "ui: Select");
+    CHECK(is_english_ui_text(L"Log in"), "ui: Log in");
+    CHECK(is_english_ui_text(L"Withdraw"), "ui: Withdraw");
+    CHECK(is_english_ui_text(L"Bank of San Andreas"), "ui: Bank of San Andreas");
+    CHECK(is_english_ui_text(L"Select spawn zone"), "ui: Select spawn zone");
+    CHECK(is_english_ui_text(L"Balance: {00FF00}$500"), "ui: inline colour codes and numbers are not words");
+    CHECK(!worth_translating(L"Close", true), "an English button is not re-translated into English");
+    CHECK(worth_translating(L"Close", false), "an English button IS translated for a non-English target");
+    // Foreign words stay translated -- every word must be on the list.
+    CHECK(!is_english_ui_text(L"Retirar"), "ui: Spanish Retirar is not English");
+    CHECK(!is_english_ui_text(L"Salir"), "ui: Spanish Salir is not English");
+    CHECK(!is_english_ui_text(L"Beenden"), "ui: German Beenden is not English");
+    CHECK(!is_english_ui_text(L"Sat"), "ui: Turkish Sat (sell) is not English");
+    CHECK(!is_english_ui_text(L"main theek hoon"), "ui: Roman Urdu is not English");
+    CHECK(!is_english_ui_text(L"Gift"), "ui: false friends (German Gift = poison) are not on the list");
+    CHECK(!is_english_ui_text(L"\x0417\x0430\x043A\x0440\x044B\x0442\x044C"), "ui: Cyrillic is never English UI text");
+    CHECK(!is_english_ui_text(L"Buy the best car in the whole city now"), "ui: long text is left to the stopword test");
+    CHECK(!is_english_ui_text(L"12345"), "ui: no words -> not UI text");
 }
 
 #include "i18n/json_min.h"

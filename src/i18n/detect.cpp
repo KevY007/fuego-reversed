@@ -2,6 +2,7 @@
 #include <cwctype>
 #include <algorithm>
 #include <cctype>
+#include <vector>
 
 namespace i18n::detect {
 
@@ -102,14 +103,119 @@ bool is_probably_english(const std::wstring& text) {
     return stopword_hits >= 2;
 }
 
+namespace {
+
+// Common English interface / game words (lowercase). Deliberately LEFT OUT: words
+// that mean something else in another Latin-script language players use -- German
+// gift/art/also/fast/kind/arm/brand/boot/rat/hut/bad/hell/die/was/war/man/hat/tag/rot,
+// Spanish sale/once/pan/red/con/sin/solo/fin/real, Italian come/dove/camera, Roman
+// Urdu main/par/bas, Turkish sat/al, Russian-translit net/da -- so a foreign label
+// made only of "English-looking" words is still sent for translation.
+const char* const kUiWords[] = {
+    // buttons / actions
+    "ok", "okay", "yes", "no", "cancel", "close", "back", "next", "previous", "prev",
+    "select", "choose", "confirm", "accept", "decline", "reject", "submit", "send",
+    "continue", "done", "finish", "exit", "quit", "leave", "enter", "open", "save",
+    "load", "delete", "remove", "edit", "change", "reset", "refresh", "return", "skip",
+    "retry", "login", "logout", "log", "sign", "register", "play", "spawn", "respawn",
+    "start", "stop", "pause", "resume", "join", "invite", "kick", "ban", "mute",
+    "unmute", "report", "help", "info", "information", "settings", "setting",
+    "options", "option", "menu", "list", "page", "more", "less", "show", "hide", "view",
+    "search", "find", "go", "use", "drop", "give", "take", "get", "pick", "equip",
+    "upgrade", "repair", "refill", "lock", "unlock", "buy", "sell", "purchase", "rent",
+    "rental", "pay", "withdraw", "deposit", "transfer", "claim", "collect", "redeem",
+    "vote", "apply", "create", "add", "set", "clear", "toggle", "enable", "disable",
+    "enabled", "disabled", "on", "off",
+    // money / shops / property
+    "balance", "account", "money", "cash", "bank", "price", "cost", "total", "amount",
+    "fee", "tax", "taxes", "salary", "payday", "shop", "store", "market", "item", "items",
+    "inventory", "house", "houses", "home", "property", "properties", "business",
+    "businesses", "apartment", "apartments", "hotel", "motel", "garage", "door", "doors",
+    "key", "keys",
+    // gear / vehicles
+    "weapon", "weapons", "gun", "guns", "ammo", "armour", "armor", "health", "vehicle",
+    "vehicles", "car", "cars", "bike", "bikes", "boat", "boats", "plane", "planes",
+    "bus", "taxi", "fuel", "engine", "lights", "trunk", "hood", "park", "parking",
+    "impound", "tow", "tuning", "paint", "nitro", "wheels",
+    // players / server / social
+    "player", "players", "admin", "admins", "staff", "owner", "leader", "member",
+    "members", "vip", "server", "rules", "rule", "commands", "command", "name",
+    "username", "password", "email", "phone", "call", "message", "messages", "chat",
+    "friend", "friends", "gang", "gangs", "faction", "factions", "family", "team",
+    "teams", "clan", "clans", "rank", "ranks", "skin", "skins", "color", "colour",
+    "colors", "online", "offline", "welcome", "hello", "hi", "thanks", "thank",
+    "please", "sorry", "police", "cop", "cops", "medic", "mechanic", "hospital", "jail",
+    "prison", "wanted", "bail", "fine", "fines",
+    // game systems / places
+    "job", "jobs", "work", "level", "levels", "score", "stats", "statistics", "status",
+    "skill", "skills", "experience", "exp", "xp", "respect", "points", "point", "reward",
+    "rewards", "bonus", "daily", "weekly", "event", "events", "mission", "missions",
+    "quest", "quests", "race", "races", "lottery", "casino", "license", "licence",
+    "licenses", "driving", "flying", "fishing", "mining", "delivery", "time", "weather",
+    "hours", "minutes", "seconds", "day", "days", "gps", "map", "location",
+    "locations", "teleport", "destination", "closest", "nearest", "zone", "zones",
+    "area", "city", "interior", "general", "tutorial", "guide", "faq", "support",
+    "discord", "forum", "website", "achievement", "achievements", "topic", "topics",
+    "system", "overview", "first", "last", "new", "old", "other", "all", "none",
+    "los", "santos", "san", "fierro", "las", "venturas", "andreas",
+    // glue words that only ever pass when EVERY other word is on this list too
+    "my", "your", "the", "a", "an", "of", "to", "for", "and", "or", "in", "at", "with",
+    "from", "by",
+    // universal gaming chat
+    "lol", "lmao", "rofl", "gg", "wp", "brb", "afk", "np", "ty", "thx", "xd", "omg",
+    "haha", "hahaha", "hehe", "kk",
+};
+
+bool is_ui_word(const std::string& w) {
+    for (const char* u : kUiWords)
+        if (w == u) return true;
+    return false;
+}
+
+bool is_hex(wchar_t c) {
+    return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F');
+}
+
+} // namespace
+
+bool is_english_ui_text(const std::wstring& text) {
+    std::vector<std::string> words;
+    std::string cur;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const wchar_t c = text[i];
+        if (c >= 128) return false; // pure ASCII only: an accented/Cyrillic letter is not English UI text
+        if (c == L'{' && i + 7 < text.size() && text[i + 7] == L'}') { // {RRGGBB} colour code
+            bool hex = true;
+            for (size_t k = 1; k <= 6; ++k) hex = hex && is_hex(text[i + k]);
+            if (hex) {
+                if (!cur.empty()) { words.push_back(cur); cur.clear(); }
+                i += 7;
+                continue;
+            }
+        }
+        if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z'))
+            cur += (char)std::tolower((int)c);
+        else if (!cur.empty()) {
+            words.push_back(cur);
+            cur.clear();
+        }
+    }
+    if (!cur.empty()) words.push_back(cur);
+    if (words.empty() || words.size() > 6) return false;
+    for (const auto& w : words)
+        if (!is_ui_word(w)) return false;
+    return true;
+}
+
 bool worth_translating(const std::wstring& text, bool targetIsEnglish) {
     // Skip if empty
     if (text.empty()) {
         return false;
     }
 
-    // Check if already English and target is English
-    if (targetIsEnglish && is_probably_english(text)) {
+    // Check if already English and target is English (a sentence with stopwords, or
+    // a short UI label made only of common English interface words)
+    if (targetIsEnglish && (is_probably_english(text) || is_english_ui_text(text))) {
         return false;
     }
 

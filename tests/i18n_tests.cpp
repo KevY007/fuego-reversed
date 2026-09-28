@@ -16,6 +16,7 @@ void test_join_url();
 void test_batch();
 void test_engine();
 void test_config();
+void test_provider_profiles();
 void test_names();
 int main() {
     test_json(); test_charset(); test_protect(); test_names(); test_detect(); test_cache(); test_validate();
@@ -24,6 +25,7 @@ int main() {
     test_batch();
     test_engine();
     test_config();
+    test_provider_profiles();
     std::printf("\n%d checks, %d failures\n", g_ran, g_fail);
     return g_fail ? 1 : 0;
 }
@@ -677,6 +679,193 @@ void test_config() {
     // Explicit source language adds a hint naming that language.
     std::string srcPrompt = build_system_prompt(1033, false, 1049); // target EN, source Russian
     CHECK(srcPrompt.find("written in Russian") != std::string::npos, "explicit sourceLang must hint 'Russian'");
+}
+
+// Each provider keeps its own URL / API key / model / request gap: switching
+// providers never loses (or leaks) another provider's key.
+void test_provider_profiles() {
+    using namespace i18n::config;
+    Settings& s = get();
+    const Settings keep = s; // get() is shared with the other tests: restored at the end
+    s = Settings{};          // starts on Ollama / Local (kind 4)
+
+    // Google the first time: its preset URL + default model, no key.
+    switch_provider(1);
+    CHECK_EQ(s.provider_kind, 1);
+    CHECK_EQ(s.base_url, std::string("https://generativelanguage.googleapis.com/v1beta/openai"));
+    CHECK_EQ(s.model, std::string("gemini-flash-latest"));
+    CHECK(s.api_key.empty(), "profiles: a provider used for the first time starts with no key");
+    s.api_key = "g-key"; s.model = "gemini-2.5-pro"; s.request_min_gap_ms = 4000;
+
+    // Anthropic the first time: its own preset -- nothing of Google's.
+    switch_provider(2);
+    CHECK_EQ(s.base_url, std::string("https://api.anthropic.com/v1"));
+    CHECK_EQ(s.model, std::string("claude-haiku-4-5"));
+    CHECK(s.api_key.empty(), "profiles: Google's key never carries over to Anthropic");
+    CHECK_EQ(s.request_min_gap_ms, 0);
+    s.api_key = "a-key";
+
+    // Back to Google: its key, model and gap come back; Anthropic kept its own key.
+    switch_provider(1);
+    CHECK_EQ(s.api_key, std::string("g-key"));
+    CHECK_EQ(s.model, std::string("gemini-2.5-pro"));
+    CHECK_EQ(s.request_min_gap_ms, 4000);
+    switch_provider(2);
+    CHECK_EQ(s.api_key, std::string("a-key"));
+    CHECK_EQ(s.request_min_gap_ms, 0);
+
+    // The same provider again, or an unknown one: nothing changes.
+    switch_provider(2);
+    switch_provider(9);
+    switch_provider(-1);
+    CHECK_EQ(s.provider_kind, 2);
+    CHECK_EQ(s.api_key, std::string("a-key"));
+
+    // Custom the first time starts EMPTY -- no URL, model or key of the provider before
+    // it (a key typed there must never go to the previous provider's server) -- then
+    // keeps its own values.
+    switch_provider(0);
+    CHECK(s.base_url.empty(), "profiles: Custom the first time has no URL");
+    CHECK(s.model.empty(), "profiles: Custom the first time has no model");
+    CHECK(s.api_key.empty(), "profiles: Custom the first time starts with no key");
+    s.base_url = "http://my-proxy:8080/v1"; s.api_key = "c-key=="; s.model = "my-model";
+    switch_provider(4); // Local: remembered from the very start (it was active then)
+    CHECK_EQ(s.base_url, std::string("http://127.0.0.1:11434/v1"));
+    CHECK_EQ(s.model, std::string("hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M"));
+    CHECK(s.api_key.empty(), "profiles: Local has no key");
+    switch_provider(0);
+    CHECK_EQ(s.base_url, std::string("http://my-proxy:8080/v1"));
+    CHECK_EQ(s.api_key, std::string("c-key=="));
+    CHECK_EQ(s.model, std::string("my-model"));
+
+    // Every provider's values survive a save + load.
+    switch_provider(1); // active: Google; Anthropic, Custom and Local are profiles
+    const std::string text = to_text();
+    CHECK(text.find("profile.anthropic.api_key=a-key") != std::string::npos,
+          "profiles: a provider's saved key is written under its name");
+    CHECK(text.find("marker_style") == std::string::npos, "the removed marker style is no longer written");
+    s = Settings{};
+    from_text(text);
+    CHECK_EQ(s.provider_kind, 1);
+    CHECK_EQ(s.api_key, std::string("g-key"));
+    CHECK_EQ(s.model, std::string("gemini-2.5-pro"));
+    CHECK_EQ(s.request_min_gap_ms, 4000);
+    switch_provider(2);
+    CHECK_EQ(s.api_key, std::string("a-key"));
+    CHECK_EQ(s.model, std::string("claude-haiku-4-5"));
+    switch_provider(0);
+    CHECK_EQ(s.base_url, std::string("http://my-proxy:8080/v1"));
+    CHECK_EQ(s.api_key, std::string("c-key=="));
+    switch_provider(1);
+    CHECK_EQ(s.api_key, std::string("g-key"));
+
+    // An older config (no profiles, still has marker_style) loads as before, and its
+    // key stays with its provider across a switch.
+    s = Settings{};
+    from_text("provider_kind=1\nbase_url=https://generativelanguage.googleapis.com/v1beta/openai\n"
+              "api_key=old-key\nmodel=gemini-flash-latest\nmarker_style=2\ntarget_lang=1049\n");
+    CHECK_EQ(s.provider_kind, 1);
+    CHECK_EQ(s.api_key, std::string("old-key"));
+    CHECK_EQ(s.target_lang, 1049);
+    switch_provider(3);
+    CHECK(s.api_key.empty(), "profiles: OpenAI the first time has no key");
+    CHECK_EQ(s.base_url, std::string("https://api.openai.com/v1"));
+    switch_provider(1);
+    CHECK_EQ(s.api_key, std::string("old-key"));
+
+    // A profile line for an unknown provider, or an unknown field, is ignored.
+    s = Settings{};
+    from_text("profile.nosuch.api_key=x\nprofile.google.nosuch=y\nprofile.google\n");
+    CHECK(!s.profiles[1].saved, "profiles: an unknown field does not mark a profile saved");
+    switch_provider(1);
+    CHECK(s.api_key.empty(), "profiles: nothing loaded from unknown profile lines");
+
+    // A profile with only some fields (hand edit, cut-off file): the missing URL / model
+    // come from the preset, not empty.
+    s = Settings{};
+    from_text("provider_kind=4\nprofile.google.api_key=K\n");
+    switch_provider(1);
+    CHECK_EQ(s.api_key, std::string("K"));
+    CHECK_EQ(s.base_url, std::string("https://generativelanguage.googleapis.com/v1beta/openai"));
+    CHECK_EQ(s.model, std::string("gemini-flash-latest"));
+
+    // The active provider is never written as a profile (its values are the top-level keys),
+    // even after switching away and back.
+    s = Settings{};
+    switch_provider(1); switch_provider(2); switch_provider(1);
+    CHECK(to_text().find("profile.google.") == std::string::npos, "profiles: the active provider is not a profile line");
+    CHECK(to_text().find("profile.anthropic.") != std::string::npos, "profiles: the other used provider is");
+
+    // Backslashes and line breaks in a stored value survive a save + load.
+    s = Settings{};
+    switch_provider(3);
+    s.api_key = "a\\b\nc=d";
+    switch_provider(1);
+    { const std::string t = to_text(); s = Settings{}; from_text(t); }
+    switch_provider(3);
+    CHECK_EQ(s.api_key, std::string("a\\b\nc=d"));
+
+    // A config from before the Provider dropdown has no provider_kind line: the provider
+    // is told from the URL, so its key shows (and stays) under the right one.
+    s = Settings{};
+    from_text("base_url=https://api.anthropic.com/v1/\napi_key=old-a\nmodel=claude-haiku-4-5\n");
+    CHECK_EQ(s.provider_kind, 2);
+    CHECK_EQ(s.api_key, std::string("old-a"));
+    s = Settings{};
+    from_text("base_url=https://my.server.example/v1\napi_key=old-c\n");
+    CHECK_EQ(s.provider_kind, 0); // not a preset's URL: Custom, whose URL + key are in plain view
+    s = Settings{};
+    from_text("inbound_chat=true\n");
+    CHECK_EQ(s.provider_kind, 4); // no URL either: the local default stays
+    // An empty URL on a provider that has one (it would hide under Advanced) is its preset's.
+    s = Settings{};
+    from_text("base_url=\n");
+    CHECK_EQ(s.provider_kind, 4);
+    CHECK_EQ(s.base_url, std::string("http://127.0.0.1:11434/v1"));
+    s = Settings{};
+    from_text("provider_kind=1\nbase_url=\napi_key=k\n");
+    CHECK_EQ(s.base_url, std::string("https://generativelanguage.googleapis.com/v1beta/openai"));
+    s = Settings{};
+    from_text("provider_kind=0\nbase_url=\n");
+    CHECK(s.base_url.empty(), "profiles: Custom's empty URL stays empty (it's typed in plain view)");
+    // ... while an explicit provider_kind is always kept as written.
+    s = Settings{};
+    from_text("provider_kind=4\nbase_url=https://api.anthropic.com/v1\napi_key=typed-on-local\n");
+    CHECK_EQ(s.provider_kind, 4);
+    switch_provider(2);
+    switch_provider(4);
+    CHECK_EQ(s.api_key, std::string("typed-on-local")); // kept with Local, not lost
+
+    // An unknown provider_kind (hand edit, a newer build) becomes Custom: nothing is lost.
+    s = Settings{};
+    from_text("provider_kind=7\nbase_url=http://x.example/v1\napi_key=K7\n");
+    CHECK_EQ(s.provider_kind, 0);
+    CHECK_EQ(s.api_key, std::string("K7"));
+    switch_provider(1);
+    switch_provider(0);
+    CHECK_EQ(s.api_key, std::string("K7"));
+    CHECK_EQ(s.base_url, std::string("http://x.example/v1"));
+    s = Settings{};
+    from_text("provider_kind=-1\n");
+    CHECK_EQ(s.provider_kind, 0);
+
+    // Unsaved-changes tracking (the menu's "press Save" hint).
+    s = Settings{};
+    from_text("provider_kind=1\napi_key=k\n"); // what cfg::load() does: load, then mark
+    mark_saved();
+    CHECK(!has_unsaved_changes(), "a freshly loaded config has no unsaved changes");
+    s = Settings{};
+    mark_saved();
+    CHECK(!has_unsaved_changes(), "nothing changed since the last save");
+    s.target_lang = 1049;
+    CHECK(has_unsaved_changes(), "an edit is an unsaved change");
+    mark_saved();
+    CHECK(!has_unsaved_changes(), "saved again");
+    switch_provider(2);
+    CHECK(has_unsaved_changes(), "switching provider is an unsaved change");
+
+    s = keep;
+    mark_saved();
 }
 
 void test_names() {

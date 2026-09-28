@@ -460,17 +460,33 @@ static void __cdecl cmd_njkill( char *params ) {
 	samp::chat( "{FFFFFF}-> Trying to ninja-kill... {FFFF00}(hold position)" );
 }
 
-// /triggercp [ms] -- replay your position at the last checkpoint (1:1).
+// /triggercp [ms] -- enter the active checkpoint or race checkpoint from where you are:
+// one sync from its position at once, then your syncs stay there for [ms] (default 50,
+// max 10 s). SA:MP has no "entered checkpoint" RPC -- the server fires the callback
+// from your synced position -- so that's all it takes (Fuego 1:1).
 static void __cdecl cmd_triggercp( char *params ) {
 	traceLastFunc( "cmd_triggercp" );
 	int delay = 50;
 	if ( params && params[0] ) delay = atoi( params );
-	if ( !cheats::trigger_checkpoint( delay ) ) {
-		samp::chat( "{FF6347}[triggercp] {FFFFFF}No checkpoint seen yet." );
+	if ( delay <= 0 ) delay = 50;
+	if ( delay > 10000 ) delay = 10000;
+	float pos[3] = { 0, 0, 0 };
+	bool passenger = false;
+	const int r = cheats::trigger_checkpoint( delay, pos, passenger );
+	if ( r == 0 ) {
+		samp::chat( "{FF6347}[triggercp] {FFFFFF}No active checkpoint right now." );
 		return;
 	}
-	char b[96]; _snprintf( b, sizeof( b ) - 1, "{FF6347}-> {FFFFFF}Triggering checkpoint for %dms.", delay );
+	if ( r < 0 ) {
+		samp::chat( "{FF6347}[triggercp] {FFFFFF}Not in game yet." );
+		return;
+	}
+	char b[160] = {};
+	_snprintf( b, sizeof( b ) - 1, "{FF6347}-> {FFFFFF}%s: sending packets for %.2fs at X: %.0f Y: %.0f Z: %.0f",
+	           r == 2 ? "Race checkpoint" : "Checkpoint", delay / 1000.0f, pos[0], pos[1], pos[2] );
 	samp::chat( b );
+	if ( passenger )
+		samp::chat( "{BBBBBB}As a passenger this might not work, try on foot or driving." );
 }
 
 // /.gethere <id> -- drag an on-foot player to you (drop your car on them + release).

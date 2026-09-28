@@ -18,6 +18,7 @@
 #include "server.h"             // server::tick (LSRP automations)
 #include "chams.h"              // chams::install (DrawIndexedPrimitive hook)
 #include "status.h"             // status::set (1:1 active-cheat feedback)
+#include "checkpoints.h"        // checkpoints::active (the checkpoint /triggercp enters)
 #include "../core/input.h"      // Fuego keyhook semantics (gated: not while typing/alt-tabbed)
 #include "../core/memory.h"     // mem::write (DisableFlyingBirds RET-patch)
 #include "veh.h"                // veh::is_picking (cursor-up gating, like Fuego's g_iCursorEnabled)
@@ -99,10 +100,13 @@ unsigned long g_slapperTick   = 0;
 //     outgoing vehicle sync there until the release tick (dragging them to us). ---
 unsigned long g_getHereRelease = 0; // 0 = inactive
 
-// --- Trigger checkpoint (Fuego 1:1): replay our on-foot sync at the last checkpoint
-//     position (captured from the incoming RPC_SetCheckpoint) for a short window. ---
-float         g_lastCheckpoint[3] = { 0, 0, 0 };
-unsigned long g_checkpointTick    = 0;
+// --- Trigger checkpoint (Fuego /triggercp): there is no client RPC for entering a
+//     checkpoint -- the server fires the enter callback itself when one of our syncs
+//     lands inside it (see checkpoints.h). So one sync from its position goes out at
+//     once, then our outgoing syncs stay there until g_checkpointTick. The position is
+//     a snapshot: a next checkpoint the server sets meanwhile isn't chased. ---
+float         g_checkpointPos[3] = { 0, 0, 0 };
+unsigned long g_checkpointTick   = 0;
 
 // --- Car control (Fuego /cc 1:1): warp our ped INTO the target's car so the
 //     game itself emits that car's in-car sync (we drive their vehicle), then
@@ -414,23 +418,23 @@ bool on_send_packet( BitStream *params, PacketPriority priority, PacketReliabili
 		}
 	}
 
-	// Trigger checkpoint: replay our position at the last checkpoint for a short
-	// window (Fuego 1:1) -- on foot, in a vehicle, or as a passenger.
+	// Trigger checkpoint: our syncs stay at the checkpoint until the window ends
+	// (Fuego 1:1) -- on foot, in a vehicle, or as a passenger.
 	if ( g_checkpointTick != 0 ) {
 		if ( GetTickCount() >= g_checkpointTick ) {
 			g_checkpointTick = 0;
 		} else if ( packetId == ID_PLAYER_SYNC ) {
 			rewrite_onfoot( params, []( stOnFootData &d ) {
-				d.fPosition[0] = g_lastCheckpoint[0]; d.fPosition[1] = g_lastCheckpoint[1]; d.fPosition[2] = g_lastCheckpoint[2];
+				d.fPosition[0] = g_checkpointPos[0]; d.fPosition[1] = g_checkpointPos[1]; d.fPosition[2] = g_checkpointPos[2];
 			} );
 		} else if ( packetId == ID_VEHICLE_SYNC ) {
 			rewrite_incar( params, []( stInCarData &d ) {
-				d.fPosition[0] = g_lastCheckpoint[0]; d.fPosition[1] = g_lastCheckpoint[1]; d.fPosition[2] = g_lastCheckpoint[2];
+				d.fPosition[0] = g_checkpointPos[0]; d.fPosition[1] = g_checkpointPos[1]; d.fPosition[2] = g_checkpointPos[2];
 			} );
 		} else if ( packetId == ID_PASSENGER_SYNC ) {
 			stPassengerData d{}; uint8_t id;
 			params->ResetReadPointer(); params->Read( id ); params->Read( (char *)&d, sizeof d );
-			d.fPosition[0] = g_lastCheckpoint[0]; d.fPosition[1] = g_lastCheckpoint[1]; d.fPosition[2] = g_lastCheckpoint[2];
+			d.fPosition[0] = g_checkpointPos[0]; d.fPosition[1] = g_checkpointPos[1]; d.fPosition[2] = g_checkpointPos[2];
 			params->ResetWritePointer(); params->Write( id ); params->Write( (char *)&d, sizeof d );
 		}
 	}
@@ -1540,16 +1544,43 @@ void freeze_sync_ms( int ms, bool player, bool vehicle, bool spectator ) {
 	g_freezeMask = ( player ? 1 : 0 ) | ( vehicle ? 2 : 0 ) | ( spectator ? 4 : 0 );
 }
 
-void set_checkpoint( float x, float y, float z ) {
-	g_lastCheckpoint[0] = x; g_lastCheckpoint[1] = y; g_lastCheckpoint[2] = z;
-}
-
-bool trigger_checkpoint( int delayMs ) {
+int trigger_checkpoint( int delayMs, float pos[3], bool &passenger ) {
 	traceLastFunc( "cheats::trigger_checkpoint" );
-	if ( g_lastCheckpoint[0] == 0 && g_lastCheckpoint[1] == 0 && g_lastCheckpoint[2] == 0 )
-		return false; // no checkpoint seen yet
+	passenger = false;
+	float cp[3];
+	const checkpoints::Kind kind = checkpoints::active( cp );
+	if ( kind == checkpoints::kNone ) return 0; // none set, or the server removed it
+	samp::stLocalPlayer *lp = samp::local_player();
+	if ( !lp || !g_RakClient ) return -1;
+
+	for ( int i = 0; i < 3; ++i ) pos[i] = g_checkpointPos[i] = cp[i];
+
+	// One sync from the checkpoint RIGHT NOW (Fuego 1:1), built from our real last
+	// sync: the game's own syncs come slower while we stand still, so the window
+	// below alone could pass without a single packet.
+	BitStream bs;
+	const int seat = game::cc_local_seat(); // -1 on foot, 0 driver, else passenger
+	if ( seat == 0 ) {
+		stInCarData d = lp->inCarData;
+		d.fPosition[0] = cp[0]; d.fPosition[1] = cp[1]; d.fPosition[2] = cp[2];
+		bs.Write( (uint8_t) ID_VEHICLE_SYNC );
+		bs.Write( (char *)&d, sizeof d );
+	} else if ( seat > 0 ) {
+		stPassengerData d = lp->passengerData;
+		d.fPosition[0] = cp[0]; d.fPosition[1] = cp[1]; d.fPosition[2] = cp[2];
+		bs.Write( (uint8_t) ID_PASSENGER_SYNC );
+		bs.Write( (char *)&d, sizeof d );
+		passenger = true;
+	} else {
+		stOnFootData d = lp->onFootData;
+		d.fPosition[0] = cp[0]; d.fPosition[1] = cp[1]; d.fPosition[2] = cp[2];
+		bs.Write( (uint8_t) ID_PLAYER_SYNC );
+		bs.Write( (char *)&d, sizeof d );
+	}
+	g_RakClient->Send( &bs );
+
 	g_checkpointTick = GetTickCount() + (unsigned long) ( delayMs > 0 ? delayMs : 50 );
-	return true;
+	return kind == checkpoints::kRace ? 2 : 1;
 }
 
 // Active during possession AND for 1s after release (Fuego: carControl_LastVeh

@@ -12,6 +12,7 @@
 #include "../gta/gtahost.h"     // game::local_vehicle_health (extra-godmode gate)
 #include "../cheats/status.h"
 #include "../cheats/cheats.h"
+#include "../cheats/checkpoints.h" // where the server's checkpoints are (/triggercp)
 #include "../cheats/server.h"
 #include "../i18n/capture.h"   // debug: log incoming dialog/label/textdraw/gametext RPCs
 #include "../i18n/surfaces.h"  // translate incoming dialogs / 3D labels in place
@@ -168,13 +169,27 @@ void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback
 		}
 	}
 
-	// Capture the checkpoint position (first 3 floats of RPC_SetCheckpoint) so
-	// /triggercp can replay it later. Read-only; we still pass the RPC through.
-	if ( id == RPC_SetCheckpoint && rpc != nullptr && rpc->numberOfBitsOfData >= 96 ) {
-		BitStream bs( rpc->input, rpc->numberOfBitsOfData / 8, false );
-		float x = 0, y = 0, z = 0;
-		bs.Read( x ); bs.Read( y ); bs.Read( z );
-		cheats::set_checkpoint( x, y, z );
+	// Where the server's checkpoint / race checkpoint is, so /triggercp can enter it
+	// (and never a removed one). Read-only; the RPCs still reach SA:MP.
+	{
+		const unsigned char *in   = rpc ? rpc->input : nullptr;
+		const unsigned       bits = rpc ? (unsigned) rpc->numberOfBitsOfData : 0;
+		float p[3];
+		switch ( id ) {
+		case RPC_SetCheckpoint:
+			if ( checkpoints::read_checkpoint( in, bits, p ) ) checkpoints::set( checkpoints::kCheckpoint, p[0], p[1], p[2] );
+			break;
+		case RPC_SetRaceCheckpoint:
+			if ( checkpoints::read_race_checkpoint( in, bits, p ) ) checkpoints::set( checkpoints::kRace, p[0], p[1], p[2] );
+			break;
+		case RPC_DisableCheckpoint:     checkpoints::clear( checkpoints::kCheckpoint ); break;
+		case RPC_DisableRaceCheckpoint: checkpoints::clear( checkpoints::kRace );       break;
+		case RPC_InitGame:              // a new connection / server, or
+		case RPC_GameModeRestart:       // a restarted gamemode, which sets its own
+			checkpoints::reset();
+			break;
+		default: break;
+		}
 	}
 
 	// LSRP gun-stealer object tracking (Fuego 1:1): follow vehicle-attached weapon objects

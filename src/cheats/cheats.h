@@ -36,9 +36,12 @@ bool njkill_active(); // true during the 3s hold (compat swallows kick RPCs)
 // selected) so a spoofed pose a cheat just sent isn't overwritten. Used by trolls.
 void freeze_sync_ms( int ms, bool player, bool vehicle, bool spectator );
 
-// Checkpoint: capture the last checkpoint pos (from RPC_SetCheckpoint) + replay it.
-void set_checkpoint( float x, float y, float z );
-bool trigger_checkpoint( int delayMs );
+// /triggercp: enter the active checkpoint / race checkpoint (checkpoints.h) without
+// going there -- one sync from its position right away, then our syncs stay there for
+// delayMs (<= 0: 50). There is no client RPC for it; the server fires the enter
+// callback from our sync position. Returns 1 checkpoint, 2 race checkpoint, 0 none
+// active, -1 not in game; pos = where; passenger = sent as a passenger (may not count).
+int trigger_checkpoint( int delayMs, float pos[3], bool &passenger );
 
 // Car control: toggle remote-driving a target's vehicle. Returns 1=on, 0=off, -1=fail.
 int  car_control( int id );

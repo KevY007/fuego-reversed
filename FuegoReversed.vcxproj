@@ -90,6 +90,7 @@
     <ClCompile Include="src\cheats\veh.cpp" />
     <ClCompile Include="src\cheats\server.cpp" />
     <ClCompile Include="src\cheats\chams.cpp" />
+    <ClCompile Include="src\cheats\checkpoints.cpp" />
     <!-- i18n: Phase 0 chat translation pipeline (lean C++20, no gta-reversed headers).
          ObjectFileName is overridden because src\core\config.cpp already produces
          config.obj: same basename in a different directory would otherwise silently
@@ -199,6 +200,7 @@
     <ClInclude Include="src\render\render.h" />
     <ClInclude Include="src\menu\menu.h" />
     <ClInclude Include="src\cheats\cheats.h" />
+    <ClInclude Include="src\cheats\checkpoints.h" />
     <ClInclude Include="src\gta\gtahost.h" />
     <ClInclude Include="src\gta\gta_reversed.h" />
     <ClInclude Include="src\i18n\json_min.h" />

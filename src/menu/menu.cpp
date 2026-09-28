@@ -283,8 +283,7 @@ void draw_ui() {
 			ImGui::Checkbox( "Cheat state text (top-right)", &g_set.status_text );
 			ImGui::Checkbox( "Active-cheat watermark", &g_set.show_active_list );
 			ImGui::SameLine();
-			HelpMarker( "Lists the cheats you have on in the top-left corner, with \"Fuego Reversed\" in the "
-			            "bottom-right corner." );
+			HelpMarker( "Lists the cheats you have on in the bottom-right corner." );
 			ImGui::EndTabItem();
 		}
 		// ---------------- Translator ----------------

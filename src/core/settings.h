@@ -77,7 +77,7 @@ struct Settings {
 	float player_tags_dist = 225.0f; // S0biet nametag range + SA:MP draw distance (fuego.ini)
 	float vehicle_tags_dist = 100.0f;// vehicle tag range incl. [LOCKED] (fuego.ini)
 	bool  status_text = false;       // cheat state text, top-right (Fuego d3dtext_hud; shipped OFF)
-	bool  show_active_list = false;  // our extra: active-cheat list top-left + "Fuego Reversed" bottom-right
+	bool  show_active_list = false;  // our extra: active-cheat list, bottom-right
 	// --- other misc ---
 	bool  break_dance = false;       // "Onfoot Break Dance"
 	bool  auto_unscramble = false;   // "Auto Unscrambler LSRP"

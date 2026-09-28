@@ -391,6 +391,13 @@ void test_protect() {
     CHECK(only_cmd(engine, "/engine on"), "'on' can be an argument");
     CHECK(only_cmd(mask("/engine on"), "/engine on"), "'/engine on' alone");
     CHECK(only_cmd(mask("use /gps ATM"), "/gps ATM"), "a short acronym is an argument");
+    Masked numbered = mask("1. /stats shows your statistics");
+    CHECK(only_cmd(numbered, "/stats") && numbered.text.find("shows") != std::string::npos,
+          "a numbered list's entry begins the text too");
+    CHECK(only_cmd(mask("[2] /stats shows your statistics"), "/stats"), "'[2]' is a list number as well");
+    Masked accent = mask("escribe /ayuda para m\xE1s info");
+    CHECK(only_cmd(accent, "/ayuda") && accent.text.find("para") != std::string::npos,
+          "a word with an accent after the run is a word, not a boundary");
     Masked colon = mask("Use {FFFF82}/gps{E6D45A} for help getting around");
     CHECK(std::find(colon.tokens.begin(), colon.tokens.end(), "/gps") != colon.tokens.end() &&
           colon.text.find("for help getting around") != std::string::npos, "a colour code right after ends it");

@@ -188,19 +188,26 @@ std::string plain_core(const Line& ln) {
     return plain;
 }
 
+// A stretch's text without its edge spaces.
+std::string trimmed(const std::string& s) {
+    size_t a = 0, b = s.size();
+    while (a < b && is_space(s[a])) ++a;
+    while (b > a && is_space(s[b - 1])) --b;
+    return s.substr(a, b - a);
+}
+
 // Colour a plain translation's stretches again where their text survives verbatim
-// -- exactly once, as a whole word (a key name, a command, a player's name). A
-// stretch that ran to the end of the line gets closed with the line's own colour
-// (`base`: its prefix's codes) when the translation moved it away from the end --
-// or, with no colour of its own known, stays uncoloured (else everything after it
-// would take its colour).
+// -- exactly once, as a whole word (a key name, a command, a player's name). The
+// colour after it is the original's -- unless the translation moved things: a
+// stretch that ran to the end of the line, or whose next stretch no longer follows
+// it, is closed with the line's own colour (`base`: its prefix's codes); with no
+// colour of its own known, a stretch that ran to the end stays uncoloured (else
+// everything after it would take its colour).
 std::string recolour(std::string t, const std::vector<Mark>& marks, const std::string& base) {
-    for (const Mark& m : marks) {
-        size_t a = 0, b = m.text.size();
-        while (a < b && is_space(m.text[a])) ++a;
-        while (b > a && is_space(m.text[b - 1])) --b;
-        if (b - a < 2) continue;
-        const std::string w = m.text.substr(a, b - a);
+    for (size_t mi = 0; mi < marks.size(); ++mi) {
+        const Mark& m = marks[mi];
+        const std::string w = trimmed(m.text);
+        if (w.size() < 2) continue;
         size_t at = std::string::npos;
         int found = 0;
         for (size_t pos = t.find(w); pos != std::string::npos; pos = t.find(w, pos + 1)) {
@@ -217,6 +224,13 @@ std::string recolour(std::string t, const std::vector<Mark>& marks, const std::s
                 if (base.empty()) continue;
                 close = base;
             }
+        } else if (!base.empty() && close != base && mi + 1 < marks.size()) {
+            // Its close is the NEXT stretch's colour: only right while that stretch
+            // still follows it.
+            const std::string next = trimmed(marks[mi + 1].text);
+            size_t r = at + w.size();
+            while (r < t.size() && is_space(t[r])) ++r;
+            if (next.empty() || t.compare(r, next.size(), next) != 0) close = base;
         }
         t.insert(at + w.size(), close);
         t.insert(at, m.open);

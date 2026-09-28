@@ -350,6 +350,16 @@ int main() {
         check(resolve(q, tq.look(), out, missing) && out == "Los Santos es la siguiente ciudad",
               "no colour of its own to close with: not coloured");
     }
+    {   // A middle stretch whose next stretch no longer follows it in the translation:
+        // closed with the line's own colour, not the next stretch's.
+        Plan p = plan_text("~W~Hi ~R~Bob~G~ and Ann~W~ now", false);
+        FakeTm tm;
+        tm.later = { p.lines[0].key };
+        tm.hits = { { "Hi Bob and Ann now", "Ann y Bob ahora" } };
+        std::string out;
+        std::vector<std::string> missing;
+        check(resolve(p, tm.look(), out, missing) && out == "~W~Ann y ~R~Bob~W~ ahora", "closed with the line's colour");
+    }
     {   // While the coloured key is out for the first time, the plain key is only
         // looked up in memory (hitOnly) -- never tested for "needs translating".
         Plan p = plan_text("Press ~Y~SHIFT~W~ to spawn", false);

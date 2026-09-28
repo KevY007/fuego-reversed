@@ -211,14 +211,22 @@ bool arg_word(const std::string& s, size_t start, size_t end) {
     return true;
 }
 
-// Only spaces, colour codes ({RRGGBB}, ~x~) and a list bullet ('-', '*') before
-// s[i]: a command there BEGINS the text.
+// Only spaces, colour codes ({RRGGBB}, ~x~), a list bullet ('-', '*') or a list
+// number ("1.", "2)", "[3]") before s[i]: a command there BEGINS the text.
 bool begins_text(const std::string& s, size_t i) {
     while (i > 0) {
         const char c = s[i - 1];
         if (c == ' ' || c == '\t' || c == '-' || c == '*') { --i; continue; }
         if (c == '}' && i >= 8 && s[i - 8] == '{') { i -= 8; continue; }
         if (c == '~' && i >= 3 && s[i - 3] == '~') { i -= 3; continue; }
+        if (c == '.' || c == ')' || c == ']') {
+            size_t d = i - 1;
+            while (d > 0 && is_digit(s[d - 1])) --d;
+            if (d < i - 1) { // digits before it
+                if (c != ']') { i = d; continue; }
+                if (d > 0 && s[d - 1] == '[') { i = d - 1; continue; }
+            }
+        }
         return false;
     }
     return true;
@@ -275,9 +283,12 @@ size_t command_args_end(const std::string& s, size_t j, bool atStart) {
     if (r >= n) return k;
     if (atStart) return j;
     if (s[k] != ' ') return k; // punctuation, a quote, a code right after the run
+    // A space, then: a non-word (punctuation, a code, a quote) or a little English
+    // word ends the arguments; any other word -- an accented one too ("para más") --
+    // means the run was prose.
+    if (!is_word_char(s[k + 1]) && static_cast<unsigned char>(s[k + 1]) < 0x80) return k;
     const size_t q = scan_arg(s, k + 1);
-    if (q == k + 1 || arg_stopword(s, k + 1, q)) return k; // a non-word, or a little word
-    return j;
+    return (q > k + 1 && arg_stopword(s, k + 1, q)) ? k : j;
 }
 
 } // namespace

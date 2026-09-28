@@ -52,7 +52,9 @@ Plan plan_text(const std::string& text, bool label);
 bool is_sprite_name(const std::string& text);
 
 // The most numbers one line can have replaced by stand-ins ("2" .. "9"). A line
-// with more keeps its numbers (key == core, no nums).
+// with more keeps its numbers (key == core, no nums) -- so does a line with an
+// ordinal ("2nd", "21st", "5th"): that is a word the model should localize, and
+// left in the key it could collide with a stand-in.
 constexpr size_t kMaxNumbers = 8;
 
 // Put a line's numbers back into its translated key. Every stand-in must appear
@@ -78,8 +80,11 @@ using Lookup = std::function<Look(const std::string& key, std::string& tr)>;
 // would break the text -- a different number of '~' than the original line (an
 // unmatched tilde makes SA:MP show "Error: unmatched tilde"), or a stand-in lost
 // or repeated -- keeps the original line. Line breaks inside a translated line
-// become spaces.
+// become spaces. `limit`: the most bytes the surface takes -- translated lines are
+// taken in order while the text stays within it, and one that would push it over
+// keeps its original line (never cut: a cut can split a ~x~ code), so a text only
+// ever gains translated lines as more of them land.
 bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<std::string>& missing,
-             bool* later = nullptr);
+             bool* later = nullptr, size_t limit = (size_t)-1);
 
 } // namespace i18n::hudtext

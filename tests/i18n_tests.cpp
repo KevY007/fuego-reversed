@@ -361,6 +361,9 @@ void test_protect() {
           "chat: '2m' is unchanged");
     Masked named = mask("Kevin_Smith (12) is wanted", true);
     CHECK(named.text.find("Kevin") == std::string::npos, "label: a Name_Surname is still masked");
+    Masked ord = mask("You finished 2nd, 21st overall", true);
+    CHECK(ord.text.find("2nd") != std::string::npos && ord.text.find("21st") != std::string::npos,
+          "label: an ordinal stays a word the model can localize");
 
     // CRITICAL 2a: a speech-verb prefix ("Name says:") still masks the name
     // and still round-trips.

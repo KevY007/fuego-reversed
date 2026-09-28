@@ -386,7 +386,7 @@ void worker_loop() {
         std::string disp;
         std::vector<std::string> unitOut;
         bool ok = false;
-        bool provFailed = false;
+        std::vector<char> provFailed;
         try {
             if (!job.units.empty())
                 ok = process_batch(job.units, job.srcCodepage, g_provider.get(), sp, unitOut,
@@ -413,7 +413,7 @@ void worker_loop() {
         {
             Result r{ job.handle, job.surface, disp, ok };
             r.unitOut        = std::move(unitOut);
-            r.providerFailed = provFailed;
+            r.unitProviderFailed = std::move(provFailed);
             std::lock_guard<std::mutex> lock(g_resultMutex);
             g_results.push_back(std::move(r));
         }
@@ -458,9 +458,10 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
 
 bool process_batch(const std::vector<std::string>& units, int cp, IProvider* prov,
                    const std::string& sysPrompt, std::vector<std::string>& out,
-                   int targetLang, int displayCp, int capBytes, bool labels, bool* providerFailed) {
+                   int targetLang, int displayCp, int capBytes, bool labels, std::vector<char>* provFailed) {
     const size_t cap = (size_t)(capBytes > 0 ? capBytes : 144);
     out.assign(units.size(), std::string());
+    if (provFailed) provFailed->assign(units.size(), 0);
 
     // Steps 1-5 per text: skips and cache hits never reach the provider.
     std::vector<Prepared> prep(units.size());
@@ -489,7 +490,8 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
         std::string err;
         if (!call_provider(prov, texts, sysPrompt, std::string(), res, err)) { // provider down: no retry storm
             note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", std::string());
-            if (providerFailed) *providerFailed = true;
+            if (provFailed)
+                for (size_t i : need) (*provFailed)[i] = 1;
             return any;
         }
         bool layoutKept = false;
@@ -516,13 +518,15 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
         retry = need;
     }
 
-    for (size_t i : retry) {
+    for (size_t r = 0; r < retry.size(); ++r) {
+        const size_t i = retry[r];
         if (g_stopping.load()) break; // a settings change is waiting for this worker
         std::vector<std::string> res;
         std::string err;
         if (!call_provider(prov, { prep[i].send }, sysPrompt, std::string(), res, err)) { // provider down: stop
             note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", std::string());
-            if (providerFailed) *providerFailed = true;
+            if (provFailed) // this text and every one after it never got an answer
+                for (size_t q = r; q < retry.size(); ++q) (*provFailed)[retry[q]] = 1;
             break;
         }
         if (res.empty()) continue;

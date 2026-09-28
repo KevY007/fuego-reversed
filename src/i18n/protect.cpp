@@ -63,6 +63,16 @@ size_t scan_digits(const std::string& s, size_t start) {
     return i;
 }
 
+// An ordinal suffix ("st", "nd", "rd", "th", either case) at s[j], right after a
+// number, not followed by another letter: "2nd", "21st" -- but not "4thly".
+bool ordinal_at(const std::string& s, size_t j) {
+    if (j + 2 > s.size()) return false;
+    const char a = (char)(s[j] | 0x20), b = (char)(s[j + 1] | 0x20); // (only 'S'/'s' fold to 's', etc.)
+    const bool suffix = (a == 's' && b == 't') || (a == 'n' && b == 'd') || (a == 'r' && b == 'd') ||
+                        (a == 't' && b == 'h');
+    return suffix && (j + 2 == s.size() || !is_alpha(s[j + 2]));
+}
+
 // A short ALLCAPS+digits token (no lowercase) with at least one of each, e.g.
 // a vehicle plate like "ABC1234". Plate formats aren't standardised in SA:MP,
 // so this only recognises the visually-obvious "code, not a word" shape.
@@ -373,8 +383,9 @@ Masked mask(const std::string& src, bool labels) {
                         size_t k = scan_digits(src, j + 1);
                         if (k > j + 1) j = k;
                     }
-                    // (a UI label's number may be glued to its unit: "2m", "999hp")
-                    if (j >= n || !(is_alpha(src[j]) || src[j] == '_') || labels) {
+                    // (a UI label's number may be glued to its unit: "2m", "999hp";
+                    // an ordinal -- "2nd" -- stays a word the model can localize)
+                    if (j >= n || !(is_alpha(src[j]) || src[j] == '_') || (labels && !ordinal_at(src, j))) {
                         emit(i, j);
                         i = j;
                         matched = true;

@@ -67,9 +67,10 @@ struct Result {
     // May be shorter than units (e.g. empty after an internal error) -> treat the
     // missing tail as "".
     std::vector<std::string> unitOut;
-    // BATCH jobs only: a provider request failed outright (down, circuit open,
-    // network) -- the "" items then say nothing about the texts themselves.
-    bool providerFailed = false;
+    // BATCH jobs only: [i] = 1 when units[i] got no translation because a provider
+    // request failed outright (down, circuit open, network) -- that "" says nothing
+    // about the text itself. Empty when nothing failed that way.
+    std::vector<char> unitProviderFailed;
 };
 
 // The engine's two-lane job queue. PURE (the engine guards its one instance with
@@ -199,12 +200,13 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
 // off (see batching_enabled(): re-tried after 10 minutes) and texts go one per
 // request. out[i] = the finished text for units[i], or "" to keep its original.
 // Returns true if any text was translated.
-// labels: the texts are UI labels (Job::labels). *providerFailed (if given) is set
-// when a provider request failed outright.
+// labels: the texts are UI labels (Job::labels). provFailed (if given) gets one
+// entry per text: 1 when that text got no translation because a provider request
+// failed outright (see Result::unitProviderFailed).
 bool process_batch(const std::vector<std::string>& units, int cp, IProvider* prov,
                    const std::string& sysPrompt, std::vector<std::string>& out,
                    int targetLang = 1033, int displayCp = 1252, int capBytes = 144,
-                   bool labels = false, bool* providerFailed = nullptr);
+                   bool labels = false, std::vector<char>* provFailed = nullptr);
 
 // Whether a dialog's cells may go out as one batch right now: false after two
 // broken layouts in a row -- until, 10 minutes later, one more batch is tried

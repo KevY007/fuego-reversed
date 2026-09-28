@@ -159,7 +159,7 @@ void test_engine() {
 
     // A batch of UI labels: the provider sees 'Civilian' (not a placeholder for the
     // whole text) and the glued number stays a placeholder; a provider failure is
-    // reported through *providerFailed.
+    // reported per text through provFailed.
     {
         struct Labels : IProvider {
             std::vector<std::string> seen;
@@ -176,10 +176,11 @@ void test_engine() {
         cache::clear_for_test();
         engine::reset_batch_for_test();
         std::vector<std::string> outL;
-        bool pf = false;
+        std::vector<char> pf;
         engine::process_batch({ "Civilian (2)", "Next city (2m 3s)" }, 1252, &lp, "sys", outL, 1034, 1252, 1024,
                               /*labels=*/true, &pf);
-        CHECK(!pf && outL.size() == 2 && outL[0] == "Civilian (2)" && outL[1] == "Next city (2m 3s)",
+        CHECK(pf == std::vector<char>(2, 0) && outL.size() == 2 && outL[0] == "Civilian (2)" &&
+              outL[1] == "Next city (2m 3s)",
               "labels batch: echoed translations come back whole");
         bool sawCivilian = false, gluedMasked = false;
         for (const std::string& t : lp.seen) {
@@ -192,7 +193,30 @@ void test_engine() {
         std::vector<std::string> outF;
         engine::process_batch({ "Selected spawn", "Nearby Locations" }, 1252, &lp, "sys", outF, 1034, 1252, 1024,
                               true, &pf);
-        CHECK(pf, "a provider that fails outright sets providerFailed");
+        CHECK(pf == std::vector<char>(2, 1), "a provider that fails outright: both texts marked");
+    }
+    {   // Per text: a line the MODEL failed is not marked; the ones the provider failed on are.
+        struct Script : IProvider {
+            int call = 0;
+            bool translate(const std::vector<std::string>& texts, const std::string&, const std::string&,
+                           std::vector<std::string>& out, std::string& err) override {
+                ++call;
+                if (call == 1) { out.assign(texts.size(), std::string()); return true; } // batch: layout lost
+                if (call == 2) { out = { "Civil" }; return true; }                       // item 0: number dropped
+                err = "down";                                                            // item 1: provider gone
+                return false;
+            }
+            const char* name() const override { return "script"; }
+        } sp;
+        cache::clear_for_test();
+        engine::reset_batch_for_test();
+        std::vector<std::string> outS;
+        std::vector<char> pf;
+        engine::process_batch({ "Civilian (2)", "Selected spawn" }, 1252, &sp, "sys", outS, 1034, 1252, 1024,
+                              true, &pf);
+        CHECK(sp.call == 3 && outS == std::vector<std::string>(2), "both failed");
+        CHECK(pf == (std::vector<char>{ 0, 1 }), "the model's failure unmarked, the provider's marked");
+        engine::reset_batch_for_test();
     }
 
     // ---- I1: a cached value that is empty once capped for display (master stored

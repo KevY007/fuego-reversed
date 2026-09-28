@@ -4,6 +4,7 @@
 #include "surfaces.h" // is_dynamic_text (pure)
 
 #include <algorithm>
+#include <climits>
 
 namespace i18n::hudtext {
 
@@ -67,6 +68,18 @@ bool number_start(const std::string& s, size_t i) {
 
 std::string stand_in(size_t k) { return std::string(1, (char)('2' + k)); }
 
+// An ordinal suffix ("st", "nd", "rd", "th", either case) right after the digits
+// ending at s[j], not followed by another letter ("2nd", "21st", but not "4thly").
+bool ordinal_at(const std::string& s, size_t j) {
+    if (j + 2 > s.size()) return false;
+    const char a = (char)(s[j] | 0x20), b = (char)(s[j + 1] | 0x20);
+    const bool suffix = (a == 's' && b == 't') || (a == 'n' && b == 'd') || (a == 'r' && b == 'd') ||
+                        (a == 't' && b == 'h');
+    if (!suffix) return false;
+    const unsigned char next = (j + 2 < s.size()) ? (unsigned char)s[j + 2] : 0;
+    return !((next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z'));
+}
+
 // core -> key (numbers replaced by stand-ins "2", "3", ...) + the numbers.
 void template_numbers(const std::string& core, std::string& key, std::vector<std::string>& nums) {
     key.clear();
@@ -81,7 +94,7 @@ void template_numbers(const std::string& core, std::string& key, std::vector<std
         if (number_start(core, i)) {
             size_t j = i;
             while (j < core.size() && is_digit(core[j])) ++j;
-            if (nums.size() == kMaxNumbers) { // too many: this line keeps its numbers
+            if (nums.size() == kMaxNumbers || ordinal_at(core, j)) { // this line keeps its numbers
                 key = core;
                 nums.clear();
                 return;
@@ -188,14 +201,19 @@ bool put_numbers(const std::string& t, const std::vector<std::string>& nums, std
 }
 
 bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<std::string>& missing,
-             bool* later) {
+             bool* later, size_t limit) {
     missing.clear();
     if (later) *later = false;
-    std::string o;
     bool complete = true;
+    std::vector<std::string> cores; // each line's core to show: translated, or its own
+    cores.reserve(p.lines.size());
+    long long total = 0;            // the original text's size
     for (size_t i = 0; i < p.lines.size(); ++i) {
         const Line& ln = p.lines[i];
-        std::string core = ln.core;
+        total += (long long)(ln.prefix.size() + ln.core.size() + ln.suffix.size());
+        if (i < p.seps.size()) total += (long long)p.seps[i].size();
+        cores.push_back(ln.core);
+        std::string& core = cores.back();
         if (ln.translate) {
             std::string tr;
             switch (look(ln.key, tr)) {
@@ -219,9 +237,20 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
                     break;
             }
         }
-        o += ln.prefix;
-        o += core;
-        o += ln.suffix;
+    }
+    // Fit `limit`: translated lines in order, each only if the text still fits.
+    for (size_t i = 0; i < cores.size(); ++i) {
+        if (cores[i] == p.lines[i].core) continue;
+        const long long d = (long long)cores[i].size() - (long long)p.lines[i].core.size();
+        if (total + d <= (long long)(limit > (size_t)LLONG_MAX ? LLONG_MAX : limit)) total += d;
+        else cores[i] = p.lines[i].core;
+    }
+    std::string o;
+    o.reserve((size_t)(total > 0 ? total : 0));
+    for (size_t i = 0; i < p.lines.size(); ++i) {
+        o += p.lines[i].prefix;
+        o += cores[i];
+        o += p.lines[i].suffix;
         if (i < p.seps.size()) o += p.seps[i];
     }
     out = std::move(o);

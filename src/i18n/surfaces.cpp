@@ -517,7 +517,7 @@ constexpr uint32_t kHudDebounceMs = 100;    // at most this often after a fill l
 // A line whose translation failed shows as it is for a while, then is retried --
 // after 30 s, then 5 min, then every 30 min: a line the model keeps rejecting (a
 // lost placeholder) isn't re-sent all the time. A request that failed as a whole
-// (the provider down or timing out -- Result::providerFailed) says nothing about
+// (the provider down or timing out -- Result::unitProviderFailed) says nothing about
 // its lines: they are retried after 30 s without counting against them.
 uint32_t retry_delay(int failures) { return failures <= 1 ? 30000u : failures == 2 ? 300000u : 1800000u; }
 constexpr uint32_t kProviderRetryMs = 30000;
@@ -571,10 +571,12 @@ i18n::hudtext::Look hud_look(const std::string& key, std::string& tr) {
     const int cp     = i18n::config::get().source_cp;
     const int target = i18n::engine::active_target_lang();
     if (i18n::engine::cache_lookup(key, cp, target, tr, kHudLookupCap)) return i18n::hudtext::Look::Hit;
-    // Already the target language / nothing translatable survives protect::mask.
-    if (!i18n::engine::needs_translation(key, cp, target, /*labels=*/true)) return i18n::hudtext::Look::Keep;
+    // Waiting out a failed fill (checked before the costlier test below: a key only
+    // ever got a fill -- and so a failure -- by passing it).
     auto f = g_fillFailed.find(key);
     if (f != g_fillFailed.end() && (int32_t)(f->second.until - GetTickCount()) > 0) return i18n::hudtext::Look::Later;
+    // Already the target language / nothing translatable survives protect::mask.
+    if (!i18n::engine::needs_translation(key, cp, target, /*labels=*/true)) return i18n::hudtext::Look::Keep;
     return i18n::hudtext::Look::Miss;
 }
 
@@ -616,17 +618,19 @@ void queue_fills(const std::vector<std::string>& keys) {
 
 // `src` translated line by line from the translation memory: the text to show --
 // every line in memory translated, the others as they are ("progressive": what is
-// known shows at once, the rest follows when its fill lands); `src` itself when the
-// result wouldn't fit `limit` bytes. `pending`: some line isn't translated yet (its
-// fill is queued here) or is due for a retry -- look at it again later.
+// known shows at once, the rest follows when its fill lands), within `limit` bytes
+// (a translated line that would push it over keeps its original line; see
+// hudtext::resolve). `pending`: some line isn't translated yet (its fill is queued
+// here) or is due for a retry -- look at it again later.
 std::string hud_translate(const std::string& src, bool label, int limit, bool& pending) {
     std::vector<std::string> missing;
     std::string t;
     bool later = false;
-    const bool complete = i18n::hudtext::resolve(i18n::hudtext::plan_text(src, label), hud_look, t, missing, &later);
+    const bool complete = i18n::hudtext::resolve(i18n::hudtext::plan_text(src, label), hud_look, t, missing, &later,
+                                                 (size_t)limit);
     if (!complete) queue_fills(missing);
     pending = !complete || later;
-    return (int)t.size() > limit ? src : t;
+    return (int)t.size() > limit ? src : t; // (only when the original itself is over the limit)
 }
 
 // A Translator (rebuild_*) over hud_translate, for the texts we don't track.
@@ -914,13 +918,14 @@ void on_fill_result(const i18n::engine::Result& r) {
     for (size_t i = 0; i < keys.size(); ++i) {
         const std::string& k = keys[i];
         g_fillOut.erase(k);
-        const bool came = i < r.unitOut.size() && !r.unitOut[i].empty();
+        const bool came     = i < r.unitOut.size() && !r.unitOut[i].empty();
+        const bool provDown = i < r.unitProviderFailed.size() && r.unitProviderFailed[i];
         // Translated -- and findable: a translation the lookup can't see (stored for
         // another source codepage by now) counts as failed, or it would be fetched
         // again round after round.
         if (came && i18n::engine::cache_lookup(k, cp, target, tr, kHudLookupCap)) {
             g_fillFailed.erase(k);
-        } else if (!came && r.providerFailed) {
+        } else if (!came && provDown) {
             g_fillFailed[k].until = now + kProviderRetryMs; // not the line's fault: not counted
         } else {
             Failed& f = g_fillFailed[k];

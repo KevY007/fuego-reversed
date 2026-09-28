@@ -181,6 +181,25 @@ int main() {
         check(out == "~W~- Big Ear~N~- Big Ear~N~Jugadores cerca: 1", "the translated lines already in out");
         check(!later, "no line was Later");
     }
+    {   // A size limit: translated lines are taken in order while the text fits; one
+        // that would push it over stays original -- the rest never flips back.
+        Plan p = plan_text("Aaaa~N~Bbbb~N~Cccc", false); // 18 bytes
+        FakeTm tm;
+        tm.hits = { { "Aaaa", "Aaaaaa" }, { "Bbbb", "Bbbbbbbbbb" }, { "Cccc", "Cc" } };
+        std::string out;
+        std::vector<std::string> missing;
+        check(resolve(p, tm.look(), out, missing, nullptr, 21) && out == "Aaaaaa~N~Bbbb~N~Cc",
+              "limit 21: A (+2) fits, B (+6) would not, C (-2) does");
+        check(out.size() <= 21, "the result fits the limit");
+        check(resolve(p, tm.look(), out, missing, nullptr, 100) && out == "Aaaaaa~N~Bbbbbbbbbb~N~Cc",
+              "a roomy limit takes every line");
+    }
+    {   // Ordinals are words, not counts: a line with one keeps all its numbers.
+        Plan p = plan_text("You finished 2nd with 300 points", false);
+        check(p.lines[0].key == p.lines[0].core && p.lines[0].nums.empty(), "an ordinal: no stand-ins on that line");
+        check(plan_text("Level 5th-ish 4", false).lines[0].nums.empty(), "5th- is an ordinal too");
+        check(plan_text("Room 4thly 3", false).lines[0].nums.size() == 2, "\"4thly\" is not an ordinal");
+    }
     {   // Later: shown as it is for now -- complete, but flagged to look again.
         Plan p = plan_text("~W~~R~hotwire failed~N~retrying...", false);
         std::string out;

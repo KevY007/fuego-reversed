@@ -8,4 +8,10 @@ namespace i18n::indicator {
 // dialog is held for translation. No-op unless config.show_translate_indicators.
 void draw();
 
+// The outgoing-translation hotkey flipped it ON/OFF: a short notice at the top of
+// the screen that fades out by itself (~2.5 s) -- instead of a chat line, so the
+// chat stays clean. Shown even with the translation hints turned off (it answers
+// a key the player just pressed). Main thread.
+void toast_outgoing(bool on);
+
 } // namespace i18n::indicator

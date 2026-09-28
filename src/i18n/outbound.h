@@ -26,7 +26,8 @@ namespace i18n::outbound {
 void install();
 
 // Flip outbound translation on/off (hotkey, default Ctrl+Shift, or menu), (re)start the engine if
-// needed, and print a chat notice so an accidental toggle is always visible.
+// needed, and show an on-screen notice that fades out by itself (indicator::toast_outgoing) so an
+// accidental toggle is always visible -- without a line in the chat.
 void toggle();
 
 // Current runtime state (== config.outbound_enabled).

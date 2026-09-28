@@ -4,6 +4,7 @@
 #include "config.h"
 #include "dlgq.h"    // the ordered, timing-faithful release queue (shared with held dialogs)
 #include "hooks.h"
+#include "indicator.h" // toast_outgoing: the hotkey's ON/OFF notice
 #include "protect.h" // split_message_command
 
 #include "../net/net.h"
@@ -225,9 +226,8 @@ void toggle() {
 	auto& s = i18n::config::get();
 	s.outbound_enabled = !s.outbound_enabled;
 	i18n::hooks::apply_config(); // start the worker engine if it isn't already running
-	samp::chat( s.outbound_enabled
-		? "{33FF33}[translate] {FFFFFF}Outgoing translation ON -- your chat, /pm /me-style messages and dialog input go out in the server's language."
-		: "{FF6D70}[translate] {FFFFFF}Outgoing translation OFF." );
+	// An on-screen notice that fades out by itself -- not a chat line: the chat stays clean.
+	i18n::indicator::toast_outgoing( s.outbound_enabled );
 	Log( "[i18n] outbound = %s (target_lang=%d).", s.outbound_enabled ? "ON" : "OFF", s.outbound_target_lang );
 }
 

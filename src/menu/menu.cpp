@@ -595,13 +595,16 @@ void draw_ui() {
 		ImGui::EndTabBar();
 	}
 
+	ImGui::Spacing(); // breathing room between the tab content and the footer
+	ImGui::Spacing();
 	ImGui::Separator();
+	ImGui::Spacing();
 	if ( ImGui::Button( "Save config" ) ) {
 		cfg::save();                 // unified: cheats + /compat + translator -> fuego_reversed.cfg
 		i18n::hooks::apply_config(); // apply translator changes live (start/stop/reconfigure the engine)
 	}
 	ImGui::SameLine();
-	ImGui::TextDisabled( "one file (fuego_reversed.cfg), loads on startup.  F2 to toggle." );
+	ImGui::TextDisabled( "one file (fuego_reversed.cfg), loads on startup." );
 	ImGui::End();
 }
 

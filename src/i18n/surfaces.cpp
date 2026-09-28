@@ -567,10 +567,11 @@ void put16(std::vector<uint8_t>& v, size_t n) {
 // The translation memory's answer for one line key (hudtext::Lookup). Looked up in
 // the RUNNING engine's target language -- the one a fill queued now is translated
 // into (a target picked in the menu applies on Save).
-i18n::hudtext::Look hud_look(const std::string& key, std::string& tr) {
+i18n::hudtext::Look hud_look(const std::string& key, std::string& tr, bool hitOnly) {
     const int cp     = i18n::config::get().source_cp;
     const int target = i18n::engine::active_target_lang();
     if (i18n::engine::cache_lookup(key, cp, target, tr, kHudLookupCap)) return i18n::hudtext::Look::Hit;
+    if (hitOnly) return i18n::hudtext::Look::Miss;
     // A failed fill: waiting out its backoff, or due for a retry (checked before the
     // costlier test below: a key only ever got a fill -- and so a failure -- by
     // passing it).

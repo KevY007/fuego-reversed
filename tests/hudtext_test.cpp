@@ -34,7 +34,7 @@ struct FakeTm {
     std::vector<std::string>           keep, later, retry; // keys answered Keep / Later / Retry
     std::vector<std::string>           asked;
     Lookup look() {
-        return [this](const std::string& key, std::string& tr) {
+        return [this](const std::string& key, std::string& tr, bool) {
             asked.push_back(key);
             for (const std::string& k : keep)
                 if (k == key) return Look::Keep;
@@ -209,7 +209,7 @@ int main() {
         std::string out;
         std::vector<std::string> missing;
         bool later = false;
-        Lookup look = [](const std::string& key, std::string& tr) {
+        Lookup look = [](const std::string& key, std::string& tr, bool) {
             if (key == "hotwire failed") return Look::Later;
             tr = "reintentando...";
             return Look::Hit;
@@ -330,6 +330,39 @@ int main() {
         bad.later = { p.lines[0].key };
         bad.hits = { { p.lines[0].plainKey, "Pulsa ~k~ para ~ empezar" } };
         check(resolve(p, bad.look(), out, missing) && out == p.lines[0].core, "a broken plain translation: the original");
+    }
+    {   // A stretch that ran to the end of the line, moved by the translation: closed
+        // with the line's own colour -- or, with none known, not coloured at all.
+        Plan p = plan_text("~W~Next city: ~P~Los Santos", false);
+        FakeTm tm;
+        tm.later = { p.lines[0].key };
+        tm.hits = { { "Next city: Los Santos", "Los Santos es la siguiente ciudad" } };
+        std::string out;
+        std::vector<std::string> missing;
+        check(resolve(p, tm.look(), out, missing) && out == "~W~~P~Los Santos~W~ es la siguiente ciudad",
+              "closed with the line's colour");
+        tm.hits = { { "Next city: Los Santos", "Siguiente ciudad: Los Santos" } };
+        check(resolve(p, tm.look(), out, missing) && out == "~W~Siguiente ciudad: ~P~Los Santos", "still at the end: as before");
+        Plan q = plan_text("Next city: ~P~Los Santos", false); // no colour of its own
+        FakeTm tq;
+        tq.later = { q.lines[0].key };
+        tq.hits = { { "Next city: Los Santos", "Los Santos es la siguiente ciudad" } };
+        check(resolve(q, tq.look(), out, missing) && out == "Los Santos es la siguiente ciudad",
+              "no colour of its own to close with: not coloured");
+    }
+    {   // While the coloured key is out for the first time, the plain key is only
+        // looked up in memory (hitOnly) -- never tested for "needs translating".
+        Plan p = plan_text("Press ~Y~SHIFT~W~ to spawn", false);
+        std::vector<std::pair<std::string, bool>> asked;
+        Lookup look = [&](const std::string& key, std::string&, bool hitOnly) {
+            asked.push_back({ key, hitOnly });
+            return Look::Miss;
+        };
+        std::string out;
+        std::vector<std::string> missing;
+        resolve(p, look, out, missing);
+        check(asked.size() == 2 && !asked[0].second && asked[1].first == "Press SHIFT to spawn" && asked[1].second,
+              "the plain key: memory only");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

@@ -180,22 +180,48 @@ bool message_command(const std::string& s, size_t start, size_t end) {
 }
 
 // Little words that end a command's arguments: in "use /gps to find it" it has none,
-// in "use /gps atm then go south" it has "atm".
+// in "use /gps atm then go south" it has "atm". ("on", "off", "all" are left out:
+// "/engine on", "/sell all" are arguments.)
 bool arg_stopword(const std::string& s, size_t start, size_t end) {
     static const char* const kWords[] = {
         "a", "an", "the", "to", "for", "and", "or", "but", "nor", "so", "yet", "if", "then", "than", "that",
         "this", "these", "those", "there", "here", "it", "its", "is", "are", "was", "were", "be", "been", "am",
         "do", "does", "did", "have", "has", "had", "will", "would", "can", "could", "shall", "should", "may",
-        "might", "must", "not", "no", "yes", "of", "in", "on", "at", "by", "with", "from", "into", "onto", "over",
+        "might", "must", "not", "no", "yes", "of", "in", "at", "by", "with", "from", "into", "onto", "over",
         "under", "near", "via", "about", "after", "before", "until", "while", "when", "where", "which", "who",
-        "what", "why", "how", "all", "any", "each", "every", "some", "more", "most", "again", "also", "just",
-        "only", "even", "still", "too", "very", "now", "soon", "later", "first", "next", "once", "please", "pls",
-        "plz", "thanks", "thx", "ty", "ok", "okay", "lol", "lmao", "xd", "bro", "man", "dude", "u", "ur", "you",
-        "your", "me", "my", "i", "we", "us", "our", "they", "them", "their", "he", "him", "his", "she", "her",
-        "command", "cmd", "instead", "like", "etc", "find", "get", "go", "see", "check", "look", "know", "learn",
-        "read",
+        "what", "why", "how", "each", "every", "more", "most", "again", "also", "just", "only", "even", "still",
+        "too", "very", "now", "soon", "later", "first", "next", "once", "twice", "today", "tomorrow",
+        "yesterday", "tonight", "always", "never", "sometimes", "anytime", "already", "maybe", "really",
+        "actually", "anyway", "please", "pls", "plz", "thanks", "thx", "ty", "ok", "okay", "lol", "lmao", "xd",
+        "bro", "man", "dude", "u", "ur", "you", "your", "me", "my", "i", "we", "us", "our", "they", "them",
+        "their", "he", "him", "his", "she", "her", "command", "cmd", "instead", "like", "etc", "find", "get",
+        "go", "see", "check", "look", "know", "learn", "read",
     };
     return is_one_of(s, start, end, kWords, sizeof(kWords) / sizeof(kWords[0]));
+}
+
+// A word that can be a command's argument: lowercase ("atm", "zone", "ak47"), a
+// number, or a short acronym ("ATM", "LV") -- a capitalised word ("Turns") starts
+// a description, not an argument.
+bool arg_word(const std::string& s, size_t start, size_t end) {
+    if (is_lower(s[start]) || is_digit(s[start])) return true;
+    if (end - start > 4) return false;
+    for (size_t k = start; k < end; ++k)
+        if (!is_upper(s[k])) return false;
+    return true;
+}
+
+// Only spaces, colour codes ({RRGGBB}, ~x~) and a list bullet ('-', '*') before
+// s[i]: a command there BEGINS the text.
+bool begins_text(const std::string& s, size_t i) {
+    while (i > 0) {
+        const char c = s[i - 1];
+        if (c == ' ' || c == '\t' || c == '-' || c == '*') { --i; continue; }
+        if (c == '}' && i >= 8 && s[i - 8] == '{') { i -= 8; continue; }
+        if (c == '~' && i >= 3 && s[i - 3] == '~') { i -= 3; continue; }
+        return false;
+    }
+    return true;
 }
 
 // The end of one command argument starting at s[p], or p when there is none: a
@@ -215,6 +241,43 @@ size_t scan_arg(const std::string& s, size_t p) {
     while (q < n && (is_word_char(s[q]) || ((s[q] == '-' || s[q] == '.') && q + 1 < n && is_alnum(s[q + 1])))) ++q;
     if (q < n && static_cast<unsigned char>(s[q]) >= 0x80) return p;
     return q;
+}
+
+// Where a command ending at s[j] ends WITH its arguments (== j: none we can trust).
+// Arguments -- up to two argument words (arg_word) or three "[names]", each after
+// one space -- count only when the run ENDS where arguments end: the end of the
+// text, punctuation, a quote or bracket, a colour code, or a little English word
+// ("to", "for": arg_stopword). So "use /gps atm", "'/gps zone'" and "type /help
+// crime intro for more" keep theirs, while prose after a command keeps its words:
+// "/stats shows your statistics", "usa /gps para ir al banco". A command that
+// BEGINS the text is a command list's entry unless its arguments end the text
+// ("/gps atm", "/engine on" alone).
+size_t command_args_end(const std::string& s, size_t j, bool atStart) {
+    const size_t n = s.size();
+    size_t k = j;
+    int words = 0, names = 0;
+    while (k < n && s[k] == ' ') {
+        const size_t p = k + 1;
+        const size_t q = scan_arg(s, p);
+        if (q == p || arg_stopword(s, p, q)) break;
+        if (s[p] == '[' || s[p] == '<') {
+            if (++names > 3) return j;
+        } else if (!arg_word(s, p, q) || ++words > 2) {
+            return j;
+        }
+        k = q;
+    }
+    if (k == j) return j;
+    // What follows the run: nothing but punctuation / quotes / codes to the end
+    // (the text ends there) -- or, mid-text, a little word or any non-word char.
+    size_t r = k;
+    while (r < n && !is_word_char(s[r]) && static_cast<unsigned char>(s[r]) < 0x80) ++r;
+    if (r >= n) return k;
+    if (atStart) return j;
+    if (s[k] != ' ') return k; // punctuation, a quote, a code right after the run
+    const size_t q = scan_arg(s, k + 1);
+    if (q == k + 1 || arg_stopword(s, k + 1, q)) return k; // a non-word, or a little word
+    return j;
 }
 
 } // namespace
@@ -238,26 +301,17 @@ Masked mask(const std::string& src, bool labels) {
         // "/command" at a word boundary (so "w/o" mid-sentence isn't one) -- which
         // includes the end of a colour code and an opening bracket or quote: HUD text
         // colours its commands ("Use ~Y~/gps~W~ for help", "(~Y~/scrap~W~ for more
-        // info)"). Its ARGUMENTS go with it -- they are typed words ("use /gps atm"
-        // came back as "/gps en el cajero automático") -- up to three, each after one
-        // space: a word, a number or a "[name]"; a little word ("to", "for"),
-        // punctuation, a code, another command or a non-English word ends them. Not
-        // for a message command (/me, /do, /pm, /report, ...): its words are prose
-        // that MUST still be translated -- "/me smiles warmly" keeps only "/me".
+        // info)"). Its ARGUMENTS go with it when they clearly are arguments -- typed
+        // words the model must not translate ("use /gps atm" came back as "/gps en
+        // el cajero automático"); see command_args_end. Not for a message command
+        // (/me, /do, /pm, /report, ...): its words are prose that MUST still be
+        // translated -- "/me smiles warmly" keeps only "/me".
         if (c == '/' && i + 1 < n && is_alpha(src[i + 1]) &&
             (i == 0 || is_space(src[i - 1]) || src[i - 1] == '~' || src[i - 1] == '}' || src[i - 1] == '(' ||
              src[i - 1] == '"' || src[i - 1] == '\'')) {
             size_t j = i + 1;
             while (j < n && is_word_char(src[j])) ++j;
-            size_t end = j;
-            if (!message_command(src, i + 1, j)) {
-                for (int args = 0; args < 3 && end < n && src[end] == ' '; ++args) {
-                    const size_t p = end + 1;
-                    const size_t q = scan_arg(src, p);
-                    if (q == p || arg_stopword(src, p, q)) break;
-                    end = q;
-                }
-            }
+            const size_t end = message_command(src, i + 1, j) ? j : command_args_end(src, j, begins_text(src, i));
             emit(i, end);
             i = end;
             matched = true;

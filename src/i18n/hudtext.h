@@ -85,7 +85,10 @@ enum class Look {
     Retry, // its translation failed and a retry is due now: fetch it again
     Miss,  // never translated yet: fetch it
 };
-using Lookup = std::function<Look(const std::string& key, std::string& tr)>;
+// hitOnly: only a Hit is of any use here (a plain key while its coloured one is out
+// for the first time) -- the lookup may answer Miss for anything else, without the
+// costlier checks.
+using Lookup = std::function<Look(const std::string& key, std::string& tr, bool hitOnly)>;
 
 // Resolve every translatable line of `p` through `look`. `out` is always the text
 // with every Hit line translated (its numbers put back) and every other line as it

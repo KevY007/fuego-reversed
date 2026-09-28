@@ -189,8 +189,12 @@ std::string plain_core(const Line& ln) {
 }
 
 // Colour a plain translation's stretches again where their text survives verbatim
-// -- exactly once, as a whole word (a key name, a command, a player's name).
-std::string recolour(std::string t, const std::vector<Mark>& marks) {
+// -- exactly once, as a whole word (a key name, a command, a player's name). A
+// stretch that ran to the end of the line gets closed with the line's own colour
+// (`base`: its prefix's codes) when the translation moved it away from the end --
+// or, with no colour of its own known, stays uncoloured (else everything after it
+// would take its colour).
+std::string recolour(std::string t, const std::vector<Mark>& marks, const std::string& base) {
     for (const Mark& m : marks) {
         size_t a = 0, b = m.text.size();
         while (a < b && is_space(m.text[a])) ++a;
@@ -205,10 +209,27 @@ std::string recolour(std::string t, const std::vector<Mark>& marks) {
             if (left && right) { ++found; at = pos; }
         }
         if (found != 1) continue;
-        t.insert(at + w.size(), m.close);
+        std::string close = m.close;
+        if (close.empty()) {
+            size_t r = at + w.size();
+            while (r < t.size() && !is_word(t[r])) ++r;
+            if (r < t.size()) { // words follow it now
+                if (base.empty()) continue;
+                close = base;
+            }
+        }
+        t.insert(at + w.size(), close);
         t.insert(at, m.open);
     }
     return t;
+}
+
+// A line's own colour: the codes of its prefix, without the spaces.
+std::string base_colour(const Line& ln) {
+    std::string b;
+    for (char c : ln.prefix)
+        if (!is_space(c)) b += c;
+    return b;
 }
 
 // A translation `tr` of a key for line `ln` -> the core to show, or "" when it
@@ -310,7 +331,7 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
         if (!ln.translate) continue;
 
         std::string tr;
-        const Look r = look(ln.key, tr);
+        const Look r = look(ln.key, tr, false);
         if (r == Look::Keep) continue;
         bool failed = false; // the coloured key can't be used: it failed before, or its translation breaks the line
         if (r == Look::Hit) {
@@ -328,10 +349,10 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
         // only once the coloured key has failed (at first sight the coloured one goes).
         if (ln.plainKey.empty()) continue;
         std::string ptr;
-        const Look pr = look(ln.plainKey, ptr);
+        const Look pr = look(ln.plainKey, ptr, /*hitOnly=*/!failed);
         if (pr == Look::Hit) {
             std::string t = use_translation(ptr, ln, count_tildes(plain_core(ln)));
-            if (!t.empty()) core = recolour(std::move(t), ln.marks);
+            if (!t.empty()) core = recolour(std::move(t), ln.marks, base_colour(ln));
         } else if (failed) {
             if (pr == Look::Later) {
                 if (later) *later = true;

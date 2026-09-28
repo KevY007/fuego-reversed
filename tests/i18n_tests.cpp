@@ -365,8 +365,32 @@ void test_protect() {
     Masked pm = mask("/pm 12 see you at the atm");
     CHECK(pm.text.find("see you at the atm") != std::string::npos, "a message command's words are prose");
     Masked maxArgs = mask("use /x aa bb cc dd");
-    CHECK(maxArgs.tokens.size() == 1 && maxArgs.tokens[0] == "/x aa bb cc" && maxArgs.text.find("dd") != std::string::npos,
-          "at most three arguments");
+    CHECK(maxArgs.tokens.size() == 1 && maxArgs.tokens[0] == "/x" && maxArgs.text.find("aa bb cc dd") != std::string::npos,
+          "more than two argument words: prose, not arguments");
+    // Prose after a command keeps its words: a command list's entry, English or
+    // another language's sentence -- the argument run must END where arguments end.
+    auto only_cmd = [](const Masked& m, const char* cmd) {
+        return std::find(m.tokens.begin(), m.tokens.end(), std::string(cmd)) != m.tokens.end();
+    };
+    Masked list1 = mask("/stats shows your statistics");
+    CHECK(only_cmd(list1, "/stats") && list1.text.find("shows your statistics") != std::string::npos,
+          "a command list's description is prose");
+    Masked list2 = mask("/engine Turns the engine on or off");
+    CHECK(only_cmd(list2, "/engine") && list2.text.find("Turns") != std::string::npos, "a capitalised word is no argument");
+    Masked es = mask("usa /gps para ir al banco");
+    CHECK(only_cmd(es, "/gps") && es.text.find("para ir al banco") != std::string::npos,
+          "another language's prose after a command is prose");
+    Masked twice = mask("I used /heal twice today");
+    CHECK(only_cmd(twice, "/heal") && twice.text.find("twice today") != std::string::npos, "an adverb ends it");
+    Masked anytime = mask("type /help anytime you want");
+    CHECK(only_cmd(anytime, "/help") && anytime.text.find("anytime") != std::string::npos, "'anytime' is no argument");
+    Masked toFind = mask("use /gps atm to find one");
+    CHECK(only_cmd(toFind, "/gps atm") && toFind.text.find("to find one") != std::string::npos, "'to' after the argument");
+    CHECK(only_cmd(mask("/gps atm"), "/gps atm"), "a command alone with its argument keeps it");
+    Masked engine = mask("type /engine on to start");
+    CHECK(only_cmd(engine, "/engine on"), "'on' can be an argument");
+    CHECK(only_cmd(mask("/engine on"), "/engine on"), "'/engine on' alone");
+    CHECK(only_cmd(mask("use /gps ATM"), "/gps ATM"), "a short acronym is an argument");
     Masked colon = mask("Use {FFFF82}/gps{E6D45A} for help getting around");
     CHECK(std::find(colon.tokens.begin(), colon.tokens.end(), "/gps") != colon.tokens.end() &&
           colon.text.find("for help getting around") != std::string::npos, "a colour code right after ends it");

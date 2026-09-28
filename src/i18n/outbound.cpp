@@ -154,9 +154,10 @@ bool on_send_chat( int id, BitStream* params, PacketPriority, PacketReliability,
 		std::string text( buf, len );
 
 		// Chat is translated whole (a "/..." chat line is never a command -- guard
-		// anyway). A command only when its words are a MESSAGE (/pm, /me, /b, ...):
-		// "/pm 35 hey come here" keeps "/pm 35 " and translates "hey come here". Any
-		// other command's words are arguments ("/gps atm"): it is sent as typed.
+		// anyway). A command only when its words are a MESSAGE (/pm, /me, /b, ...) or
+		// a whole sentence ("/megaphone stop right here and now!"): "/pm 35 hey come
+		// here" keeps "/pm 35 " and translates "hey come here". Short arguments
+		// ("/gps atm", "/engine on") are sent as typed (split_message_command).
 		Line line;
 		line.command = ( id == kRpcCommand );
 		std::string message;

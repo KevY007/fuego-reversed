@@ -419,9 +419,25 @@ void test_protect() {
         CHECK(!split_message_command("/gps atm", head, msg), "not a message command");
         CHECK(!split_message_command("/call police now", head, msg), "/call takes arguments on some servers");
         CHECK(!split_message_command("/radio on please", head, msg), "/radio too");
-        CHECK(!split_message_command("/text Mom hi there", head, msg), "/text too");
-        CHECK(!split_message_command("/r fix it now", head, msg), "/r is 'repair' on some servers");
+        CHECK(!split_message_command("/text Mom hi", head, msg), "/text with a short argument");
+        CHECK(!split_message_command("/r fix", head, msg), "/r fix: an argument");
         CHECK(!split_message_command("hola", head, msg), "not a command");
+        // Any other command followed by a whole SENTENCE -- three or more words of
+        // letters -- has it translated too (the user's call: whoever minds turns
+        // outgoing translation off); a leading id / Name_Surname stays as typed.
+        CHECK(split_message_command("/megaphone stop right here and now!", head, msg) && head == "/megaphone " &&
+              msg == "stop right here and now!", "a sentence after any command");
+        CHECK(split_message_command("/f 5 come to the base now", head, msg) && head == "/f 5 " &&
+              msg == "come to the base now", "a leading number stays");
+        CHECK(split_message_command("/setmotd Kev_Smith welcome to the family", head, msg) &&
+              head == "/setmotd Kev_Smith " && msg == "welcome to the family", "a leading Name_Surname stays");
+        CHECK(split_message_command("/m para ahora mismo", head, msg) && msg == "para ahora mismo", "three words");
+        CHECK(split_message_command("/m stop - right here", head, msg) && msg == "stop - right here",
+              "a lone dash doesn't break a sentence");
+        CHECK(!split_message_command("/help crime intro", head, msg), "two words: arguments");
+        CHECK(!split_message_command("/givecash 12 500", head, msg), "numbers: arguments");
+        CHECK(!split_message_command("/buy ak47 m4 deagle", head, msg), "words with digits: arguments");
+        CHECK(!split_message_command("/engine on", head, msg), "one word: an argument");
     }
     Masked numbered = mask("1. /stats shows your statistics");
     CHECK(only_cmd(numbered, "/stats") && numbered.text.find("shows") != std::string::npos,

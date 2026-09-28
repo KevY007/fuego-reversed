@@ -548,10 +548,42 @@ bool split_message_command(const std::string& s, std::string& head, std::string&
     // list (message_command), where a wrong guess only changes what is shown.
     static const char* const kMessage[] = { "me", "do", "ame", "ado", "b", "o", "ooc", "low", "shout",
                                             "pm", "w", "whisper", "sms", "report" };
-    if (!is_one_of(s, 1, j, kMessage, sizeof(kMessage) / sizeof(kMessage[0]))) return false;
     size_t k = j;
     while (k < s.size() && s[k] == ' ') ++k;
     if (k == j) return false; // "/me." -- no space after the command: not the usual shape
+    if (!is_one_of(s, 1, j, kMessage, sizeof(kMessage) / sizeof(kMessage[0]))) {
+        // Any other command: translated only when a whole SENTENCE follows it --
+        // three or more words of letters, no digits ("/megaphone stop right here and
+        // now!"); short arguments ("/gps atm", "/engine on", "/givecash 12 500") go
+        // as typed. A leading number or Name_Surname is a target: kept as typed.
+        size_t t = k;
+        bool digits = true, underscore = false;
+        while (t < s.size() && s[t] != ' ') {
+            if (!is_digit(s[t])) digits = false;
+            if (s[t] == '_') underscore = true;
+            ++t;
+        }
+        if (digits || underscore) {
+            k = t;
+            while (k < s.size() && s[k] == ' ') ++k;
+        }
+        size_t words = 0;
+        for (size_t q = k; q < s.size();) {
+            while (q < s.size() && s[q] == ' ') ++q;
+            if (q >= s.size()) break;
+            bool letter = false, digit = false;
+            for (; q < s.size() && s[q] != ' '; ++q) {
+                if (is_alpha(s[q]) || static_cast<unsigned char>(s[q]) >= 0x80) letter = true;
+                if (is_digit(s[q])) digit = true;
+            }
+            if (digit) return false; // a number or a code-like word: arguments
+            if (letter) ++words;     // (a lone "-" or "..." is neither)
+        }
+        if (words < 3) return false;
+        head    = s.substr(0, k);
+        message = s.substr(k);
+        return true;
+    }
     // Its target -- a player id or name, a phone number -- is always the first word
     // and is never translated: a translated name could whisper to someone else.
     static const char* const kTargeted[] = { "pm", "w", "whisper", "sms", "report" };

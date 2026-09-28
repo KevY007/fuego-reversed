@@ -492,8 +492,10 @@ void draw_ui() {
 			            "language before sending. Passwords you type are never touched; picking a row in a "
 			            "translated list always sends the server's original row. Message commands are "
 			            "translated too, only their message: '/pm 35 hey come here' keeps '/pm 35' "
-			            "(same for /me, /do, /b, /w, /report, ...). Other commands and numbers are never "
-			            "translated. If translation fails, your original text is sent." );
+			            "(same for /me, /do, /b, /w, /report, ...), and any command followed by a whole "
+			            "sentence of 3+ words ('/megaphone stop right here and now!'). Short arguments "
+			            "('/gps atm', '/engine on') and numbers are never translated. If translation "
+			            "fails, your original text is sent." );
 			{
 				bool c  = ( s.hotkey_mods & 1 ) != 0;
 				bool sh = ( s.hotkey_mods & 2 ) != 0;

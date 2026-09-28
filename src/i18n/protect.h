@@ -40,14 +40,16 @@ struct Masked {
 // it -- the HUD puts its real numbers back into exactly those places.
 Masked mask(const std::string& src, bool labels = false);
 
-// A command I TYPED whose words are a message on every server -- /me /do /ame /ado
-// /b /o /ooc /low /shout /pm /w /whisper /sms /report -- split for outgoing
-// translation: `head` = the command, its target for /pm /w /whisper /sms /report
-// (always the first word -- a player id or name, a number -- never translated),
-// and the spaces after it; `message` = the rest, the only part to translate. False
-// for any other command (the server gets it exactly as typed: "/call police" and
-// "/radio on" take arguments on some servers) and for a message of fewer than two
-// words ("/pm 12 ok" goes as typed).
+// A command I TYPED, split for outgoing translation into `head` (kept exactly as
+// typed) and `message` (the only part translated). A command whose words are a
+// message on every server -- /me /do /ame /ado /b /o /ooc /low /shout /pm /w
+// /whisper /sms /report: its target for /pm /w /whisper /sms /report (always the
+// first word -- a player id or name, a number) stays in the head; a message needs
+// two or more words ("/pm 12 ok" goes as typed). Any other command only when a
+// whole SENTENCE follows it -- three or more words of letters, no digits
+// ("/megaphone stop right here and now!"), after a leading number or Name_Surname
+// that stays; short arguments ("/gps atm", "/engine on", "/call police",
+// "/givecash 12 500") -> false: the server gets them exactly as typed.
 bool split_message_command(const std::string& line, std::string& head, std::string& message);
 
 // True iff every placeholder "\x01k\x02" for k in [0, n) appears in

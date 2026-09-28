@@ -329,6 +329,22 @@ void test_protect() {
     CHECK(meMsg.text.find("warmly") != std::string::npos, "narrative word 'warmly' survives translatable");
     CHECK(meMsg.translatable, "roleplay narration after /me is translatable");
 
+    // A command right after a colour code, an opening bracket or a quote is a
+    // command too -- HUD text colours them ("Use ~Y~/gps~W~ for help"); "w/o" and
+    // "km/h" (a letter before the '/') are not.
+    Masked gps = mask("Use ~Y~/gps~W~ for help");
+    CHECK(gps.text.find("/gps") == std::string::npos, "a command after a ~x~ code is masked");
+    Masked scrap = mask("(~Y~/scrap~W~ for more info)");
+    CHECK(scrap.text.find("/scrap") == std::string::npos, "a command in brackets after a code is masked");
+    Masked col = mask("Type {FFFF00}/help{FFFFFF} now");
+    CHECK(col.text.find("/help") == std::string::npos, "a command after a {RRGGBB} code is masked");
+    Masked paren = mask("Type (/help) or \"/rules\" now");
+    CHECK(paren.text.find("/help") == std::string::npos && paren.text.find("/rules") == std::string::npos,
+          "a command after ( or a quote is masked");
+    Masked wo = mask("go w/o it at 50 km/h");
+    CHECK(wo.text.find("w/o") != std::string::npos && wo.text.find("km/h") != std::string::npos,
+          "w/o and km/h are not commands");
+
     // CRITICAL 2a: a speech-verb prefix ("Name says:") still masks the name
     // and still round-trips.
     Masked saysMsg = mask("Kevin says: hola");

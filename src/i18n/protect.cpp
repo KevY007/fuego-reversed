@@ -171,9 +171,12 @@ Masked mask(const std::string& src) {
         // translated, e.g. "/me smiles warmly" -- only "/me" is data, "smiles
         // warmly" is prose. A following {colour}/~x~/number arg is already
         // masked by its own rule below; a following plain word is simply left
-        // translatable, which is the safe default.
+        // translatable, which is the safe default. "Word boundary" includes the
+        // end of a colour code and an opening bracket or quote: HUD text colours
+        // its commands ("Use ~Y~/gps~W~ for help", "(~Y~/scrap~W~ for more info)").
         if (c == '/' && i + 1 < n && is_alpha(src[i + 1]) &&
-            (i == 0 || is_space(src[i - 1]))) {
+            (i == 0 || is_space(src[i - 1]) || src[i - 1] == '~' || src[i - 1] == '}' || src[i - 1] == '(' ||
+             src[i - 1] == '"' || src[i - 1] == '\'')) {
             size_t j = i + 1;
             while (j < n && is_word_char(src[j])) ++j;
             emit(i, j);

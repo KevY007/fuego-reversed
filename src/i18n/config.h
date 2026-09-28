@@ -82,14 +82,15 @@ struct Settings {
     // ShowDialog fields to fuego_reversed.log. Default OFF.
     bool debug_lab = false;
 
-    // Translate incoming DIALOGS + 3D text labels (RPC 61/36 -- Huffman CSTRING
-    // bodies). A dialog not fully in the translation memory is HELD until it is
-    // translated, then shown in arrival order with the server's original timing
-    // (after 10 s untranslated: shown in the original); a password dialog's text is
-    // translated too, but the password the player types is never touched. 3D labels
-    // are translated line by line: one not in the translation memory shows in the
-    // original and switches to the translation on screen as soon as it's ready.
-    // Default OFF.
+    // Translate incoming DIALOGS, 3D text labels and SIGNS (object material text:
+    // RPC 61/36/84 -- Huffman CSTRING bodies). A dialog not fully in the translation
+    // memory is HELD until it is translated, then shown in arrival order with the
+    // server's original timing (after 10 s untranslated: shown in the original -- a
+    // text-only one switches to its translation if still open when it's ready); a
+    // password dialog's text is translated too, but the password the player types is
+    // never touched. 3D labels and signs are translated line by line: one not in the
+    // translation memory shows in the original and switches to the translation on
+    // screen as soon as it's ready. Default OFF.
     bool translate_dialogs = false;
 
     // Translate the HUD: textdraws (RPC 105/134), gametext (73), chat bubbles (59).

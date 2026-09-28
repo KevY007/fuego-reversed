@@ -432,6 +432,29 @@ bool rebuild_dialog(const uint8_t* p, size_t n, const Translator& tr, std::vecto
     return true;
 }
 
+bool parse_material_text(const uint8_t* p, size_t n, size_t& textOffset, std::string& text) {
+    // u16 objectId, u8 type, u8 index, u8 size, u8 fontNameLen, fontName, u8 fontSize,
+    // u8 bold, u32 fontColor, u32 backColor, u8 alignment, CSTRING text.
+    if (!p || n < 6 || p[2] != 2) return false;
+    const size_t off = 6 + (size_t)p[5] + 1 + 1 + 4 + 4 + 1;
+    if (off >= n) return false;
+    std::string t;
+    if (!huffman::decode_string(p + off, n - off, t)) return false;
+    textOffset = off;
+    text = std::move(t);
+    return true;
+}
+
+bool rebuild_material_text(const uint8_t* p, size_t n, const Translator& tr, std::vector<uint8_t>& out) {
+    size_t off = 0;
+    std::string text, t;
+    if (!parse_material_text(p, n, off, text) || !tr(text, t)) return false;
+    out.assign(p, p + off);
+    const std::vector<uint8_t> enc = huffman::encode_string(t);
+    out.insert(out.end(), enc.begin(), enc.end());
+    return true;
+}
+
 bool rebuild_label(const uint8_t* p, size_t n, const Translator& tr, std::vector<uint8_t>& out) {
     // u16 id, u32 color, f x, f y, f z, f dist, u8 testLOS, u16 aPlayer, u16 aVeh
     // = 27 fixed bytes, then a CSTRING text.

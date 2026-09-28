@@ -196,6 +196,17 @@ bool rebuild_dialog(const uint8_t* pkt, size_t n, const Translator& tr, std::vec
 // header then a CSTRING. Returns true/`out` only on a translation hit.
 bool rebuild_label(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
 
+// SetObjectMaterial (RPC 84) with material TEXT (type 2) -- a billboard or sign:
+// u16 objectId, u8 type (2), u8 materialIndex, u8 materialSize, u8 fontNameLen,
+// char fontName[len], u8 fontSize, u8 bold, u32 fontColor, u32 backColor, u8
+// alignment, then the text as a Huffman CSTRING (the handler, samp.dll 0.3.DL
+// base+0x1B1D0, decodes up to 2048 bytes, needs a font name under 32 bytes and a
+// non-empty text, and ignores an object that doesn't exist). `textOffset` = where
+// the CSTRING starts. False for a texture material (type 1) or a malformed packet.
+bool parse_material_text(const uint8_t* pkt, size_t n, size_t& textOffset, std::string& text);
+// The same packet with `tr`'s translation of its text (the header verbatim).
+bool rebuild_material_text(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
+
 // --- plain-text HUD surfaces (no Huffman) ----------------------------------
 // True if `text` (ignoring ~x~/{RRGGBB} codes + spaces) is mostly digits/symbols
 // -- a timer/counter/stat where translating is pointless (numbers are universal).

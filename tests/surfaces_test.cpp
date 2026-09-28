@@ -52,6 +52,16 @@ static const char* kDlgGps =
 // id 1006, TABLIST_HEADERS single column: "{c8c8c8}Zone\nLas Venturas Airport\nThe Strip (North)\n..."
 static const char* kDlgSpawn =
     "EE0305197B3965343762357D53656C65637420737061776E207A6F6E650653656C65637405436C6F73651C01BE52513BD13BD13BBE53ABCC1034CD36FAAF02B5E5B7D5132A466CDA9607AB2F28A77D4C519BC3E86D4B03D5979453BEB5642EF0FA1AAC8CDF9DAD9DC11A669B7E76356DB6736CD55A5D576B07E59D1B34CD36FD41B3962A1B66D4B03D4126EAB364DA8357B47000";
+// Real SetObjectMaterial (84) captures from the user's Russian server (2026-09-28):
+// material TEXT (type 2) -- billboards/signs -- and one texture material (type 1).
+static const char* kMat926 = // "Evolve {000000}RP", font "Impact"
+    "9E0302018C06496D7061637496000000FFFF0000000001A61569F129E3BE525455154551545513E539927600";
+static const char* kMat822 = // "МЕМОРИАЛ ПАМЯТИ" (cp1251), font "Segoe UI"
+    "3603020082085365676F652055492801000000FF0000000001BA27455F6B27456745E7445F6A5F685F6ABCE8B3ED0CE8ACE834E89BED4A80";
+static const char* kMat376 = // "AUTOSALON", font "Times New Roman"
+    "78010200820F54696D6573204E657720526F6D616E4101FFFFFFFF000000000196151572A463558A8668C63100";
+static const char* kMatTexture = "380301000d2a0f616972706f7274676e645f73667365057768697465ffffffff";
+
 static const char* kLabel1024 =
     "0004FF18AB31CD7811C5CDCCD440713D0B420000A04000FFFFFFFF04012B803BCEC9315F7CB3A8DF2FCD7C"
     "A4562B158AC562B1F29E76498AC3B9F5FC84B19EFAC1C749083E86AB598A6F061EA27AA2A89F21A6CEDCC2"
@@ -631,6 +641,32 @@ int main() {
         // Parallel jobs: 20 single-cell jobs on 3 workers = 7 rounds.
         check(likely_too_slow(true, 1000, false, 0, 0, 20, 20, 3, 6000), "early: 20 sequential-ish cells at 1 s don't fit");
         check(!likely_too_slow(true, 500, false, 0, 0, 20, 20, 3, 6000), "early: 20 cells at 0.5 s on 3 workers fit");
+    }
+
+    {   // SetObjectMaterial (84) material TEXT: billboards and signs -- byte-exact vs real captures.
+        Translator identity = [](const std::string& src, std::string& out) { out = src; return true; };
+        auto m = hex(kMat926);
+        size_t off = 0;
+        std::string text;
+        check(parse_material_text(m.data(), m.size(), off, text) && off == 23 && text == "Evolve {000000}RP",
+              "material: the sign's text and where it starts");
+        std::vector<uint8_t> out;
+        check(rebuild_material_text(m.data(), m.size(), identity, out) && out == m, "material: identity is byte-exact");
+        Translator tr = [](const std::string&, std::string& o) { o = "Evolve {000000}RP \xE8 more"; return true; };
+        check(rebuild_material_text(m.data(), m.size(), tr, out) && parse_material_text(out.data(), out.size(), off, text) &&
+              text == "Evolve {000000}RP \xE8 more" && off == 23 && std::equal(m.begin(), m.begin() + 23, out.begin()),
+              "material: a translation round-trips, the header untouched");
+        auto c = hex(kMat822);
+        check(parse_material_text(c.data(), c.size(), off, text) &&
+              text == "\xCC\xC5\xCC\xCE\xD0\xC8\xC0\xCB \xCF\xC0\xCC\xDF\xD2\xC8" &&
+              rebuild_material_text(c.data(), c.size(), identity, out) && out == c, "material: a Cyrillic sign");
+        auto t = hex(kMat376);
+        check(parse_material_text(t.data(), t.size(), off, text) && off == 32 && text == "AUTOSALON" &&
+              rebuild_material_text(t.data(), t.size(), identity, out) && out == t, "material: a longer font name");
+        auto x = hex(kMatTexture);
+        check(!parse_material_text(x.data(), x.size(), off, text) && !rebuild_material_text(x.data(), x.size(), identity, out),
+              "material: a texture material is not text");
+        check(!parse_material_text(m.data(), 10, off, text), "material: a cut packet");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

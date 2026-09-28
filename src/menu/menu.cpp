@@ -299,17 +299,18 @@ void draw_ui() {
 			                    "Ollama (default) or any OpenAI-compatible endpoint. Everything here saves to "
 			                    "the main config and applies when you hit Save config -- no restart." );
 			ImGui::Checkbox( "Enable inbound chat translation", &s.inbound_chat );
-			if ( ImGui::Checkbox( "Translate dialogs + 3D labels", &s.translate_dialogs ) )
+			if ( ImGui::Checkbox( "Translate dialogs, 3D labels + signs", &s.translate_dialogs ) )
 				i18n::hooks::apply_config(); // live: (re)start the engine if needed
 			ImGui::SameLine();
-			HelpMarker( "Translates incoming dialog boxes and 3D world text labels. A dialog you haven't "
-			            "seen translated before is held while it's translated ('translating dialog...' shows), "
-			            "then appears translated -- in the order the server sent them and with the server's "
-			            "original timing between them. If translating takes longer than 10 s, it appears in "
-			            "the original instead. Dialogs seen before appear translated at once. Password "
-			            "dialogs are translated too -- the password you type is never touched. A 3D label "
-			            "not translated before shows in the original and switches to the translation a "
-			            "moment later." );
+			HelpMarker( "Translates incoming dialog boxes, 3D world text labels and signs/billboards "
+			            "(object text). A dialog you haven't seen translated before is held while it's "
+			            "translated ('translating dialog...' shows), then appears translated -- in the order "
+			            "the server sent them and with the server's original timing between them. If "
+			            "translating takes longer than 10 s, it appears in the original instead; a text-only "
+			            "one still open when its translation is ready switches to it. Dialogs seen before "
+			            "appear translated at once. Password dialogs are translated too -- the password you "
+			            "type is never touched. A 3D label or sign not translated before shows in the "
+			            "original and switches to the translation a moment later." );
 			if ( ImGui::Checkbox( "Translate HUD (textdraws, gametext, chat bubbles)", &s.translate_hud ) )
 				i18n::hooks::apply_config();
 			ImGui::SameLine();

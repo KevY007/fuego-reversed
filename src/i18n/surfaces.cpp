@@ -19,6 +19,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <cstring>  // strnlen
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -71,6 +72,19 @@ bool safe_show(void* fn, void* self, int id, int style, const char* cap, const c
     }
 }
 
+// SEH-isolated read of the dialog SA:MP shows: whether it's open, its id, and its
+// title as Show stored it (64 bytes at +0x40, see samp::addr::DIALOG_CAPTION).
+bool read_dialog_state(const uint8_t* dlg, int& active, int16_t& id, char* caption64) {
+    __try {
+        active = *reinterpret_cast<const int*>(dlg + samp::addr::DIALOG_ACTIVE);
+        id     = *reinterpret_cast<const int16_t*>(dlg + samp::addr::DIALOG_ID);
+        for (int k = 0; k < 64; ++k) caption64[k] = (char)dlg[samp::addr::DIALOG_CAPTION + k];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 constexpr uint32_t kMaxHoldMs      = 10000; // hold a dialog at most 10 s, then show the original
 constexpr size_t   kMaxHeldDialogs = 16;
 i18n::dlgq::Queue  g_dlgq(kMaxHoldMs, kMaxHeldDialogs);
@@ -80,7 +94,14 @@ struct PendingDialog {
     DialogPlan               plan;
     std::vector<std::string> cores;
     int                      outstanding = 0; // engine BATCH jobs still out (one per chunk of missing cells)
+    // Shown in the ORIGINAL after the 10 s hold (a text-only dialog): when its last
+    // job lands, it switches to the translation if the player is still reading it;
+    // forgotten after lateUntil.
+    bool                     late      = false;
+    uint32_t                 lateUntil = 0;
+    std::string              shownTitle; // the title SA:MP shows for it (late only): how it's recognised
 };
+constexpr uint32_t kLateDialogMs = 60000;
 std::unordered_map<uint64_t, PendingDialog> g_pendingDialogs; // seq -> dialog
 
 // One batch job of a held dialog: groups[i] = every unit whose core is the batch's
@@ -160,6 +181,31 @@ void show_payload(const std::vector<uint8_t>& pkt) {
 // instead of the chat default of 144. ONE constant so the translation-memory
 // pass and the fill jobs below can never disagree with each other.
 constexpr int kDialogUnitCap = 1024;
+
+// The player is still reading dialog `d`, shown with `shownTitle`: SA:MP's dialog
+// is open with the same id and that title (so page 1 of a "rules" dialog is never
+// switched over page 2 of it -- same id, another title).
+bool still_showing(const DialogPlan& d, const std::string& shownTitle) {
+    const uint32_t base = samp::base();
+    if (!base) return false;
+    const uint8_t* dlg = *reinterpret_cast<const uint8_t* const*>(base + samp::addr::DIALOG_INFO);
+    if (!dlg) return false;
+    int active = 0;
+    int16_t id = 0;
+    char cap[65] = {};
+    if (!read_dialog_state(dlg, active, id, cap) || !active || id != (int16_t)d.id) return false;
+    return shownTitle.substr(0, 64) == std::string(cap, strnlen(cap, 64));
+}
+
+// Held for its translation later on screen: a text-only dialog shown now (in the
+// original, or with what the memory had) switches to the translation once its last
+// job lands, if the player is still reading it (see on_part_result).
+void track_late(PendingDialog pd, std::string shownTitle, uint32_t now, uint64_t seq) {
+    pd.late       = true;
+    pd.lateUntil  = now + kLateDialogMs;
+    pd.shownTitle = std::move(shownTitle);
+    g_pendingDialogs[seq] = std::move(pd);
+}
 
 // One engine BATCH job per chunk (chunk_groups): the chunk's distinct missing cores
 // go out as one numbered-list request. A HELD dialog's jobs (surface 3, priority
@@ -290,8 +336,23 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         const i18n::engine::Latency lat = i18n::engine::latency();
         if (likely_too_slow(lat.singleKnown, lat.singleMs, lat.batchKnown, lat.batchMs, i18n::engine::backlog(),
                             chunks.size(), groups.size(), i18n::engine::worker_count(), kEarlyReleaseMs)) {
-            const std::vector<std::vector<size_t>> fill = not_recently_filled(d, groups, GetTickCount());
-            submit_batches(d, fill, chunk_groups(d, fill, maxItems, kBatchMaxBytes), 0, /*fillOnly=*/true);
+            // A text-only dialog switches to its translation once that's ready, if the
+            // player is still reading it (its jobs report back: on_part_result); any
+            // other one is translated in the background for next time -- re-showing a
+            // list or an input box would lose the row picked / the text typed.
+            const bool late = (d.style == 0 && !passthru && !d.units.empty());
+            if (late) {
+                const uint64_t seq = g_seq.fetch_add(1, std::memory_order_relaxed);
+                PendingDialog pd;
+                pd.plan        = d;
+                pd.cores       = cores;
+                pd.outstanding = (int)chunks.size();
+                track_late(std::move(pd), unit_text(d.units[0], cores[0]), GetTickCount(), seq);
+                submit_batches(d, groups, chunks, seq, /*fillOnly=*/false);
+            } else {
+                const std::vector<std::vector<size_t>> fill = not_recently_filled(d, groups, GetTickCount());
+                submit_batches(d, fill, chunk_groups(d, fill, maxItems, kBatchMaxBytes), 0, /*fillOnly=*/true);
+            }
             if (anyTranslated) {
                 std::vector<uint8_t> pkt = assemble_dialog(d, fit_list_budgets(d, cores));
                 commit(rpc, pkt);
@@ -300,8 +361,10 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
                 note_shown(original, nullptr);
             }
             Log("[i18n] dialog %d shown right away: translating it would take too long now (recent single "
-                "request ~%.0f ms, batch ~%.0f ms, %u job(s)); it is translated in the background for next time.",
-                (int)(int16_t)d.id, lat.singleMs, lat.batchMs, (unsigned)chunks.size());
+                "request ~%.0f ms, batch ~%.0f ms, %u job(s)); %s",
+                (int)(int16_t)d.id, lat.singleMs, lat.batchMs, (unsigned)chunks.size(),
+                late ? "it switches to the translation if still open when that is ready."
+                     : "it is translated in the background for next time.");
             return false;
         }
     }
@@ -540,6 +603,7 @@ struct OnScreen {
 };
 std::unordered_map<uint16_t, OnScreen> g_textdraws; // textdraw id -> (global 0..2047, player 2048..2303)
 std::unordered_map<uint16_t, OnScreen> g_labels;    // 3D label id
+std::unordered_map<uint32_t, OnScreen> g_signs;     // (object id << 8) | material index: a billboard / sign text
 
 // SA:MP's own handlers for the RPCs we re-send, as seen at dispatch (the RPC node's
 // function): calling one with a payload we built is exactly the server sending it.
@@ -550,6 +614,7 @@ using RpcHandler = void (*)(RPCParameters*);
 RpcHandler g_onSetString    = nullptr;
 RpcHandler g_onShowTextDraw = nullptr;
 RpcHandler g_onCreateLabel  = nullptr;
+RpcHandler g_onSetMaterial  = nullptr; // SetObjectMaterial (84): ignores an object that no longer exists
 
 bool     g_hudDirty     = false; // a fill landed: a waiting text may be complete now
 bool     g_hudRecheck   = false; // settings changed: recompute every tracked text
@@ -722,6 +787,20 @@ bool set_label(uint16_t id, const OnScreen& lb, const std::string& text) {
     return call_rpc(g_onCreateLabel, std::move(pkt));
 }
 
+// Put `text` on a billboard / sign: its SetObjectMaterial again with the new text.
+// (SA:MP's handler skips an object that no longer exists -- verified in samp.dll.)
+bool set_sign(const OnScreen& sg, const std::string& text) {
+    std::vector<uint8_t> pkt;
+    if (!g_onSetMaterial || text.empty() ||
+        !rebuild_material_text(sg.pkt.data(), sg.pkt.size(), [&text](const std::string&, std::string& o) { o = text; return true; },
+                               pkt))
+        return false;
+    return call_rpc(g_onSetMaterial, std::move(pkt));
+}
+
+// A sign's text: up to 2048 bytes are decoded; stay safely under.
+int limit_sign(const std::string&) { return 2000; }
+
 // Whether a textdraw's text is text: not a sprite (font 4 -- the text names a
 // texture) or a model preview (font 5). The font is byte 33 of its ShowTextDraw
 // (u16 id + 31 bytes of properties; checked against the user's captures). A
@@ -772,13 +851,20 @@ void reconcile_hud(uint32_t now) {
         if (lb.waiting) g_hudWaiting = true;
         if (want != lb.shown && set_label(id, lb, want)) lb.shown = std::move(want);
     }
+    for (auto& [key, sg] : g_signs) {
+        if (!all && !sg.waiting) continue;
+        std::string want = wanted(sg, s.translate_dialogs, true, limit_sign(sg.text));
+        if (sg.waiting) g_hudWaiting = true;
+        if (want != sg.shown && set_sign(sg, want)) sg.shown = std::move(want);
+    }
 }
 
 // The pools were emptied (a game mode restart, a new session): forget every
-// tracked textdraw and label -- the server shows its own again.
+// tracked textdraw, label and sign -- the server shows its own again.
 void forget_screen() {
     g_textdraws.clear();
     g_labels.clear();
+    g_signs.clear();
     g_hudWaiting = false;
 }
 
@@ -836,6 +922,32 @@ bool handle_hud(unsigned char id, const uint8_t* p, size_t n, std::vector<uint8_
         case RPC_Delete3DTextLabel: // u16 id: the label is gone
             if (n >= 2) g_labels.erase(rd16(p));
             return false;
+        case RPC_SetObjectMaterial: { // a billboard / sign: text (type 2) -- or a texture replacing it
+            if (n < 4) return false;
+            const uint32_t key = ((uint32_t)rd16(p) << 8) | p[3];
+            size_t off = 0;
+            std::string text;
+            if (!parse_material_text(p, n, off, text)) { // a texture (or unreadable): no text there any more
+                g_signs.erase(key);
+                return false;
+            }
+            OnScreen& sg = g_signs[key];
+            sg.text = std::move(text);
+            sg.pkt.assign(p, p + n);
+            bool ok = false;
+            on_tracked(sg, s.translate_dialogs, true, limit_sign(sg.text), [&](const std::string& t) {
+                ok = rebuild_material_text(p, n, [&t](const std::string&, std::string& o) { o = t; return true; }, out);
+                return ok;
+            });
+            return ok;
+        }
+        case RPC_DestroyObject: { // u16 id: its signs are gone
+            if (n < 2) return false;
+            const uint32_t obj = rd16(p);
+            for (auto it = g_signs.begin(); it != g_signs.end();)
+                it = ((it->first >> 8) == obj) ? g_signs.erase(it) : std::next(it);
+            return false;
+        }
         case RPC_DisplayGameText: // gone in seconds: translated as far as the memory goes, never tracked
             return s.translate_hud && rebuild_gametext(p, n, hud_translator(limit_gametext), out);
         case RPC_ChatBubble:
@@ -886,6 +998,7 @@ bool on_incoming_rpc(unsigned char id, RPCParameters* rpc, void (*handler)(RPCPa
         if (id == RPC_TextDrawSetString)      g_onSetString    = handler;
         else if (id == RPC_ShowTextDraw)      g_onShowTextDraw = handler;
         else if (id == RPC_Create3DTextLabel) g_onCreateLabel  = handler;
+        else if (id == RPC_SetObjectMaterial) g_onSetMaterial  = handler;
     }
     if (!rpc || !rpc->input || rpc->numberOfBitsOfData < 8) return false;
     auto& s = i18n::config::get();
@@ -961,7 +1074,7 @@ void on_part_result(const i18n::engine::Result& r) {
     const std::vector<std::vector<size_t>> groups = std::move(pj->second.groups);
     g_partJobs.erase(pj);
     auto it = g_pendingDialogs.find(seq);
-    if (it == g_pendingDialogs.end()) return; // already released (timed out)
+    if (it == g_pendingDialogs.end()) return; // already released (timed out) and forgotten
     PendingDialog& pd = it->second;
     // The batch's i-th text fills every unit of groups[i]; "" (or a missing tail,
     // e.g. after an internal error) keeps those units' original text.
@@ -971,6 +1084,16 @@ void on_part_result(const i18n::engine::Result& r) {
             if (unit < pd.cores.size()) pd.cores[unit] = r.unitOut[g];
     }
     if (--pd.outstanding > 0) return; // other batch jobs of this dialog still out
+    if (pd.late) {
+        // It was shown in the original after the 10 s hold: switch it to the
+        // translation if the player is still reading that same dialog.
+        if (i18n::config::get().translate_dialogs && still_showing(pd.plan, pd.shownTitle)) {
+            show_payload(assemble_dialog(pd.plan, fit_list_budgets(pd.plan, pd.cores)));
+            Log("[i18n] dialog %d: translation ready -- switched to it (it was still open).", (int)(int16_t)pd.plan.id);
+        }
+        g_pendingDialogs.erase(it);
+        return;
+    }
     g_dlgq.resolve(seq, assemble_dialog(pd.plan, fit_list_budgets(pd.plan, pd.cores)));
     g_pendingDialogs.erase(it);
 }
@@ -978,11 +1101,33 @@ void on_part_result(const i18n::engine::Result& r) {
 void tick(uint32_t nowMs) {
     flush_due_responses(nowMs); // guaranteed delivery: nothing waits past its deadline
     reconcile_hud(nowMs);       // on-screen textdraws/labels: switch to translations that landed
+    for (auto it = g_pendingDialogs.begin(); it != g_pendingDialogs.end();) // late ones: not forever
+        it = (it->second.late && (int32_t)(nowMs - it->second.lateUntil) >= 0) ? g_pendingDialogs.erase(it)
+                                                                               : std::next(it);
     if (g_dlgq.empty()) return;
-    std::vector<i18n::dlgq::Release> out =
-        i18n::config::get().translate_dialogs ? g_dlgq.tick(nowMs) : g_dlgq.flush();
+    const bool on = i18n::config::get().translate_dialogs;
+    std::vector<i18n::dlgq::Release> out = on ? g_dlgq.tick(nowMs) : g_dlgq.flush();
     for (auto& r : out) {
-        g_pendingDialogs.erase(r.seq); // a straggler that timed out
+        auto pd = g_pendingDialogs.find(r.seq);
+        if (pd != g_pendingDialogs.end()) {
+            // Released untranslated: its 10 s were up (or the feature went off). A
+            // text-only dialog switches to its translation if still open when it's
+            // ready; with list rows or an input box it can't be re-shown safely (the
+            // row the player picked / what they typed would be lost).
+            const int id = (int)(int16_t)pd->second.plan.id;
+            if (on && pd->second.plan.style == 0 && !never_translated(pd->second.plan) && !pd->second.plan.units.empty()) {
+                pd->second.late       = true;
+                pd->second.lateUntil  = nowMs + kLateDialogMs;
+                pd->second.shownTitle = unit_text(pd->second.plan.units[0], pd->second.plan.units[0].core);
+                Log("[i18n] dialog %d shown in the original: translating it took over 10 s -- it switches to the "
+                    "translation if still open when that is ready.", id);
+            } else {
+                if (on)
+                    Log("[i18n] dialog %d shown in the original: translating it took over 10 s -- translated from "
+                        "the next time on.", id);
+                g_pendingDialogs.erase(pd);
+            }
+        }
         show_payload(r.payload);
         note_shown(r.original, r.translated ? &r.payload : nullptr);
     }

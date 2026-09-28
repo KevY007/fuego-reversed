@@ -45,6 +45,10 @@ public:
     // Release everything immediately as originals, in order (feature switched off).
     std::vector<Release> flush();
 
+    // Release everything immediately, in order, without waiting for gaps or
+    // translations: the translation where one is ready, else the original.
+    std::vector<Release> drain();
+
 private:
     struct Item {
         uint64_t             seq = 0;

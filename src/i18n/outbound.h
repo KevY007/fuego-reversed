@@ -46,9 +46,10 @@ void on_result(const i18n::engine::Result& r);
 // Main thread.
 void tick(uint32_t nowMs);
 
-// Sends the ORIGINAL of every swallowed line right now, in the order typed, and
-// forgets them. Call before the engine is stopped or restarted (engine::stop()/
-// start() drop every queued job). Main thread.
+// Sends every swallowed line right now, in the order typed -- translated where its
+// translation is already in, else as typed -- and forgets them. Call before the
+// engine is stopped or restarted (engine::stop()/start() drop every queued job).
+// Main thread.
 void flush_pending();
 
 // A new game session began (InitGame): forget every swallowed line WITHOUT

@@ -31,7 +31,7 @@ constexpr size_t kInputCap   = 127; // SA:MP's chat input takes 127 bytes -- cha
 // this long is sent as typed (mirrors surfaces' dialog INPUT-reply deadline) --
 // the player's chat must never be lost or held indefinitely.
 constexpr uint32_t kDeadlineMs = 5000;
-constexpr size_t   kMaxQueued  = 32;
+constexpr size_t   kMaxQueued  = 256; // (fuego's /.pmall sends one /pm per player at once)
 
 std::atomic<uint64_t> g_seq{ 1 };
 
@@ -39,8 +39,10 @@ std::atomic<uint64_t> g_seq{ 1 };
 // translated fast never overtakes the "/me ..." typed before it -- and each no
 // sooner than the previous one + the gap the player left between them (a server's
 // anti-spam sees the player's own pace). A line whose translation hasn't landed
-// within kDeadlineMs goes out as typed. While any line waits, even one that isn't
-// translated ("/gps bank") queues behind it rather than overtake it.
+// within kDeadlineMs goes out as typed. A chat line that isn't translated (the
+// feature switched off meanwhile) queues behind waiting ones; a command that isn't
+// translated never waits: "/lock", "/engine" and fuego's own timed commands
+// ("/uns <word>" races other players; the gun-stealer's steps) go out at once.
 i18n::dlgq::Queue g_queue( kDeadlineMs, kMaxQueued );
 
 // How each queued line goes out. Touched only on the main thread (the net send
@@ -124,6 +126,7 @@ bool enqueue( uint64_t seq, const std::string& text, Line line ) {
 // decision lets the chat go out untouched.
 bool on_send_chat( int id, BitStream* params, PacketPriority, PacketReliability, char, bool ) {
 	if ( ( id != kRpcChat && id != kRpcCommand ) || !params ) return true; // not chat / a command -> pass
+	bool queued = false; // the line is in g_queue: it will go out from there
 	try {
 		// Swallowing is only safe when the per-frame pump will deliver the result;
 		// without it nothing would ever send the line -- let it go as typed.
@@ -169,10 +172,12 @@ bool on_send_chat( int id, BitStream* params, PacketPriority, PacketReliability,
 
 		const uint64_t seq = g_seq.fetch_add( 1, std::memory_order_relaxed );
 		if ( !translate ) {
-			// Not translated -- but typed after a line still waiting: it queues behind
-			// it (ready as typed), so it can't overtake it.
-			if ( g_queue.empty() ) return true;
+			// Not translated. A command goes out at once (see g_queue); a chat line typed
+			// after one still waiting queues behind it (ready as typed), so it can't
+			// overtake it.
+			if ( line.command || g_queue.empty() ) return true;
 			if ( !enqueue( seq, text, line ) ) return true;
+			queued = true;
 			g_queue.resolve( seq, std::vector<uint8_t>() );
 			return false;
 		}
@@ -191,17 +196,18 @@ bool on_send_chat( int id, BitStream* params, PacketPriority, PacketReliability,
 		job.capBytes           = 4095; // the whole translation: fit_input cuts it at a word
 
 		// Queue FIRST, then submit: a full queue lets the line go out as typed right
-		// now; if submit throws, the queued line still goes out as typed at its
-		// deadline and a result that comes back anyway finds it already sent (or
-		// resolves it) -- never lost, never sent twice. (No result can land in
-		// between: pump() runs on this same main thread.)
+		// now; if submit throws, the queued line goes out as typed at its deadline
+		// (the catch swallows the RPC -- never sent twice) and a result that comes
+		// back anyway finds it already sent. (No result can land in between: pump()
+		// runs on this same main thread.)
 		line.translate = true;
 		if ( !enqueue( seq, text, line ) ) return true;
+		queued = true;
 		i18n::engine::submit( job );
 		return false; // swallow; on_result() + tick(), the deadline or flush_pending() sends it
 	} catch ( ... ) {
 		params->ResetReadPointer();
-		return true; // before the swallow decision -> the chat goes out untouched
+		return !queued; // queued -> it goes out from the queue; else untouched, now
 	}
 }
 
@@ -242,8 +248,9 @@ void tick( uint32_t nowMs ) {
 }
 
 void flush_pending() {
-	// Everything still waiting goes out as typed, in the order typed.
-	send_released( g_queue.flush(), false );
+	// Everything still waiting goes out now, in the order typed: translated where the
+	// translation is already in, else as typed.
+	send_released( g_queue.drain(), false );
 }
 
 size_t discard_pending() {

@@ -87,6 +87,20 @@ int main() {
               "flush: originals, in order");
         check(q.empty(), "flushed");
     }
+    {   // 8. drain: everything at once, in order -- translated where it is ready.
+        Queue q(10000, 4);
+        q.push(1, 0, P('a'));
+        q.push(2, 10, P('b'));
+        q.push(3, 20, P('c'));
+        q.resolve(2, P('B'));
+        q.resolve(3, std::vector<uint8_t>()); // ready, as the original
+        auto r = q.drain();
+        check(r.size() == 3 && r[0].seq == 1 && r[1].seq == 2 && r[2].seq == 3, "drain: in order");
+        check(!r[0].translated && r[0].payload == P('a'), "not ready: the original");
+        check(r[1].translated && r[1].payload == P('B'), "ready: the translation");
+        check(!r[2].translated && r[2].payload == P('c'), "ready without one: the original");
+        check(q.empty(), "drained");
+    }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -70,4 +70,20 @@ std::vector<Release> Queue::flush() {
     return out;
 }
 
+std::vector<Release> Queue::drain() {
+    std::vector<Release> out;
+    for (Item& h : q_) {
+        const bool useT = h.ready && !h.translated.empty();
+        Release r;
+        r.seq        = h.seq;
+        r.translated = useT;
+        r.payload    = useT ? h.translated : h.original;
+        r.original   = std::move(h.original);
+        out.push_back(std::move(r));
+    }
+    q_.clear();
+    chain_ = false;
+    return out;
+}
+
 } // namespace i18n::dlgq

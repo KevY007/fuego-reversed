@@ -16,9 +16,13 @@
 //    Close signals are never translated; a
 //    password dialog's text is, but the password the player types never is. A
 //    picked list row is sent back as the ORIGINAL row's text.
-//  * 3D LABELS / HUD: translation-memory-first -- a cache hit is rewritten in
-//    place; a miss passes the ORIGINAL through and queues a background fill, so
-//    the next identical label/textdraw shows translated.
+//  * 3D LABELS / HUD: translated LINE BY LINE, numbers kept out of it (hudtext.h),
+//    translation memory first -- a text whose lines are all in memory is rewritten
+//    in place; otherwise the ORIGINAL passes through and its missing lines are
+//    translated in the background. A textdraw or label still on screen when they
+//    land switches to the translation right there (re-sent through SA:MP's own
+//    RPC handler); game text and chat bubbles, gone in seconds, show translated
+//    from the next time on.
 //
 // The packet-rebuild functions below are PURE (byte buffers + a translator
 // callback, no game types) so they are host-tested byte-exact against real
@@ -195,7 +199,7 @@ bool rebuild_label(const uint8_t* pkt, size_t n, const Translator& tr, std::vect
 // --- plain-text HUD surfaces (no Huffman) ----------------------------------
 // True if `text` (ignoring ~x~/{RRGGBB} codes + spaces) is mostly digits/symbols
 // -- a timer/counter/stat where translating is pointless (numbers are universal).
-// Used to auto-skip dynamic textdraws so they don't spam the translator.
+// A HUD/label LINE like that is shown as it is (hudtext::plan_text).
 bool is_dynamic_text(const std::string& text);
 
 // ShowGameText (73): u32 style, u32 time, u32 msgLen, char[] message.
@@ -207,7 +211,9 @@ bool rebuild_textdraw_setstring(const uint8_t* pkt, size_t n, const Translator& 
 // ShowTextDraw (134): 65-byte fixed header, u16 szTextLen, char[] szText (last field).
 bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, std::vector<uint8_t>& out);
 
-// Called from the incoming RPC-dispatch chokepoint (compat::HandleRPCPacketFunc).
+// Called from the incoming RPC-dispatch chokepoint (compat::HandleRPCPacketFunc);
+// `handler` is SA:MP's own function for this RPC (kept for the ones re-sent to
+// update on-screen text: TextDrawSetString, ShowTextDraw, Create3DTextLabel).
 // ShowDialog (translate_dialogs): fully cached + nothing held -> rewritten in
 // place and shown now (returns false). Otherwise HELD: returns true (the caller
 // must NOT pass the RPC to SA:MP); its missing cells are translated in batch
@@ -220,17 +226,34 @@ bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, s
 // Without a running pump (hooks::pump_ready()) nothing is ever held: SA:MP shows
 // the original (or the in-place rewrite when fully cached). Close signals are
 // never translated (a password dialog's text is; the typed password never is).
-// Labels/HUD: TM-first rewrite in place
-// (returns false). InitGame (RPC 139, a new session): first discards everything
-// the old session left held or pending -- held dialogs, INPUT replies, outgoing
-// chat, list row tables -- without showing or sending any of it (returns false).
-// Main thread.
-bool on_incoming_rpc(unsigned char id, RPCParameters* rpc);
+// Labels/HUD: rewritten in place when every line is in memory (returns false);
+// shown textdraws and labels are tracked (show / set text / hide / delete) so
+// reconcile can update them later. InitGame (RPC 139, a new session): first
+// discards everything the old session left held or pending -- held dialogs, INPUT
+// replies, outgoing chat, list row tables, tracked textdraws/labels -- without
+// showing or sending any of it (returns false). Main thread.
+bool on_incoming_rpc(unsigned char id, RPCParameters* rpc, void (*handler)(RPCParameters*));
+
+// A background translation-memory fill finished (engine surface 2): its lines
+// are in memory now (or failed: shown as they are for a while, then retried), so
+// the next tick() switches every waiting on-screen textdraw/label whose lines are
+// all translated. Main thread (pump).
+void on_fill_result(const i18n::engine::Result& r);
+
+// Settings were applied: the next tick() recomputes EVERY tracked textdraw/label
+// -- turning the HUD (or dialog + label) translation off puts the originals back
+// on screen, a new target language re-translates what's there. Main thread.
+void recheck_hud();
+
+// The engine's queue was dropped (engine stopped/restarted): the fills that were
+// out will never report back -- forget them so they're sent again. Main thread.
+void forget_fills();
 
 // A dialog unit's translation finished (engine surface 3). Main thread (pump).
 void on_part_result(const i18n::engine::Result& r);
 
-// Release held dialogs that are due (every frame, main thread).
+// Every frame, main thread: release held dialogs that are due, and switch waiting
+// on-screen textdraws/labels to translations that landed.
 void tick(uint32_t nowMs);
 
 // A dialog is currently held for translation (for the on-screen indicator).

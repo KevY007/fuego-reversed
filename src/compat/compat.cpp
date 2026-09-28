@@ -145,7 +145,7 @@ void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback
 	// translating is HELD (swallowed here) and released later, translated and in order,
 	// through SA:MP's own Show. Runs before the rewrites/reads below so they see the
 	// final text.
-	if ( i18n::surfaces::on_incoming_rpc( id, rpc ) ) return;
+	if ( i18n::surfaces::on_incoming_rpc( id, rpc, callback ) ) return;
 
 	if ( rpc != nullptr && rpc->numberOfBitsOfData >= 8 ) {
 		// wrong-version reject -> tell the user to enable compat manually

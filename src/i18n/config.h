@@ -86,14 +86,17 @@ struct Settings {
     // translated, then shown in arrival order with the server's original timing
     // (after 10 s untranslated: shown in the original); a password dialog's text is
     // translated too, but the password the player types is never touched. 3D labels
-    // stay translation-memory-first: first sight shows the
-    // original + fills the cache, the next identical label shows translated.
+    // are translated line by line: one not in the translation memory shows in the
+    // original and switches to the translation on screen as soon as it's ready.
     // Default OFF.
     bool translate_dialogs = false;
 
     // Translate the HUD: textdraws (RPC 105/134), gametext (73), chat bubbles (59).
-    // Plain text (no Huffman). Also TM-first; dynamic/numeric-heavy textdraws
-    // (timers, counters) are skipped automatically. NOTE: textdraws/gametext render
+    // Plain text (no Huffman). Line by line, numbers kept out of it (a timer or a
+    // count reuses one translation); lines that are mostly numbers stay as they are.
+    // A textdraw not in the translation memory shows in the original and switches
+    // to the translation on screen as soon as it's ready (game text and bubbles, gone
+    // in seconds: translated from the next time on). NOTE: textdraws/gametext render
     // via GTA's bitmap-glyph font -> best for Latin/romanized targets. Default OFF.
     bool translate_hud = false;
 };

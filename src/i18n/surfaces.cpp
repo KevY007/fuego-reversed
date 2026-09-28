@@ -3,6 +3,8 @@
 #include "config.h"
 #include "engine.h"
 #include "dlgq.h"
+#include "hudtext.h"
+#include "huffman.h"
 #include "hooks.h"               // hooks::pump_ready() -- a swallowed reply needs a pump to deliver it
 #include "outbound.h"            // outbound::discard_pending() on a new session (InitGame)
 
@@ -16,6 +18,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -34,65 +37,6 @@ void split_lines(const std::string& s, std::vector<std::string>& out) {
     size_t start = 0;
     for (size_t i = 0; i <= s.size(); ++i)
         if (i == s.size() || s[i] == '\n') { out.push_back(s.substr(start, i - start)); start = i + 1; }
-}
-
-// Queue a background cache-fill translation (surface 2 -> apply_result ignores it;
-// process_one() translates through the full pipeline -- mask/glossary/validate --
-// and stores the result in the TM cache). Dedup ON, so a repeatedly-seen miss is
-// only translated once.
-void queue_fill(const std::string& src) {
-    if (src.size() < 2) return;
-    i18n::engine::Job j;
-    j.handle      = g_seq.fetch_add(1, std::memory_order_relaxed);
-    j.surface     = 2;
-    j.sourceBytes = src;
-    j.srcCodepage = i18n::config::get().source_cp;
-    j.skipContext = true;
-    i18n::engine::submit(j);
-}
-
-// The longest text each surface really accepts (SA:MP 0.3.DL, verified in samp.dll):
-//   gametext    <= 200 bytes -- the RPC 73 handler drops anything longer
-//   textdraw    <  800 bytes (RPC 134: len < 800; RPC 105's buffer is 800), and only
-//               <= 255 with ~k~ key codes (CTextDraw::SetText rejects longer)
-//   3D label    ~k~ codes only expand below 400 bytes; the decoder holds 2048
-//   chat bubble <= 144
-// (Capping these to chat's 144 cut long translated labels/textdraws, e.g. a
-// two-line ATM prompt; a flat 400/800 overshot the real limits.)
-bool has_key_code(const std::string& s) { return s.find("~k~") != std::string::npos || s.find("~K~") != std::string::npos; }
-int limit_label(const std::string& src)    { return has_key_code(src) ? 399 : 1024; }
-int limit_textdraw(const std::string& src) { return has_key_code(src) ? 255 : 799; }
-int limit_gametext(const std::string&)     { return 200; }
-int limit_bubble(const std::string&)       { return 144; }
-
-// TM-first translator for a piece of text: cache hit -> out=translation, true;
-// trivial string (<2 chars, e.g. a lone space) -> keep as-is, true; miss -> queue
-// a fill and return false (caller shows the original this time). A translation
-// LONGER than the surface's limit is never cut (a cut can split a ~x~ code -- SA:MP
-// then shows "Error: unmatched tilde", or drops the text): the original is shown.
-bool tm_translate(const std::string& src, std::string& out, int limit) {
-    if (src.size() < 2) { out = src; return true; }
-    auto& s = i18n::config::get();
-    std::string t;
-    if (i18n::engine::cache_lookup(src, s.source_cp, s.target_lang, t, 4095)) {
-        if ((int)t.size() > limit) return false; // too long for this surface: keep the original
-        out = std::move(t);
-        return true;
-    }
-    queue_fill(src);
-    return false;
-}
-
-// HUD variant: additionally SKIP dynamic/numeric-heavy strings (timers, counters,
-// stats) so a textdraw that updates every tick with a changing number never spams
-// the translator -- return false (pass original) without queueing anything.
-bool tm_translate_hud(const std::string& src, std::string& out, int limit) {
-    if (is_dynamic_text(src)) return false;
-    return tm_translate(src, out, limit);
-}
-
-Translator hud_translator(int (*limit)(const std::string&)) {
-    return [limit](const std::string& a, std::string& b) { return tm_translate_hud(a, b, limit(a)); };
 }
 
 // Replace the RPC's payload with `pkt` (all byte-aligned). Mirrors compat's
@@ -537,6 +481,321 @@ bool on_send_dialogresponse(int id, BitStream* params, PacketPriority, PacketRel
     return true;
 }
 
+// ---- HUD text + 3D labels: line by line, translation memory first -------------
+// (hudtext.h). A text whose lines are all in the translation memory is rewritten
+// in the RPC; otherwise the ORIGINAL is shown and its missing lines are translated
+// in the background (surface-2 fills). A textdraw or 3D label still on screen when
+// they land is switched to the translation right there (reconcile_hud), through
+// SA:MP's own RPC handler. Without that, a text the server shows ONCE -- "Vehicle
+// locked", a spawn menu, a welcome box -- stayed in English: its translation only
+// ever reached the memory, for a next time that never came.
+
+// The longest text each surface really accepts (SA:MP 0.3.DL, verified in samp.dll):
+//   gametext    <= 200 bytes -- the RPC 73 handler drops anything longer
+//   textdraw    <  800 bytes (RPC 134: len < 800; RPC 105's buffer is 800), and only
+//               <= 255 with ~k~ key codes (CTextDraw::SetText rejects longer)
+//   3D label    ~k~ codes only expand below 400 bytes; the decoder holds 2048
+//   chat bubble <= 144
+// A translation longer than that is never cut (a cut can split a ~x~ code -- SA:MP
+// then shows "Error: unmatched tilde", or drops the text): the original shows.
+bool has_key_code(const std::string& s) { return s.find("~k~") != std::string::npos || s.find("~K~") != std::string::npos; }
+int limit_label(const std::string& src)    { return has_key_code(src) ? 399 : 1024; }
+int limit_textdraw(const std::string& src) { return has_key_code(src) ? 255 : 799; }
+int limit_gametext(const std::string&)     { return 200; }
+int limit_bubble(const std::string&)       { return 144; }
+
+constexpr int      kHudLookupCap  = 4095;   // the whole memory entry; each surface's limit is checked after
+constexpr uint32_t kFillLostMs    = 120000; // a fill still out after this long was lost: send it again
+// A line whose translation failed shows as it is for a while, then is retried --
+// after 30 s (a provider hiccup or timeout is usually over by then), then 5 min,
+// then every 30 min: a line the model keeps rejecting (a lost placeholder) isn't
+// re-sent all the time, and each retry briefly shows the rest of its text in
+// English again while it's out.
+uint32_t retry_delay(int failures) { return failures <= 1 ? 30000u : failures == 2 ? 300000u : 1800000u; }
+constexpr uint32_t kHudRecheckMs  = 2000;   // re-check texts still waiting (retries lost fills)
+constexpr uint32_t kHudDebounceMs = 100;    // at most this often after a fill lands
+
+std::unordered_map<std::string, uint32_t>              g_fillOut;    // key -> GetTickCount() its fill went out
+struct Failed {
+    uint32_t until = 0; // GetTickCount() until which the line shows as it is
+    int      count = 0; // failures in a row
+};
+std::unordered_map<std::string, Failed>                g_fillFailed; // key -> its last failed fill
+std::unordered_map<uint64_t, std::vector<std::string>> g_fillJobs;   // fill job handle -> its keys
+
+// A textdraw or 3D label on screen right now, as far as the server's RPCs say.
+struct OnScreen {
+    std::string          text;            // the server's text (the original)
+    std::string          shown;           // what is displayed: `text`, or our translation of it
+    std::vector<uint8_t> pkt;             // label: its Create3DTextLabel payload; textdraw: its last ShowTextDraw
+    bool                 waiting = false; // some of its lines are being translated
+};
+std::unordered_map<uint16_t, OnScreen> g_textdraws; // textdraw id -> (global 0..2047, player 2048..2303)
+std::unordered_map<uint16_t, OnScreen> g_labels;    // 3D label id
+
+// SA:MP's own handlers for the RPCs we re-send, as seen at dispatch (the RPC node's
+// function): calling one with a payload we built is exactly the server sending it.
+// Verified in samp.dll 0.3.DL: TextDrawSetString (105) checks the id is in range and
+// the textdraw exists, and takes up to 800 bytes; ShowTextDraw (134) and
+// Create3DTextLabel (36) on an id already in use first delete what is there.
+using RpcHandler = void (*)(RPCParameters*);
+RpcHandler g_onSetString    = nullptr;
+RpcHandler g_onShowTextDraw = nullptr;
+RpcHandler g_onCreateLabel  = nullptr;
+
+bool     g_hudDirty     = false; // a fill landed: a waiting text may be complete now
+bool     g_hudRecheck   = false; // settings changed: recompute every tracked text
+bool     g_hudWaiting   = false; // some tracked text is waiting
+uint32_t g_hudLastCheck = 0;
+
+inline uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+void put16(std::vector<uint8_t>& v, size_t n) {
+    v.push_back((uint8_t)(n & 0xFF));
+    v.push_back((uint8_t)((n >> 8) & 0xFF));
+}
+
+// The translation memory's answer for one line key (hudtext::Lookup).
+i18n::hudtext::Look hud_look(const std::string& key, std::string& tr) {
+    const auto& s = i18n::config::get();
+    if (i18n::engine::cache_lookup(key, s.source_cp, s.target_lang, tr, kHudLookupCap)) return i18n::hudtext::Look::Hit;
+    // Already the target language / nothing translatable survives protect::mask.
+    if (!i18n::engine::needs_translation(key, s.source_cp, s.target_lang)) return i18n::hudtext::Look::Keep;
+    auto f = g_fillFailed.find(key);
+    if (f != g_fillFailed.end() && (int32_t)(f->second.until - GetTickCount()) > 0) return i18n::hudtext::Look::Keep;
+    return i18n::hudtext::Look::Miss; // (a failed line past its wait: retried; the count stays)
+}
+
+// Send the keys that aren't already out as background fills (surface 2, normal
+// lane): one numbered-list request per chunk, like a dialog's cells (one key per
+// request while batching is off, so they run in parallel).
+void queue_fills(const std::vector<std::string>& keys) {
+    const uint32_t now = GetTickCount();
+    if (g_fillOut.size() > 2048) {
+        for (auto it = g_fillOut.begin(); it != g_fillOut.end();)
+            it = (now - it->second >= kFillLostMs) ? g_fillOut.erase(it) : std::next(it);
+        if (g_fillOut.size() > 2048) g_fillOut.clear();
+    }
+    if (g_fillJobs.size() > 512) g_fillJobs.clear(); // results that never came (engine restarts)
+    std::vector<std::string> todo;
+    for (const std::string& k : keys) {
+        auto it = g_fillOut.find(k);
+        if (it != g_fillOut.end() && now - it->second < kFillLostMs) continue;
+        g_fillOut[k] = now;
+        todo.push_back(k);
+    }
+    const size_t maxItems = i18n::engine::batching_enabled() ? kBatchMaxItems : 1;
+    const auto& s = i18n::config::get();
+    for (size_t i = 0; i < todo.size();) {
+        i18n::engine::Job j;
+        j.handle      = g_seq.fetch_add(1, std::memory_order_relaxed);
+        j.surface     = 2;
+        j.srcCodepage = s.source_cp;
+        j.skipContext = true;
+        j.noDedup     = true;
+        j.capBytes    = kHudLookupCap;
+        size_t bytes = 0;
+        while (i < todo.size() && j.units.size() < maxItems &&
+               (j.units.empty() || bytes + todo[i].size() <= kBatchMaxBytes)) {
+            bytes += todo[i].size();
+            j.units.push_back(todo[i++]);
+        }
+        g_fillJobs[j.handle] = j.units;
+        i18n::engine::submit(j);
+    }
+}
+
+enum class HudOut { Same, Translated, Waiting };
+
+// `src` translated line by line from the translation memory. Translated: `out`
+// holds it (within `limit` bytes). Same: nothing to change (nothing to translate,
+// or the translation doesn't fit this surface). Waiting: some lines aren't
+// translated yet -- their fills are queued; the original shows meanwhile.
+HudOut hud_translate(const std::string& src, bool label, int limit, std::string& out) {
+    std::vector<std::string> missing;
+    std::string t;
+    if (!i18n::hudtext::resolve(i18n::hudtext::plan_text(src, label), hud_look, t, missing)) {
+        queue_fills(missing);
+        return HudOut::Waiting;
+    }
+    if (t == src || (int)t.size() > limit) return HudOut::Same;
+    out = std::move(t);
+    return HudOut::Translated;
+}
+
+// A Translator (rebuild_*) over hud_translate, for the texts we don't track.
+Translator hud_translator(int (*limit)(const std::string&)) {
+    return [limit](const std::string& a, std::string& b) {
+        std::string t;
+        if (hud_translate(a, false, limit(a), t) != HudOut::Translated) return false;
+        b = std::move(t);
+        return true;
+    };
+}
+
+// SEH-isolated call into SA:MP (no C++ objects in this frame, so __except is legal).
+bool safe_rpc(RpcHandler fn, RPCParameters* rp) {
+    __try {
+        fn(rp);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Run SA:MP's handler on a payload we built, as if the server had sent it.
+bool call_rpc(RpcHandler fn, std::vector<uint8_t> pkt) {
+    if (!fn || pkt.empty()) return false;
+    const unsigned bits = (unsigned)(pkt.size() * 8);
+    pkt.push_back(0); // the handler's BitStream spans (bits / 8) + 1 bytes
+    RPCParameters rp{};
+    rp.input              = pkt.data();
+    rp.numberOfBitsOfData = bits;
+    if (safe_rpc(fn, &rp)) return true;
+    Log("[i18n] on-screen text update failed (crash-guarded).");
+    return false;
+}
+
+// Put `text` on textdraw `id`: TextDrawSetString (u16 id, u16 len, text); before
+// SA:MP's handler for that was ever seen, re-show it with its last ShowTextDraw's
+// properties (65-byte header, u16 len, text).
+bool set_textdraw(uint16_t id, const OnScreen& td, const std::string& text) {
+    std::vector<uint8_t> pkt;
+    if (g_onSetString && text.size() <= 800) {
+        put16(pkt, id);
+        put16(pkt, text.size());
+        pkt.insert(pkt.end(), text.begin(), text.end());
+        return call_rpc(g_onSetString, std::move(pkt));
+    }
+    if (g_onShowTextDraw && td.pkt.size() >= 67 && text.size() < 800) {
+        pkt.assign(td.pkt.begin(), td.pkt.begin() + 65);
+        put16(pkt, text.size());
+        pkt.insert(pkt.end(), text.begin(), text.end());
+        return call_rpc(g_onShowTextDraw, std::move(pkt));
+    }
+    return false;
+}
+
+// Re-create a 3D label with `text`: its Create3DTextLabel's 27-byte header + the
+// Huffman-encoded text.
+bool set_label(const OnScreen& lb, const std::string& text) {
+    if (!g_onCreateLabel || lb.pkt.size() < 27) return false;
+    std::vector<uint8_t> pkt(lb.pkt.begin(), lb.pkt.begin() + 27);
+    const std::vector<uint8_t> enc = i18n::huffman::encode_string(text);
+    pkt.insert(pkt.end(), enc.begin(), enc.end());
+    return call_rpc(g_onCreateLabel, std::move(pkt));
+}
+
+// What a tracked text should show now: its translation, or the original (the
+// surface is off, nothing to translate, or still waiting).
+std::string wanted(OnScreen& o, bool on, bool label, int limit) {
+    o.waiting = false;
+    if (!on) return o.text;
+    std::string t;
+    const HudOut r = hud_translate(o.text, label, limit, t);
+    o.waiting = (r == HudOut::Waiting);
+    return r == HudOut::Translated ? t : o.text;
+}
+
+// A tracked text just arrived in an RPC (ShowTextDraw / SetString / label): the
+// translation, when fully in memory, replaces the text right in the RPC (`rewrite`
+// rebuilds the packet); otherwise the original shows and it waits.
+void on_tracked(OnScreen& o, bool on, bool label, int limit, const std::function<void(const std::string&)>& rewrite) {
+    o.shown = o.text;
+    const std::string want = wanted(o, on, label, limit);
+    if (o.waiting) g_hudWaiting = true;
+    if (want != o.text) {
+        rewrite(want);
+        o.shown = want;
+    }
+}
+
+// Bring every tracked textdraw/label up to date: after a fill landed (debounced),
+// every kHudRecheckMs while some text is waiting, and on every settings change --
+// then ALL of them, so turning the surface off puts the originals back and a new
+// target language re-translates what's on screen. Main thread (pump).
+void reconcile_hud(uint32_t now) {
+    const bool due = g_hudRecheck || (g_hudDirty && now - g_hudLastCheck >= kHudDebounceMs) ||
+                     (g_hudWaiting && now - g_hudLastCheck >= kHudRecheckMs);
+    if (!due) return;
+    const bool all = g_hudRecheck;
+    g_hudRecheck = g_hudDirty = g_hudWaiting = false;
+    g_hudLastCheck = now;
+    const auto& s = i18n::config::get();
+    for (auto& [id, td] : g_textdraws) {
+        if (!all && !td.waiting) continue;
+        std::string want = wanted(td, s.translate_hud, false, limit_textdraw(td.text));
+        if (td.waiting) g_hudWaiting = true;
+        if (want != td.shown && set_textdraw(id, td, want)) td.shown = std::move(want);
+    }
+    for (auto& [id, lb] : g_labels) {
+        if (!all && !lb.waiting) continue;
+        std::string want = wanted(lb, s.translate_dialogs, true, limit_label(lb.text));
+        if (lb.waiting) g_hudWaiting = true;
+        if (want != lb.shown && set_label(lb, want)) lb.shown = std::move(want);
+    }
+}
+
+// Track + translate the HUD/label RPCs. Returns true when the RPC was rewritten
+// into `out`.
+bool handle_hud(unsigned char id, const uint8_t* p, size_t n, std::vector<uint8_t>& out) {
+    const auto& s = i18n::config::get();
+    switch (id) {
+        case RPC_ShowTextDraw: { // u16 id, 63 bytes of properties, u16 len, text
+            if (n < 67) return false;
+            size_t len = rd16(p + 65);
+            if (67 + len > n) len = n - 67;
+            OnScreen& td = g_textdraws[rd16(p)];
+            td.text.assign((const char*)(p + 67), len);
+            td.pkt.assign(p, p + n);
+            bool ok = false;
+            on_tracked(td, s.translate_hud, false, limit_textdraw(td.text), [&](const std::string& t) {
+                ok = rebuild_textdraw_show(p, n, [&t](const std::string&, std::string& o) { o = t; return true; }, out);
+            });
+            if (!ok) td.shown = td.text;
+            return ok;
+        }
+        case RPC_TextDrawSetString: { // u16 id, u16 len, text
+            if (n < 4) return false;
+            size_t len = rd16(p + 2);
+            if (4 + len > n) len = n - 4;
+            OnScreen& td = g_textdraws[rd16(p)]; // new if it was shown before we were loaded
+            td.text.assign((const char*)(p + 4), len);
+            bool ok = false;
+            on_tracked(td, s.translate_hud, false, limit_textdraw(td.text), [&](const std::string& t) {
+                ok = rebuild_textdraw_setstring(p, n, [&t](const std::string&, std::string& o) { o = t; return true; }, out);
+            });
+            if (!ok) td.shown = td.text;
+            return ok;
+        }
+        case RPC_TextDrawHideForPlayer: // u16 id: the textdraw is gone
+            if (n >= 2) g_textdraws.erase(rd16(p));
+            return false;
+        case RPC_Create3DTextLabel: { // u16 id + 25 bytes, then the Huffman text
+            if (n <= 27) return false;
+            std::string text;
+            if (!i18n::huffman::decode_string(p + 27, n - 27, text)) return false;
+            OnScreen& lb = g_labels[rd16(p)];
+            lb.text = std::move(text);
+            lb.pkt.assign(p, p + n);
+            bool ok = false;
+            on_tracked(lb, s.translate_dialogs, true, limit_label(lb.text), [&](const std::string& t) {
+                ok = rebuild_label(p, n, [&t](const std::string&, std::string& o) { o = t; return true; }, out);
+            });
+            if (!ok) lb.shown = lb.text;
+            return ok;
+        }
+        case RPC_Delete3DTextLabel: // u16 id: the label is gone
+            if (n >= 2) g_labels.erase(rd16(p));
+            return false;
+        case RPC_DisplayGameText: // shown for a few seconds: translated when in memory, never tracked
+            return s.translate_hud && rebuild_gametext(p, n, hud_translator(limit_gametext), out);
+        case RPC_ChatBubble:
+            return s.translate_hud && rebuild_chatbubble(p, n, hud_translator(limit_bubble), out);
+        default:
+            return false;
+    }
+}
+
 // A new game session (InitGame): everything still held or pending belongs to the
 // OLD server/session -- drop it WITHOUT showing or sending any of it (a held
 // dialog, an INPUT reply or a chat line meant for the previous server must never
@@ -551,6 +810,9 @@ void discard_session() {
     g_recentFills.clear();
     g_pendingResponses.clear();                              // INPUT replies: never sent
     g_shownRows.clear();                                     // no remap against the old dialogs' rows
+    g_textdraws.clear();                                     // the new session creates its own
+    g_labels.clear();
+    g_hudWaiting = false;
     const size_t chat = i18n::outbound::discard_pending();   // outgoing chat: never sent
     Log("[i18n] new session (InitGame): discarded %u held dialog(s), %u pending input reply(ies), "
         "%u pending outgoing chat line(s), %u list row table(s).",
@@ -559,12 +821,18 @@ void discard_session() {
 
 } // namespace
 
-bool on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
+bool on_incoming_rpc(unsigned char id, RPCParameters* rpc, void (*handler)(RPCParameters*)) {
     // InitGame (a (re)connect, a server restart/GMX, another server): before any
     // other handling, discard the old session's held/pending state. Never swallowed.
     if (id == RPC_InitGame) {
         try { discard_session(); } catch (...) {} // an RPC-dispatch seam: nothing may escape
         return false;
+    }
+    // SA:MP's own handlers of the RPCs reconcile_hud re-sends.
+    if (handler) {
+        if (id == RPC_TextDrawSetString)      g_onSetString    = handler;
+        else if (id == RPC_ShowTextDraw)      g_onShowTextDraw = handler;
+        else if (id == RPC_Create3DTextLabel) g_onCreateLabel  = handler;
     }
     if (!rpc || !rpc->input || rpc->numberOfBitsOfData < 8) return false;
     auto& s = i18n::config::get();
@@ -572,34 +840,47 @@ bool on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
     size_t n = (size_t)((rpc->numberOfBitsOfData + 7) / 8);
 
     try {
-        if (id == 61) {
+        if (id == RPC_ShowDialog) {
             if (!s.translate_dialogs) {
                 note_shown(std::vector<uint8_t>(p, p + n), nullptr); // shown natively -> erase any stale entry
                 return false;
             }
             return handle_dialog(rpc, p, n);
         }
-
         std::vector<uint8_t> out;
-        bool ok = false;
-        if (s.translate_dialogs && id == 36) {
-            ok = rebuild_label(p, n, [](const std::string& a, std::string& b) { return tm_translate(a, b, limit_label(a)); },
-                               out);
-        } else if (s.translate_hud && (id == 73 || id == 59 || id == 105 || id == 134)) {
-            switch (id) {
-                case 73:  ok = rebuild_gametext(p, n, hud_translator(limit_gametext), out); break;
-                case 59:  ok = rebuild_chatbubble(p, n, hud_translator(limit_bubble), out); break;
-                case 105: ok = rebuild_textdraw_setstring(p, n, hud_translator(limit_textdraw), out); break;
-                case 134: ok = rebuild_textdraw_show(p, n, hud_translator(limit_textdraw), out); break;
-            }
-        } else {
-            return false;
-        }
-        if (ok && !out.empty()) commit(rpc, out);
+        if (handle_hud(id, p, n, out) && !out.empty()) commit(rpc, out);
     } catch (...) {
         // Never let an exception cross back into SA:MP's RPC dispatch.
     }
     return false;
+}
+
+void on_fill_result(const i18n::engine::Result& r) {
+    g_hudDirty = true; // any fill (a dialog's background batch too) may complete a waiting text
+    auto it = g_fillJobs.find(r.handle);
+    if (it == g_fillJobs.end()) return;
+    const uint32_t now = GetTickCount();
+    const std::vector<std::string>& keys = it->second;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        g_fillOut.erase(keys[i]);
+        if (i < r.unitOut.size() && !r.unitOut[i].empty()) {
+            g_fillFailed.erase(keys[i]);
+        } else {
+            Failed& f = g_fillFailed[keys[i]];
+            f.until   = now + retry_delay(++f.count);
+        }
+    }
+    if (g_fillFailed.size() > 2048) g_fillFailed.clear(); // (only ever a few in practice)
+    g_fillJobs.erase(it);
+}
+
+void recheck_hud() { g_hudRecheck = true; }
+
+void forget_fills() {
+    g_fillOut.clear();    // their jobs were dropped with the engine's queue
+    g_fillJobs.clear();
+    g_fillFailed.clear(); // another model / target language: worth trying again
+    g_hudRecheck = true;
 }
 
 void on_part_result(const i18n::engine::Result& r) {
@@ -625,6 +906,7 @@ void on_part_result(const i18n::engine::Result& r) {
 
 void tick(uint32_t nowMs) {
     flush_due_responses(nowMs); // guaranteed delivery: nothing waits past its deadline
+    reconcile_hud(nowMs);       // on-screen textdraws/labels: switch to translations that landed
     if (g_dlgq.empty()) return;
     std::vector<i18n::dlgq::Release> out =
         i18n::config::get().translate_dialogs ? g_dlgq.tick(nowMs) : g_dlgq.flush();

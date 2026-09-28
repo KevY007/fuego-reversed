@@ -307,15 +307,19 @@ void draw_ui() {
 			            "then appears translated -- in the order the server sent them and with the server's "
 			            "original timing between them. If translating takes longer than 10 s, it appears in "
 			            "the original instead. Dialogs seen before appear translated at once. Password "
-			            "dialogs are translated too -- the password you type is never touched. 3D labels "
-			            "show in the original the first time and translated from the next time on." );
+			            "dialogs are translated too -- the password you type is never touched. A 3D label "
+			            "not translated before shows in the original and switches to the translation a "
+			            "moment later." );
 			if ( ImGui::Checkbox( "Translate HUD (textdraws, gametext, chat bubbles)", &s.translate_hud ) )
 				i18n::hooks::apply_config();
 			ImGui::SameLine();
-			HelpMarker( "Translates HUD textdraws, big center gametext, and chat bubbles. Dynamic/numeric "
-			            "textdraws (timers, counters, stats) are auto-skipped so they don't spam the "
-			            "translator. NOTE: textdraws/gametext use GTA's glyph font -- best for English/"
-			            "romanized targets; Cyrillic/Arabic may not render there (dialogs/labels/chat are fine)." );
+			HelpMarker( "Translates HUD textdraws, big center gametext, and chat bubbles, line by line. "
+			            "Numbers (timers, counts, prices) stay as they are, so a changing number doesn't "
+			            "need a new translation. A textdraw not translated before shows in the original "
+			            "and switches to the translation a moment later; gametext and chat bubbles show "
+			            "translated from the next time. NOTE: textdraws/gametext use GTA's glyph font -- "
+			            "best for English/romanized targets; Cyrillic/Arabic may not render there "
+			            "(dialogs/labels/chat are fine)." );
 			ImGui::Separator();
 
 			// Endpoint + model text buffers (declared together so the Provider

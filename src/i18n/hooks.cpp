@@ -88,9 +88,11 @@ void apply_result( const i18n::engine::Result &r ) {
 	if ( r.surface == 3 ) { i18n::surfaces::on_part_result( r ); return; }
 	// Outgoing dialog-input translations (surface 4) are sent to the server.
 	if ( r.surface == 4 ) { i18n::surfaces::on_response_result( r ); return; }
-	// Surface 2: translation-memory fill (labels/HUD, and the background batches of
-	// a dialog shown right away because translating it would take too long) --
-	// already cached by process_one()/process_batch(); nothing to show.
+	// Surface 2: translation-memory fill (labels/HUD lines, and the background batches
+	// of a dialog shown right away because translating it would take too long) --
+	// already cached by process_batch(); a textdraw/label waiting on screen for it
+	// switches to the translation on the next tick.
+	if ( r.surface == 2 ) { i18n::surfaces::on_fill_result( r ); return; }
 	if ( r.surface != 0 ) return;
 
 	// Inbound chat (surface 0): overwrite the rows the original line became with the
@@ -261,6 +263,9 @@ void apply_config() {
 	bool engineTouched = false;
 	try {
 		auto &s = i18n::config::get();
+		// On-screen textdraws/labels follow the new settings (translated, back to the
+		// original, or into a new target language) on the next tick.
+		i18n::surfaces::recheck_hud();
 		// The one worker engine serves every surface (inbound chat display, outbound
 		// send, and the dialog/label cache-fill jobs), so it runs whenever ANY of them
 		// is enabled.
@@ -268,6 +273,7 @@ void apply_config() {
 			if ( g_engineOn ) {
 				i18n::surfaces::flush_responses(); // about to drop the queue -- never lose a swallowed reply
 				i18n::outbound::flush_pending();   // ... or a swallowed chat line
+				i18n::surfaces::forget_fills();    // ... and HUD/label fills never report back
 				engineTouched = true;
 				i18n::engine::stop();
 				g_engineOn = false;
@@ -301,6 +307,7 @@ void apply_config() {
 
 		i18n::surfaces::flush_responses(); // the queue below is about to be dropped
 		i18n::outbound::flush_pending();
+		i18n::surfaces::forget_fills();
 		engineTouched = true;
 		i18n::engine::start( pc, prompt, s.target_lang, dispCp );
 		g_engineOn  = true;

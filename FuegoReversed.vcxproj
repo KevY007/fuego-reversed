@@ -142,6 +142,9 @@
     <ClCompile Include="src\i18n\surfaces_rebuild.cpp">
       <ObjectFileName>$(IntDir)i18n_surfaces_rebuild.obj</ObjectFileName>
     </ClCompile>
+    <ClCompile Include="src\i18n\hudtext.cpp">
+      <ObjectFileName>$(IntDir)i18n_hudtext.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="src\i18n\lab.cpp">
       <ObjectFileName>$(IntDir)i18n_lab.obj</ObjectFileName>
     </ClCompile>

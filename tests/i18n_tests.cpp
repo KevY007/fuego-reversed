@@ -345,6 +345,23 @@ void test_protect() {
     CHECK(wo.text.find("w/o") != std::string::npos && wo.text.find("km/h") != std::string::npos,
           "w/o and km/h are not commands");
 
+    // A UI label (a HUD line, a dialog cell): "Word (N)" there is a count, not a
+    // player -- "Civilian (8)" of a spawn menu must stay translatable -- and a
+    // number glued to its unit is masked too, so a reply can't drop or change it.
+    Masked civ = mask("Civilian (8)", true);
+    CHECK(civ.translatable && civ.text.find("Civilian") != std::string::npos, "label: 'Word (N)' is a count");
+    CHECK(!mask("Civilian (8)").translatable, "chat: 'Name (ID)' is still a player");
+    CHECK(mask("Medic/Fire (0)", true).text.find("Fire") != std::string::npos, "label: 'Fire (0)' is translatable");
+    CHECK(mask("(3) Police", true).text.find("Police") != std::string::npos, "label: '(N) Word' is a count too");
+    Masked timer = mask("Next city: Los Santos (2m 3s)", true);
+    CHECK(timer.tokens.size() == 2 && timer.text.find("2m") == std::string::npos &&
+          timer.text.find("3s") == std::string::npos && timer.text.find("s)") != std::string::npos,
+          "label: numbers glued to a unit are masked, the unit stays");
+    CHECK(mask("Next city: Los Santos (2m 3s)").text.find("2m") != std::string::npos,
+          "chat: '2m' is unchanged");
+    Masked named = mask("Kevin_Smith (12) is wanted", true);
+    CHECK(named.text.find("Kevin") == std::string::npos, "label: a Name_Surname is still masked");
+
     // CRITICAL 2a: a speech-verb prefix ("Name says:") still masks the name
     // and still round-trips.
     Masked saysMsg = mask("Kevin says: hola");

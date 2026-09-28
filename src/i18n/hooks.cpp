@@ -159,9 +159,11 @@ void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const ch
 		auto &s = i18n::config::get();
 
 		// Translation-memory hit: show it ALREADY translated -- SA:MP wraps it with its
-		// own rules, and there is nothing to flip later.
+		// own rules, and there is nothing to flip later. (In the running engine's target
+		// language: a target picked in the menu applies on Save, like the jobs.)
 		std::string cached;
-		if ( i18n::engine::cache_lookup( msg, s.source_cp, s.target_lang, cached ) && !cached.empty() ) {
+		if ( i18n::engine::cache_lookup( msg, s.source_cp, i18n::engine::active_target_lang(), cached ) &&
+		     !cached.empty() ) {
 			g_origAddEntry( self, type, cached.c_str(), prefix, textColor, prefixColor );
 			shown = true;
 			return;

@@ -152,6 +152,48 @@ void test_engine() {
     CHECK(!engine::needs_translation("", 1252, 1033), "empty source -> no translation needed");
     CHECK(!engine::needs_translation("/quit", 1252, 1033),
           "protect::mask()-untranslatable (pure command, per test_protect) -> no translation needed");
+    CHECK(engine::needs_translation("Civilian (2)", 1252, 1034, /*labels=*/true),
+          "a UI label 'Civilian (2)' needs translating (a count, not a player)");
+    CHECK(!engine::needs_translation("Civilian (2)", 1252, 1034),
+          "in chat 'Civilian (2)' is a 'Name (ID)' player reference -- masked whole");
+
+    // A batch of UI labels: the provider sees 'Civilian' (not a placeholder for the
+    // whole text) and the glued number stays a placeholder; a provider failure is
+    // reported through *providerFailed.
+    {
+        struct Labels : IProvider {
+            std::vector<std::string> seen;
+            bool fail = false;
+            bool translate(const std::vector<std::string>& texts, const std::string&, const std::string&,
+                           std::vector<std::string>& out, std::string& err) override {
+                if (fail) { err = "down"; return false; }
+                seen = texts;
+                out = texts; // an echo keeps every placeholder
+                return true;
+            }
+            const char* name() const override { return "labels"; }
+        } lp;
+        cache::clear_for_test();
+        engine::reset_batch_for_test();
+        std::vector<std::string> outL;
+        bool pf = false;
+        engine::process_batch({ "Civilian (2)", "Next city (2m 3s)" }, 1252, &lp, "sys", outL, 1034, 1252, 1024,
+                              /*labels=*/true, &pf);
+        CHECK(!pf && outL.size() == 2 && outL[0] == "Civilian (2)" && outL[1] == "Next city (2m 3s)",
+              "labels batch: echoed translations come back whole");
+        bool sawCivilian = false, gluedMasked = false;
+        for (const std::string& t : lp.seen) {
+            if (t.find("Civilian") != std::string::npos) sawCivilian = true;
+            if (t.find("Next city") != std::string::npos && t.find("2m") == std::string::npos) gluedMasked = true;
+        }
+        CHECK(sawCivilian && gluedMasked, "labels batch: 'Civilian' reaches the model, '2m' is masked");
+        cache::clear_for_test();
+        lp.fail = true;
+        std::vector<std::string> outF;
+        engine::process_batch({ "Selected spawn", "Nearby Locations" }, 1252, &lp, "sys", outF, 1034, 1252, 1024,
+                              true, &pf);
+        CHECK(pf, "a provider that fails outright sets providerFailed");
+    }
 
     // ---- I1: a cached value that is empty once capped for display (master stored
     // "" for some cp1251 lines; '%'-only text caps to "") is a MISS, never a hit that

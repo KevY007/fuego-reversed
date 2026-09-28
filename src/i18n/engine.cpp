@@ -51,6 +51,7 @@ std::string profile_copy() {
 std::unique_ptr<IProvider> g_provider;
 std::string g_sysPrompt;
 int g_targetLang = 1033;  // written only by start() (same publication rules as g_sysPrompt)
+std::atomic<int> g_activeTarget{1033}; // the same, for the game thread (active_target_lang())
 int g_displayCp  = 1252;
 // Send recent chat as context (context_for_provider). Set by start() -- on the init
 // thread at startup, while the game thread may already submit() chat -- so atomic.
@@ -239,7 +240,7 @@ struct Prepared {
     std::string     lead, send, trail; // masked.text = lead + send + trail (see split_edges)
 };
 
-Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap) {
+Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap, bool labels = false) {
     Prepared p;
     // 1-2: pick the source codepage and decode to a wide string.
     int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
@@ -271,7 +272,7 @@ Prepared prepare(const std::string& srcBytes, int cp, int targetLang, size_t cap
 
     // 5: mask non-translatable spans (commands, colours, names, coords, ...); the
     // codes at the very edges stay out of the model's input (split_edges).
-    p.masked = protect::mask(normSrc);
+    p.masked = protect::mask(normSrc, labels);
     if (!p.masked.translatable) return p;
     split_edges(p.masked.text, p.masked.tokens, p.lead, p.send, p.trail);
     p.kind = Prepared::Need;
@@ -385,10 +386,11 @@ void worker_loop() {
         std::string disp;
         std::vector<std::string> unitOut;
         bool ok = false;
+        bool provFailed = false;
         try {
             if (!job.units.empty())
                 ok = process_batch(job.units, job.srcCodepage, g_provider.get(), sp, unitOut,
-                                   tl, dcp, job.capBytes);
+                                   tl, dcp, job.capBytes, job.labels, &provFailed);
             else
                 ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), sp, disp,
                                  tl, dcp, job.rollingCtx, job.capBytes);
@@ -410,7 +412,8 @@ void worker_loop() {
 
         {
             Result r{ job.handle, job.surface, disp, ok };
-            r.unitOut = std::move(unitOut);
+            r.unitOut        = std::move(unitOut);
+            r.providerFailed = provFailed;
             std::lock_guard<std::mutex> lock(g_resultMutex);
             g_results.push_back(std::move(r));
         }
@@ -455,7 +458,7 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
 
 bool process_batch(const std::vector<std::string>& units, int cp, IProvider* prov,
                    const std::string& sysPrompt, std::vector<std::string>& out,
-                   int targetLang, int displayCp, int capBytes) {
+                   int targetLang, int displayCp, int capBytes, bool labels, bool* providerFailed) {
     const size_t cap = (size_t)(capBytes > 0 ? capBytes : 144);
     out.assign(units.size(), std::string());
 
@@ -464,7 +467,7 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
     std::vector<size_t> need;
     bool any = false;
     for (size_t i = 0; i < units.size(); ++i) {
-        prep[i] = prepare(units[i], cp, targetLang, cap);
+        prep[i] = prepare(units[i], cp, targetLang, cap, labels);
         if (prep[i].kind == Prepared::Hit) {
             out[i] = std::move(prep[i].hit);
             any = true;
@@ -486,6 +489,7 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
         std::string err;
         if (!call_provider(prov, texts, sysPrompt, std::string(), res, err)) { // provider down: no retry storm
             note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", std::string());
+            if (providerFailed) *providerFailed = true;
             return any;
         }
         bool layoutKept = false;
@@ -518,6 +522,7 @@ bool process_batch(const std::vector<std::string>& units, int cp, IProvider* pro
         std::string err;
         if (!call_provider(prov, { prep[i].send }, sysPrompt, std::string(), res, err)) { // provider down: stop
             note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", std::string());
+            if (providerFailed) *providerFailed = true;
             break;
         }
         if (res.empty()) continue;
@@ -598,6 +603,7 @@ void start(const ProviderConfig& cfg, const std::string& systemPrompt,
     { std::lock_guard<std::mutex> lk(g_profileMutex); g_profile = cfg.model; }
     g_sysPrompt = systemPrompt;
     g_targetLang = targetLang;
+    g_activeTarget.store(targetLang);
     g_displayCp = displayCp;
     g_ctxEnabled.store(context_for_provider(cfg.providerKind));
     { std::lock_guard<std::mutex> lock(g_jobMutex); g_recentCtx.clear(); }
@@ -746,6 +752,10 @@ int worker_count() {
     return kWorkerCount;
 }
 
+int active_target_lang() {
+    return g_activeTarget.load();
+}
+
 RespStats response_stats() {
     std::lock_guard<std::mutex> lk(g_statsMutex);
     RespStats r;
@@ -770,14 +780,14 @@ bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::stri
     return true;
 }
 
-bool needs_translation(const std::string& srcBytes, int cp, int targetLang) {
+bool needs_translation(const std::string& srcBytes, int cp, int targetLang, bool labels) {
     // Mirrors process_one()'s pre-network declines (steps 1-3 and 5) EXACTLY,
     // without ever touching the cache or the network.
     if (srcBytes.empty()) return false;
     int cp2 = (cp != 0) ? cp : charset::guess_codepage(srcBytes);
     std::wstring w = charset::decode(srcBytes, cp2);
     if (!detect::worth_translating(w, /*targetIsEnglish=*/targetLang == 1033)) return false;
-    if (!protect::mask(charset::to_utf8(w)).translatable) return false;
+    if (!protect::mask(charset::to_utf8(w), labels).translatable) return false;
     return true;
 }
 

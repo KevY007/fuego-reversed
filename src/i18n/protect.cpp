@@ -148,7 +148,7 @@ bool match_ci_term(const std::string& text, size_t pos, const std::string& term)
 
 } // namespace
 
-Masked mask(const std::string& src) {
+Masked mask(const std::string& src, bool labels) {
     Masked out;
     out.translatable = false;
     const size_t n = src.size();
@@ -238,7 +238,7 @@ Masked mask(const std::string& src) {
                 emit(i, i + 2);
                 i += 2;
                 matched = true;
-            } else {
+            } else if (!labels) { // "(ID) Name" -- in a UI label "(3) Police" is a count
                 size_t j = scan_digits(src, i + 1);
                 if (j > i + 1 && j < n && src[j] == ')' && j + 1 < n && src[j + 1] == ' ') {
                     size_t nameEnd = scan_name(src, j + 2);
@@ -278,7 +278,8 @@ Masked mask(const std::string& src) {
                         matched = true;
                     }
                 }
-                if (!matched && nameEnd + 1 < n && src[nameEnd] == ' ' && src[nameEnd + 1] == '(') {
+                // "Name (ID)" -- in a UI label "Civilian (8)" is a count, not a player.
+                if (!matched && !labels && nameEnd + 1 < n && src[nameEnd] == ' ' && src[nameEnd + 1] == '(') {
                     size_t j = scan_digits(src, nameEnd + 2);
                     if (j > nameEnd + 2 && j < n && src[j] == ')') {
                         emit(i, j + 1);
@@ -372,7 +373,8 @@ Masked mask(const std::string& src) {
                         size_t k = scan_digits(src, j + 1);
                         if (k > j + 1) j = k;
                     }
-                    if (j >= n || !(is_alpha(src[j]) || src[j] == '_')) {
+                    // (a UI label's number may be glued to its unit: "2m", "999hp")
+                    if (j >= n || !(is_alpha(src[j]) || src[j] == '_') || labels) {
                         emit(i, j);
                         i = j;
                         matched = true;

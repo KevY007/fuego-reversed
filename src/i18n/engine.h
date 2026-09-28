@@ -53,6 +53,9 @@ struct Job {
     // Result carries one entry per text in unitOut. A batch job is never
     // deduplicated and never touches the rolling chat context.
     std::vector<std::string> units;
+    // The texts are UI labels (dialog cells, HUD / 3D-label lines), not chat:
+    // protect::mask(..., labels) -- "Civilian (8)" is a count there, not a player.
+    bool labels = false;
 };
 
 struct Result {
@@ -64,6 +67,9 @@ struct Result {
     // May be shorter than units (e.g. empty after an internal error) -> treat the
     // missing tail as "".
     std::vector<std::string> unitOut;
+    // BATCH jobs only: a provider request failed outright (down, circuit open,
+    // network) -- the "" items then say nothing about the texts themselves.
+    bool providerFailed = false;
 };
 
 // The engine's two-lane job queue. PURE (the engine guards its one instance with
@@ -193,9 +199,12 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
 // off (see batching_enabled(): re-tried after 10 minutes) and texts go one per
 // request. out[i] = the finished text for units[i], or "" to keep its original.
 // Returns true if any text was translated.
+// labels: the texts are UI labels (Job::labels). *providerFailed (if given) is set
+// when a provider request failed outright.
 bool process_batch(const std::vector<std::string>& units, int cp, IProvider* prov,
                    const std::string& sysPrompt, std::vector<std::string>& out,
-                   int targetLang = 1033, int displayCp = 1252, int capBytes = 144);
+                   int targetLang = 1033, int displayCp = 1252, int capBytes = 144,
+                   bool labels = false, bool* providerFailed = nullptr);
 
 // Whether a dialog's cells may go out as one batch right now: false after two
 // broken layouts in a row -- until, 10 minutes later, one more batch is tried
@@ -282,7 +291,14 @@ bool cache_lookup(const std::string& srcBytes, int cp, int targetLang, std::stri
 // and WITHOUT touching the cache or the network, so a caller (e.g. a held
 // dialog's translation-memory pass) can tell "this unit doesn't need
 // translating" up front instead of treating it as a cache miss and holding for
-// a translation that would never change it anyway.
-bool needs_translation(const std::string& srcBytes, int cp, int targetLang);
+// a translation that would never change it anyway. labels: the text is a UI
+// label (Job::labels), masked the way its translation job will mask it.
+bool needs_translation(const std::string& srcBytes, int cp, int targetLang, bool labels = false);
+
+// The target language the RUNNING engine translates into (start()'s targetLang;
+// 1033 before any start). The menu edits config::Settings::target_lang at once, but
+// the engine only takes it on Save (apply_config): a translation-memory lookup that
+// must match what a job it queues will store uses THIS. Thread-safe.
+int active_target_lang();
 
 } // namespace i18n::engine

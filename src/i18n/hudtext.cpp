@@ -114,7 +114,7 @@ Line make_line(const std::string& raw) {
     ln.prefix = raw.substr(0, a);
     ln.core   = raw.substr(a, b - a);
     ln.suffix = raw.substr(b);
-    ln.translate = ln.core.size() >= 2 && !is_sprite_name(ln.core) && !i18n::surfaces::is_dynamic_text(ln.core);
+    ln.translate = ln.core.size() >= 2 && !i18n::surfaces::is_dynamic_text(ln.core);
     if (ln.translate) template_numbers(ln.core, ln.key, ln.nums);
     return ln;
 }
@@ -144,11 +144,11 @@ Plan plan_text(const std::string& text, bool label) {
     return p;
 }
 
-bool is_sprite_name(const std::string& core) {
-    const size_t colon = core.find(':');
-    if (colon == std::string::npos || colon == 0 || colon + 1 >= core.size()) return false;
-    if (core.find(':', colon + 1) != std::string::npos) return false;
-    for (char c : core) {
+bool is_sprite_name(const std::string& text) {
+    const size_t colon = text.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= text.size()) return false;
+    if (text.find(':', colon + 1) != std::string::npos) return false;
+    for (char c : text) {
         const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || is_digit(c) || c == '_' ||
                         c == '-' || c == '.' || c == ':';
         if (!ok) return false;
@@ -187,8 +187,10 @@ bool put_numbers(const std::string& t, const std::vector<std::string>& nums, std
     return true;
 }
 
-bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<std::string>& missing) {
+bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<std::string>& missing,
+             bool* later) {
     missing.clear();
+    if (later) *later = false;
     std::string o;
     bool complete = true;
     for (size_t i = 0; i < p.lines.size(); ++i) {
@@ -208,6 +210,9 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
                 }
                 case Look::Keep:
                     break;
+                case Look::Later:
+                    if (later) *later = true;
+                    break;
                 case Look::Miss:
                     complete = false;
                     if (std::find(missing.begin(), missing.end(), ln.key) == missing.end()) missing.push_back(ln.key);
@@ -219,9 +224,8 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
         o += ln.suffix;
         if (i < p.seps.size()) o += p.seps[i];
     }
-    if (!complete) return false;
     out = std::move(o);
-    return true;
+    return complete;
 }
 
 } // namespace i18n::hudtext

@@ -28,7 +28,14 @@ struct Masked {
 // tokens in emission order; everything else is copied through verbatim.
 // translatable is true iff at least one non-whitespace, non-placeholder
 // character survived in text (i.e. there is something worth translating).
-Masked mask(const std::string& src);
+//
+// labels = the text is a UI label -- a HUD/3D-label line or a dialog cell -- not a
+// chat line. There "Word (N)" / "(N) Word" is a count ("Civilian (8)", "Police (0)"
+// of a spawn menu), not a player, so those two name shapes are NOT masked (live
+// names, Name_Surname and Name[ID] still are); and a number glued to its unit
+// ("2m", "999hp") is masked like a standalone one, so a reply can't drop or change
+// it -- the HUD puts its real numbers back into exactly those places.
+Masked mask(const std::string& src, bool labels = false);
 
 // True iff every placeholder "\x01k\x02" for k in [0, n) appears in
 // translated exactly once (no drops, no duplicates, no corruption).

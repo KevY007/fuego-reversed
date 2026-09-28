@@ -116,11 +116,11 @@ int main() {
         check(r.lines[0].translate && r.lines[0].key == r.lines[0].core && r.lines[0].nums.empty(),
               "more numbers than stand-ins: kept as they are");
     }
-    {   // Not translated: sprites, "mostly numbers", nothing but codes.
-        check(!plan_text("hud:radar_gangY", false).lines[0].translate, "sprite");
-        check(!plan_text("LD_SPAC:white", false).lines[0].translate, "sprite 2");
-        check(is_sprite_name("hud:radar_centre") && !is_sprite_name("Time:") && !is_sprite_name("Time: 5") &&
-              !is_sprite_name("a:b:c"), "is_sprite_name");
+    {   // Not translated: "mostly numbers", nothing but codes. (Sprites are the
+        // caller's call -- by the textdraw's font -- so "Job:Trucker" stays text here.)
+        check(plan_text("Job:Trucker", false).lines[0].translate, "\"Job:Trucker\" is text to plan_text");
+        check(is_sprite_name("hud:radar_centre") && is_sprite_name("LD_SPAC:white") && !is_sprite_name("Time:") &&
+              !is_sprite_name("Time: 5") && !is_sprite_name("a:b:c"), "is_sprite_name");
         check(!plan_text("F: 77%", false).lines[0].translate, "a stat");
         check(!plan_text("$00005000", false).lines[0].translate, "money");
         check(!plan_text("~W~", false).lines[0].translate, "codes only");
@@ -168,15 +168,31 @@ int main() {
         check(resolve(p, tm.look(), out, missing) && missing.empty(), "all resolved");
         check(out == "Aparición elegida~N~Civil (8)~N~Policía (0)~N~_", "assembled with the numbers back");
     }
-    {   // One line missing: not complete; each missing key listed once.
+    {   // One line missing: not complete; each missing key listed once; `out` still
+        // has every line it could translate (the missing ones as they were).
         Plan p = plan_text("~W~- Big Ear~N~- Big Ear~N~Players nearby: 1", false);
         FakeTm tm;
         tm.hits = { { "Players nearby: 2", "Jugadores cerca: 2" } };
-        std::string out = "untouched";
+        std::string out;
         std::vector<std::string> missing;
-        check(!resolve(p, tm.look(), out, missing), "a miss: not complete");
+        bool later = true;
+        check(!resolve(p, tm.look(), out, missing, &later), "a miss: not complete");
         check(missing == std::vector<std::string>{ "- Big Ear" }, "the missing key, once");
-        check(out == "untouched", "out untouched on a miss");
+        check(out == "~W~- Big Ear~N~- Big Ear~N~Jugadores cerca: 1", "the translated lines already in out");
+        check(!later, "no line was Later");
+    }
+    {   // Later: shown as it is for now -- complete, but flagged to look again.
+        Plan p = plan_text("~W~~R~hotwire failed~N~retrying...", false);
+        std::string out;
+        std::vector<std::string> missing;
+        bool later = false;
+        Lookup look = [](const std::string& key, std::string& tr) {
+            if (key == "hotwire failed") return Look::Later;
+            tr = "reintentando...";
+            return Look::Hit;
+        };
+        check(resolve(p, look, out, missing, &later) && later && missing.empty() &&
+              out == "~W~~R~hotwire failed~N~reintentando...", "Later: original line, complete, flagged");
     }
     {   // Keep = the original line; nothing translatable = the original text.
         Plan p = plan_text("~W~~R~hotwire failed~N~retrying...", false);
@@ -186,10 +202,10 @@ int main() {
         std::string out;
         std::vector<std::string> missing;
         check(resolve(p, tm.look(), out, missing) && out == "~W~~R~hotwire failed~N~reintentando...", "keep + hit");
-        Plan q = plan_text("hud:radar_centre", false);
+        Plan q = plan_text("_~N~F: 77%", false);
         FakeTm none;
-        check(resolve(q, none.look(), out, missing) && out == "hud:radar_centre" && none.asked.empty(),
-              "a sprite is never looked up");
+        check(resolve(q, none.look(), out, missing) && out == "_~N~F: 77%" && none.asked.empty(),
+              "nothing translatable: never looked up");
     }
     {   // A translation that would break the text keeps the original line.
         Plan p = plan_text("Vehicle locked~N~Press ~y~Y", false);

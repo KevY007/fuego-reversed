@@ -235,18 +235,22 @@ bool rebuild_textdraw_show(const uint8_t* pkt, size_t n, const Translator& tr, s
 bool on_incoming_rpc(unsigned char id, RPCParameters* rpc, void (*handler)(RPCParameters*));
 
 // A background translation-memory fill finished (engine surface 2): its lines
-// are in memory now (or failed: shown as they are for a while, then retried), so
-// the next tick() switches every waiting on-screen textdraw/label whose lines are
-// all translated. Main thread (pump).
+// are in memory now, so the next tick() puts them into every waiting on-screen
+// textdraw/label. A line that failed shows as it is and is retried while its text
+// is still on screen -- after 30 s, then 5 min, then every 30 min (a failed
+// request, e.g. the provider down, after 30 s without counting against the line).
+// Main thread (pump).
 void on_fill_result(const i18n::engine::Result& r);
 
-// Settings were applied: the next tick() recomputes EVERY tracked textdraw/label
-// -- turning the HUD (or dialog + label) translation off puts the originals back
-// on screen, a new target language re-translates what's there. Main thread.
+// Settings were applied: when the HUD or dialog + label toggle changed, the next
+// tick() recomputes EVERY tracked textdraw/label -- turned off, the originals go
+// back on screen; turned on, what's there gets translated. Main thread.
 void recheck_hud();
 
-// The engine's queue was dropped (engine stopped/restarted): the fills that were
-// out will never report back -- forget them so they're sent again. Main thread.
+// The engine's queue was dropped (engine stopped/restarted -- a new target
+// language, model or provider): the fills that were out will never report back and
+// earlier failures may not repeat -- forget both, and recompute every tracked
+// textdraw/label on the next tick(). Main thread.
 void forget_fills();
 
 // A dialog unit's translation finished (engine surface 3). Main thread (pump).

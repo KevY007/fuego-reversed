@@ -27,6 +27,12 @@
 
 namespace i18n::hudtext {
 
+// A coloured stretch inside a line: the `open` codes, its text, the `close` codes
+// right after it ("" when it runs to the end of the line).
+struct Mark {
+    std::string open, text, close;
+};
+
 struct Line {
     std::string              prefix;            // leading spaces + colour codes (~w~, ~R~~h~, {RRGGBB}): verbatim
     std::string              core;              // the text in between
@@ -34,6 +40,14 @@ struct Line {
     bool                     translate = false; // false: shown as it is (empty, "_", mostly numbers)
     std::string              key;               // core with its numbers replaced by stand-ins: what is translated + cached
     std::vector<std::string> nums;              // the numbers the stand-ins replaced, in order
+    // The key WITHOUT its inner colour codes ("" when there are none). A model loses
+    // the codes around words it translates (live: "Use ~Y~ARROW KEYS~W~ to select a
+    // spawn location" failed every time), so once the coloured key failed this one
+    // is translated instead -- and while the coloured one is out, its translation is
+    // shown if already in memory (a shadow textdraw has exactly this text).
+    std::string              plainKey;
+    std::vector<Mark>        marks;             // the coloured stretches: coloured again in a plain translation where
+                                                // their text survives verbatim (a key name, a command, a name)
 };
 
 struct Plan {
@@ -67,16 +81,21 @@ bool put_numbers(const std::string& translated, const std::vector<std::string>& 
 enum class Look {
     Hit,   // translated: `tr` holds the translation
     Keep,  // show this line as it is: there's nothing to translate
-    Later, // show it as it is for now, and ask again later (its translation failed; a retry is due)
-    Miss,  // not translated yet
+    Later, // its translation failed; show it as it is for now and ask again later (a retry isn't due yet)
+    Retry, // its translation failed and a retry is due now: fetch it again
+    Miss,  // never translated yet: fetch it
 };
 using Lookup = std::function<Look(const std::string& key, std::string& tr)>;
 
 // Resolve every translatable line of `p` through `look`. `out` is always the text
 // with every Hit line translated (its numbers put back) and every other line as it
-// was -- possibly the original text exactly. Returns true when no line is a Miss;
-// otherwise false, with `missing` listing those keys (each once, in order).
-// `*later` (if given) is set when some line was Later. A translated line that
+// was -- possibly the original text exactly. A line with inner colour codes whose
+// coloured key isn't a Hit shows its plain key's translation when that is a Hit,
+// recoloured where its stretches survive verbatim; its plain key is fetched only
+// once the coloured one has failed (Later / Retry). Returns true when nothing is
+// to be fetched; otherwise false, with `missing` listing the keys to fetch (each
+// once, in order: a Miss or Retry). `*later` (if given) is set when some key was
+// Later -- the caller should ask again later. A translated line that
 // would break the text -- a different number of '~' than the original line (an
 // unmatched tilde makes SA:MP show "Error: unmatched tilde"), or a stand-in lost
 // or repeated -- keeps the original line. Line breaks inside a translated line

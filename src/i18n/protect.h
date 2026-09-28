@@ -18,8 +18,11 @@ struct Masked {
 // can't collide with it, and a translation model has no reason to alter them.
 
 // Scans src left-to-right and replaces non-translatable spans with
-// placeholders: leading "/command" (plus one following argument-looking
-// token), "{RRGGBB}"/"{AARRGGBB}" colour embeds, "~x~"/"~k~~KEY~" format/key
+// placeholders: a "/command" at a word boundary together with its arguments (up
+// to three typed words, numbers or "[names]" after it: "/gps atm", "/pay [id]
+// [amount]"; a little word like "to" ends them; a message command -- /me, /do,
+// /pm, /report, ... -- keeps only itself, its words are prose), "{RRGGBB}"/
+// "{AARRGGBB}" colour embeds, "~x~"/"~k~~KEY~" format/key
 // embeds, player-name shapes ("Name_Surname", "Name[ID]", "Name (ID)",
 // "(ID) Name", and a leading "Name:"/"Name says:" chat prefix), standalone
 // numbers ("$1234", plain integers, simple signed coordinates), short

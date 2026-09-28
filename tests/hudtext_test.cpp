@@ -31,13 +31,17 @@ static std::string join(const Plan& p) {
 // A translation memory for resolve(): key -> translation, plus keys to Keep.
 struct FakeTm {
     std::map<std::string, std::string> hits;
-    std::vector<std::string>           keep;
+    std::vector<std::string>           keep, later, retry; // keys answered Keep / Later / Retry
     std::vector<std::string>           asked;
     Lookup look() {
         return [this](const std::string& key, std::string& tr) {
             asked.push_back(key);
             for (const std::string& k : keep)
                 if (k == key) return Look::Keep;
+            for (const std::string& k : later)
+                if (k == key) return Look::Later;
+            for (const std::string& k : retry)
+                if (k == key) return Look::Retry;
             auto it = hits.find(key);
             if (it == hits.end()) return Look::Miss;
             tr = it->second;
@@ -232,8 +236,10 @@ int main() {
         tm.hits = { { "Vehicle locked", "Vehículo ~ bloqueado" }, { "Press ~y~Y", "Pulsa Y" } };
         std::string out;
         std::vector<std::string> missing;
-        check(resolve(p, tm.look(), out, missing) && out == "Vehicle locked~N~Press ~y~Y",
+        check(!resolve(p, tm.look(), out, missing) && out == "Vehicle locked~N~Press ~y~Y",
               "a tilde added or lost: the original line");
+        check(missing == std::vector<std::string>{ "Press Y" },
+              "a coloured translation that breaks the line: the plain key is fetched instead");
         FakeTm lost;
         lost.hits = { { "Civilian (2)", "Civil" } };
         Plan q = plan_text("Civilian (8)", false);
@@ -245,6 +251,85 @@ int main() {
         FakeTm empty;
         empty.hits = { { "House for sale", "" } };
         check(resolve(r, empty.look(), out, missing) && out == "House for sale", "an empty translation: the original");
+    }
+
+    // ---- colour codes inside a line: the plain fallback ----
+    {   // The plain key drops the inner colour codes (not a key name after ~k~) and
+        // keeps words apart; a line without inner codes has none.
+        Plan p = plan_text("~W~Use ~Y~ARROW KEYS~W~ to select a spawn location~N~Press ~Y~~k~~W~ now~N~Plain text", false);
+        check(p.lines[0].plainKey == "Use ARROW KEYS to select a spawn location", "plain key without the inner codes");
+        check(p.lines[0].marks.size() == 2 && p.lines[0].marks[0].open == "~Y~" &&
+              p.lines[0].marks[0].text == "ARROW KEYS" && p.lines[0].marks[0].close == "~W~", "the coloured stretch");
+        check(p.lines[1].plainKey == "Press ~k~~W~ now", "a key name after ~k~ is not a colour code");
+        check(p.lines[2].plainKey.empty() && p.lines[2].marks.empty(), "no inner codes: no plain key");
+        check(plan_text("red~W~car", false).lines[0].plainKey == "red car", "words stay apart");
+        Plan q = plan_text("Time: ~G~~H~Saturday 15:32", false);
+        check(q.lines[0].plainKey == "Time: Saturday 2:3" && q.lines[0].nums.size() == 2,
+              "the plain key has the same stand-ins");
+    }
+    {   // Coloured key in memory: used; the plain key is never asked.
+        Plan p = plan_text("Press ~Y~SHIFT~W~ to spawn", false);
+        FakeTm tm;
+        tm.hits = { { "Press ~Y~SHIFT~W~ to spawn", "Presiona ~Y~SHIFT~W~ para aparecer" },
+                    { "Press SHIFT to spawn", "Pulsa SHIFT" } };
+        std::string out;
+        std::vector<std::string> missing;
+        check(resolve(p, tm.look(), out, missing) && out == "Presiona ~Y~SHIFT~W~ para aparecer" &&
+              tm.asked.size() == 1, "coloured hit");
+    }
+    {   // First sight: the coloured key is fetched; a plain translation already in
+        // memory (a shadow twin's) shows meanwhile -- recoloured where it survives.
+        Plan p = plan_text("Press ~Y~SHIFT~W~ to spawn", false);
+        FakeTm tm;
+        tm.hits = { { "Press SHIFT to spawn", "Presiona SHIFT para aparecer" } };
+        std::string out;
+        std::vector<std::string> missing;
+        check(!resolve(p, tm.look(), out, missing) && missing == std::vector<std::string>{ "Press ~Y~SHIFT~W~ to spawn" },
+              "the coloured key is fetched");
+        check(out == "Presiona ~Y~SHIFT~W~ para aparecer", "the plain translation meanwhile, SHIFT coloured again");
+        FakeTm none;
+        check(!resolve(p, none.look(), out, missing) && missing.size() == 1 && out == "Press ~Y~SHIFT~W~ to spawn",
+              "neither in memory: only the coloured key is fetched");
+    }
+    {   // The coloured key failed: the plain one is fetched (and shown when it lands);
+        // a translated coloured stretch simply loses its colour.
+        Plan p = plan_text("~W~Use ~Y~ARROW KEYS~W~ to select a spawn location", false);
+        FakeTm tm;
+        tm.later = { "Use ~Y~ARROW KEYS~W~ to select a spawn location" };
+        std::string out;
+        std::vector<std::string> missing;
+        bool later = false;
+        check(!resolve(p, tm.look(), out, missing, &later) && later &&
+              missing == std::vector<std::string>{ "Use ARROW KEYS to select a spawn location" },
+              "coloured failed: the plain key is fetched");
+        tm.hits = { { "Use ARROW KEYS to select a spawn location", "Usa las TECLAS DE FLECHA para elegir dónde aparecer" } };
+        check(resolve(p, tm.look(), out, missing, &later) && later &&
+              out == "~W~Usa las TECLAS DE FLECHA para elegir dónde aparecer", "the plain translation, uncoloured");
+        tm.later.clear();
+        tm.retry = { "Use ~Y~ARROW KEYS~W~ to select a spawn location" };
+        check(!resolve(p, tm.look(), out, missing) && out == "~W~Usa las TECLAS DE FLECHA para elegir dónde aparecer" &&
+              missing == std::vector<std::string>{ "Use ~Y~ARROW KEYS~W~ to select a spawn location" },
+              "a due retry of the coloured key keeps the plain one on screen");
+    }
+    {   // Recolouring: a key name kept verbatim gets its colour back, a stretch found
+        // twice doesn't; a plain translation that adds a '~' is not used.
+        Plan p = plan_text("Press ~Y~~k~~TOGGLE_SUBMISSIONS~ ~W~to start ~P~smuggling", false);
+        FakeTm tm;
+        tm.later = { p.lines[0].key };
+        tm.hits = { { p.lines[0].plainKey, "Pulsa ~k~~TOGGLE_SUBMISSIONS~ para empezar a contrabandear" } };
+        std::string out;
+        std::vector<std::string> missing;
+        check(resolve(p, tm.look(), out, missing) &&
+              out == "Pulsa ~Y~~k~~TOGGLE_SUBMISSIONS~~W~ para empezar a contrabandear", "the key name recoloured");
+        Plan q = plan_text("Hi ~Y~Bob~W~ and Bob", false);
+        FakeTm twice;
+        twice.later = { q.lines[0].key };
+        twice.hits = { { "Hi Bob and Bob", "Hola Bob y Bob" } };
+        check(resolve(q, twice.look(), out, missing) && out == "Hola Bob y Bob", "found twice: not recoloured");
+        FakeTm bad;
+        bad.later = { p.lines[0].key };
+        bad.hits = { { p.lines[0].plainKey, "Pulsa ~k~ para ~ empezar" } };
+        check(resolve(p, bad.look(), out, missing) && out == p.lines[0].core, "a broken plain translation: the original");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

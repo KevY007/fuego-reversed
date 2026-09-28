@@ -80,6 +80,43 @@ bool ordinal_at(const std::string& s, size_t j) {
     return !((next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z'));
 }
 
+// Length of a colour code (~r~ ... ~h~, {RRGGBB}) at s[i] that really is one -- not
+// a key name right after ~k~ ("~k~~W~") -- else 0.
+size_t colour_code_len(const std::string& s, size_t i) {
+    if (key_code_before(s, i)) return 0;
+    if (is_style_code(s, i)) return 3;
+    if (is_color_code(s, i)) return 8;
+    return 0;
+}
+
+// Split a core at its inner colour codes: `plain` = the core without them (two
+// words the codes kept apart stay apart), `marks` = every stretch that follows a
+// run of codes (the text before the first run keeps the line's own colour).
+void split_marks(const std::string& core, std::string& plain, std::vector<Mark>& marks) {
+    plain.clear();
+    marks.clear();
+    std::string open, text; // the codes that opened the current stretch ("" = none yet), its text
+    for (size_t i = 0; i < core.size();) {
+        size_t c = colour_code_len(core, i);
+        if (!c) {
+            plain += core[i];
+            text += core[i++];
+            continue;
+        }
+        std::string codes;
+        while (c) {
+            codes.append(core, i, c);
+            i += c;
+            c = colour_code_len(core, i);
+        }
+        if (!open.empty()) marks.push_back({ open, text, codes });
+        if (!plain.empty() && i < core.size() && is_word(plain.back()) && is_word(core[i])) plain += ' ';
+        open = std::move(codes);
+        text.clear();
+    }
+    if (!open.empty()) marks.push_back({ open, text, std::string() });
+}
+
 // core -> key (numbers replaced by stand-ins "2", "3", ...) + the numbers.
 void template_numbers(const std::string& core, std::string& key, std::vector<std::string>& nums) {
     key.clear();
@@ -128,11 +165,63 @@ Line make_line(const std::string& raw) {
     ln.core   = raw.substr(a, b - a);
     ln.suffix = raw.substr(b);
     ln.translate = ln.core.size() >= 2 && !i18n::surfaces::is_dynamic_text(ln.core);
-    if (ln.translate) template_numbers(ln.core, ln.key, ln.nums);
+    if (ln.translate) {
+        template_numbers(ln.core, ln.key, ln.nums);
+        std::string plain;
+        split_marks(ln.core, plain, ln.marks);
+        if (!ln.marks.empty()) {
+            std::vector<std::string> nums; // (the same numbers: colour codes hold none)
+            template_numbers(plain, ln.plainKey, nums);
+        }
+    }
     return ln;
 }
 
 size_t count_tildes(const std::string& s) { return (size_t)std::count(s.begin(), s.end(), '~'); }
+
+// A line's core without its colour codes (count_tildes of it is what a plain
+// translation must have: the key names' tildes).
+std::string plain_core(const Line& ln) {
+    std::string plain;
+    std::vector<Mark> marks;
+    split_marks(ln.core, plain, marks);
+    return plain;
+}
+
+// Colour a plain translation's stretches again where their text survives verbatim
+// -- exactly once, as a whole word (a key name, a command, a player's name).
+std::string recolour(std::string t, const std::vector<Mark>& marks) {
+    for (const Mark& m : marks) {
+        size_t a = 0, b = m.text.size();
+        while (a < b && is_space(m.text[a])) ++a;
+        while (b > a && is_space(m.text[b - 1])) --b;
+        if (b - a < 2) continue;
+        const std::string w = m.text.substr(a, b - a);
+        size_t at = std::string::npos;
+        int found = 0;
+        for (size_t pos = t.find(w); pos != std::string::npos; pos = t.find(w, pos + 1)) {
+            const bool left  = pos == 0 || !is_word(t[pos - 1]);
+            const bool right = pos + w.size() >= t.size() || !is_word(t[pos + w.size()]);
+            if (left && right) { ++found; at = pos; }
+        }
+        if (found != 1) continue;
+        t.insert(at + w.size(), m.close);
+        t.insert(at, m.open);
+    }
+    return t;
+}
+
+// A translation `tr` of a key for line `ln` -> the core to show, or "" when it
+// would break the line: numbers put back, the same number of '~' as `origTildes`
+// (codes are restored exactly; one more or less is an unmatched tilde), line
+// breaks turned into spaces.
+std::string use_translation(const std::string& tr, const Line& ln, size_t origTildes) {
+    std::string t;
+    if (!put_numbers(tr, ln.nums, t) || t.empty() || count_tildes(t) != origTildes) return std::string();
+    for (char& ch : t)
+        if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
+    return t;
+}
 
 } // namespace
 
@@ -205,6 +294,10 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
     missing.clear();
     if (later) *later = false;
     bool complete = true;
+    auto fetch = [&](const std::string& key) {
+        complete = false;
+        if (std::find(missing.begin(), missing.end(), key) == missing.end()) missing.push_back(key);
+    };
     std::vector<std::string> cores; // each line's core to show: translated, or its own
     cores.reserve(p.lines.size());
     long long total = 0;            // the original text's size
@@ -214,27 +307,36 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
         if (i < p.seps.size()) total += (long long)p.seps[i].size();
         cores.push_back(ln.core);
         std::string& core = cores.back();
-        if (ln.translate) {
-            std::string tr;
-            switch (look(ln.key, tr)) {
-                case Look::Hit: {
-                    std::string t;
-                    if (put_numbers(tr, ln.nums, t) && !t.empty() && count_tildes(t) == count_tildes(ln.core)) {
-                        for (char& ch : t)
-                            if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
-                        core = std::move(t);
-                    }
-                    break;
-                }
-                case Look::Keep:
-                    break;
-                case Look::Later:
-                    if (later) *later = true;
-                    break;
-                case Look::Miss:
-                    complete = false;
-                    if (std::find(missing.begin(), missing.end(), ln.key) == missing.end()) missing.push_back(ln.key);
-                    break;
+        if (!ln.translate) continue;
+
+        std::string tr;
+        const Look r = look(ln.key, tr);
+        if (r == Look::Keep) continue;
+        bool failed = false; // the coloured key can't be used: it failed before, or its translation breaks the line
+        if (r == Look::Hit) {
+            std::string t = use_translation(tr, ln, count_tildes(ln.core));
+            if (!t.empty()) { core = std::move(t); continue; }
+            failed = true;
+        } else if (r == Look::Later) {
+            if (later) *later = true;
+            failed = true;
+        } else {
+            fetch(ln.key); // Miss, or a due Retry
+            failed = (r == Look::Retry);
+        }
+        // Not translated in colour: the plain translation if it is in memory; fetched
+        // only once the coloured key has failed (at first sight the coloured one goes).
+        if (ln.plainKey.empty()) continue;
+        std::string ptr;
+        const Look pr = look(ln.plainKey, ptr);
+        if (pr == Look::Hit) {
+            std::string t = use_translation(ptr, ln, count_tildes(plain_core(ln)));
+            if (!t.empty()) core = recolour(std::move(t), ln.marks);
+        } else if (failed) {
+            if (pr == Look::Later) {
+                if (later) *later = true;
+            } else if (pr != Look::Keep) {
+                fetch(ln.plainKey);
             }
         }
     }

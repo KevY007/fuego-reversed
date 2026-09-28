@@ -156,6 +156,67 @@ bool match_ci_term(const std::string& text, size_t pos, const std::string& term)
     return true;
 }
 
+// text[start, end) equals one of `words` (lowercase), ignoring ASCII case.
+bool is_one_of(const std::string& text, size_t start, size_t end, const char* const* words, size_t count) {
+    for (size_t w = 0; w < count; ++w) {
+        const char* k = words[w];
+        size_t q = 0;
+        while (k[q] && start + q < end && to_lower(static_cast<unsigned char>(text[start + q])) == k[q]) ++q;
+        if (!k[q] && start + q == end) return true;
+    }
+    return false;
+}
+
+// Commands whose words are a MESSAGE, not arguments -- roleplay, chat, reports:
+// "/me smiles warmly", "/pm 12 see you there", "/report 5 cheating". Their words
+// are prose and get translated; only the command itself is kept.
+bool message_command(const std::string& s, size_t start, size_t end) {
+    static const char* const kCmds[] = {
+        "me", "do", "my", "ame", "ado", "b", "o", "ooc", "l", "low", "s", "shout", "w", "whisper", "cw", "t",
+        "say", "yell", "pm", "r", "reply", "sms", "text", "call", "radio", "f", "fam", "d", "dept", "gov",
+        "m", "megaphone", "news", "ad", "advert", "ask", "report", "a", "g", "n", "newb", "newbie", "try", "rp",
+    };
+    return is_one_of(s, start, end, kCmds, sizeof(kCmds) / sizeof(kCmds[0]));
+}
+
+// Little words that end a command's arguments: in "use /gps to find it" it has none,
+// in "use /gps atm then go south" it has "atm".
+bool arg_stopword(const std::string& s, size_t start, size_t end) {
+    static const char* const kWords[] = {
+        "a", "an", "the", "to", "for", "and", "or", "but", "nor", "so", "yet", "if", "then", "than", "that",
+        "this", "these", "those", "there", "here", "it", "its", "is", "are", "was", "were", "be", "been", "am",
+        "do", "does", "did", "have", "has", "had", "will", "would", "can", "could", "shall", "should", "may",
+        "might", "must", "not", "no", "yes", "of", "in", "on", "at", "by", "with", "from", "into", "onto", "over",
+        "under", "near", "via", "about", "after", "before", "until", "while", "when", "where", "which", "who",
+        "what", "why", "how", "all", "any", "each", "every", "some", "more", "most", "again", "also", "just",
+        "only", "even", "still", "too", "very", "now", "soon", "later", "first", "next", "once", "please", "pls",
+        "plz", "thanks", "thx", "ty", "ok", "okay", "lol", "lmao", "xd", "bro", "man", "dude", "u", "ur", "you",
+        "your", "me", "my", "i", "we", "us", "our", "they", "them", "their", "he", "him", "his", "she", "her",
+        "command", "cmd", "instead", "like", "etc", "find", "get", "go", "see", "check", "look", "know", "learn",
+        "read",
+    };
+    return is_one_of(s, start, end, kWords, sizeof(kWords) / sizeof(kWords[0]));
+}
+
+// The end of one command argument starting at s[p], or p when there is none: a
+// word of ASCII letters/digits/'_' (a '-' or '.' inside it: "los-santos", "1.5"),
+// or a bracketed name ("[playerid]", "<amount>"). A word running into a non-ASCII
+// letter is prose of another language, not an argument.
+size_t scan_arg(const std::string& s, size_t p) {
+    const size_t n = s.size();
+    if (p < n && (s[p] == '[' || s[p] == '<')) {
+        const char close = (s[p] == '[') ? ']' : '>';
+        size_t q = p + 1;
+        while (q < n && q - p <= 24 && (is_word_char(s[q]) || s[q] == ' ' || s[q] == '-')) ++q;
+        return (q < n && s[q] == close && q > p + 1) ? q + 1 : p;
+    }
+    if (p >= n || !is_word_char(s[p])) return p;
+    size_t q = p + 1;
+    while (q < n && (is_word_char(s[q]) || ((s[q] == '-' || s[q] == '.') && q + 1 < n && is_alnum(s[q + 1])))) ++q;
+    if (q < n && static_cast<unsigned char>(s[q]) >= 0x80) return p;
+    return q;
+}
+
 } // namespace
 
 Masked mask(const std::string& src, bool labels) {
@@ -174,23 +235,31 @@ Masked mask(const std::string& src, bool labels) {
         const char c = src[i];
         bool matched = false;
 
-        // Leading "/command" only (only at a word boundary, so "w/o"
-        // mid-sentence isn't mistaken for one). Deliberately does NOT swallow
-        // following words: roleplay commands like /me, /do, /b, /ooc, /low,
-        // /s, /w carry narrative text as their "argument" that MUST still be
-        // translated, e.g. "/me smiles warmly" -- only "/me" is data, "smiles
-        // warmly" is prose. A following {colour}/~x~/number arg is already
-        // masked by its own rule below; a following plain word is simply left
-        // translatable, which is the safe default. "Word boundary" includes the
-        // end of a colour code and an opening bracket or quote: HUD text colours
-        // its commands ("Use ~Y~/gps~W~ for help", "(~Y~/scrap~W~ for more info)").
+        // "/command" at a word boundary (so "w/o" mid-sentence isn't one) -- which
+        // includes the end of a colour code and an opening bracket or quote: HUD text
+        // colours its commands ("Use ~Y~/gps~W~ for help", "(~Y~/scrap~W~ for more
+        // info)"). Its ARGUMENTS go with it -- they are typed words ("use /gps atm"
+        // came back as "/gps en el cajero automático") -- up to three, each after one
+        // space: a word, a number or a "[name]"; a little word ("to", "for"),
+        // punctuation, a code, another command or a non-English word ends them. Not
+        // for a message command (/me, /do, /pm, /report, ...): its words are prose
+        // that MUST still be translated -- "/me smiles warmly" keeps only "/me".
         if (c == '/' && i + 1 < n && is_alpha(src[i + 1]) &&
             (i == 0 || is_space(src[i - 1]) || src[i - 1] == '~' || src[i - 1] == '}' || src[i - 1] == '(' ||
              src[i - 1] == '"' || src[i - 1] == '\'')) {
             size_t j = i + 1;
             while (j < n && is_word_char(src[j])) ++j;
-            emit(i, j);
-            i = j;
+            size_t end = j;
+            if (!message_command(src, i + 1, j)) {
+                for (int args = 0; args < 3 && end < n && src[end] == ' '; ++args) {
+                    const size_t p = end + 1;
+                    const size_t q = scan_arg(src, p);
+                    if (q == p || arg_stopword(src, p, q)) break;
+                    end = q;
+                }
+            }
+            emit(i, end);
+            i = end;
             matched = true;
         }
 

@@ -345,6 +345,35 @@ void test_protect() {
     CHECK(wo.text.find("w/o") != std::string::npos && wo.text.find("km/h") != std::string::npos,
           "w/o and km/h are not commands");
 
+    // A command's ARGUMENTS are typed words: kept with it (live: "use /gps atm" came
+    // back as "usa /gps en el cajero automático", "Use '/gps zone'" as "'/gps zona'").
+    // A little word like "to"/"for" ends them; a message command's words are prose.
+    Masked atm = mask("s1mple (37){FFFFFF}: use /gps atm");
+    CHECK(std::find(atm.tokens.begin(), atm.tokens.end(), "/gps atm") != atm.tokens.end() &&
+          atm.text.find("atm") == std::string::npos && atm.translatable, "'/gps atm' is kept whole");
+    Masked zone = mask("TIP: Use '/gps zone' to navigate to a zone.");
+    CHECK(std::find(zone.tokens.begin(), zone.tokens.end(), "/gps zone") != zone.tokens.end() &&
+          zone.text.find("to navigate to a zone.") != std::string::npos, "a quoted command + its argument");
+    Masked aotw = mask("Use /aotw to locate.");
+    CHECK(aotw.tokens.size() == 1 && aotw.tokens[0] == "/aotw" && aotw.text.find("to locate.") != std::string::npos,
+          "'to' is not an argument");
+    Masked help = mask("type /help crime intro for more");
+    CHECK(help.tokens.size() == 1 && help.tokens[0] == "/help crime intro" && help.text.find("for more") != std::string::npos,
+          "two arguments, then prose");
+    Masked usage = mask("Usage: /pay [playerid] [amount]");
+    CHECK(usage.tokens.size() == 1 && usage.tokens[0] == "/pay [playerid] [amount]", "bracketed argument names");
+    Masked pm = mask("/pm 12 see you at the atm");
+    CHECK(pm.text.find("see you at the atm") != std::string::npos, "a message command's words are prose");
+    Masked maxArgs = mask("use /x aa bb cc dd");
+    CHECK(maxArgs.tokens.size() == 1 && maxArgs.tokens[0] == "/x aa bb cc" && maxArgs.text.find("dd") != std::string::npos,
+          "at most three arguments");
+    Masked colon = mask("Use {FFFF82}/gps{E6D45A} for help getting around");
+    CHECK(std::find(colon.tokens.begin(), colon.tokens.end(), "/gps") != colon.tokens.end() &&
+          colon.text.find("for help getting around") != std::string::npos, "a colour code right after ends it");
+    Masked dot = mask("Use /gps atm. Then go.");
+    CHECK(std::find(dot.tokens.begin(), dot.tokens.end(), "/gps atm") != dot.tokens.end() &&
+          dot.text.find(". Then go.") != std::string::npos, "a sentence's end ends it");
+
     // A UI label (a HUD line, a dialog cell): "Word (N)" there is a count, not a
     // player -- "Civilian (8)" of a spawn menu must stay translatable -- and a
     // number glued to its unit is masked too, so a reply can't drop or change it.

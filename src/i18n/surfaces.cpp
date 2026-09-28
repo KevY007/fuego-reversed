@@ -571,10 +571,12 @@ i18n::hudtext::Look hud_look(const std::string& key, std::string& tr) {
     const int cp     = i18n::config::get().source_cp;
     const int target = i18n::engine::active_target_lang();
     if (i18n::engine::cache_lookup(key, cp, target, tr, kHudLookupCap)) return i18n::hudtext::Look::Hit;
-    // Waiting out a failed fill (checked before the costlier test below: a key only
-    // ever got a fill -- and so a failure -- by passing it).
+    // A failed fill: waiting out its backoff, or due for a retry (checked before the
+    // costlier test below: a key only ever got a fill -- and so a failure -- by
+    // passing it).
     auto f = g_fillFailed.find(key);
-    if (f != g_fillFailed.end() && (int32_t)(f->second.until - GetTickCount()) > 0) return i18n::hudtext::Look::Later;
+    if (f != g_fillFailed.end())
+        return (int32_t)(f->second.until - GetTickCount()) > 0 ? i18n::hudtext::Look::Later : i18n::hudtext::Look::Retry;
     // Already the target language / nothing translatable survives protect::mask.
     if (!i18n::engine::needs_translation(key, cp, target, /*labels=*/true)) return i18n::hudtext::Look::Keep;
     return i18n::hudtext::Look::Miss;

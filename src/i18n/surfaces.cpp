@@ -358,8 +358,10 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
                 if (fillChunks.empty()) {
                     // Re-opened while its translation is still on the way: the pending
                     // one switches THIS opening when it lands.
+                    // (the SAME dialog: every line alike -- not merely its id and title)
                     for (auto& [pseq, ppd] : g_pendingDialogs)
-                        if (ppd.late && ppd.plan.id == d.id && ppd.shownTitle == shownTitle) {
+                        if (ppd.late && ppd.plan.id == d.id && ppd.shownTitle == shownTitle &&
+                            original_cores(ppd.plan) == original_cores(d)) {
                             ppd.shownAt   = g_dialogShows;
                             ppd.lateUntil = GetTickCount() + kLateDialogMs;
                         }

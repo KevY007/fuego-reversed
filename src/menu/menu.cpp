@@ -490,8 +490,10 @@ void draw_ui() {
 			ImGui::SameLine();
 			HelpMarker( "Your typed chat AND your text in input dialogs are translated into the server's "
 			            "language before sending. Passwords you type are never touched; picking a row in a "
-			            "translated list always sends the server's original row. Commands (/...) and "
-			            "numbers are never translated. If translation fails, your original text is sent." );
+			            "translated list always sends the server's original row. Message commands are "
+			            "translated too, only their message: '/pm 35 hey come here' keeps '/pm 35' "
+			            "(same for /me, /do, /b, /w, /report, ...). Other commands and numbers are never "
+			            "translated. If translation fails, your original text is sent." );
 			{
 				bool c  = ( s.hotkey_mods & 1 ) != 0;
 				bool sh = ( s.hotkey_mods & 2 ) != 0;

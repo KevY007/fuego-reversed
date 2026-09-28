@@ -538,6 +538,39 @@ Masked mask(const std::string& src, bool labels) {
     return out;
 }
 
+bool split_message_command(const std::string& s, std::string& head, std::string& message) {
+    if (s.size() < 2 || s[0] != '/' || !is_alpha(s[1])) return false;
+    size_t j = 1;
+    while (j < s.size() && is_word_char(s[j])) ++j;
+    if (!message_command(s, 1, j)) return false;
+    size_t k = j;
+    while (k < s.size() && s[k] == ' ') ++k;
+    if (k == j) return false; // "/me." -- no space after the command: not the usual shape
+    // The target: /pm and /report always take one first; /w, /whisper, /sms, /text
+    // when the first word looks like one (a number, a Name_Surname) -- else, on a
+    // server where they don't take one, that word is the message's first.
+    static const char* const kAlways[] = { "pm", "report" };
+    static const char* const kMaybe[]  = { "w", "whisper", "sms", "text" };
+    const bool always = is_one_of(s, 1, j, kAlways, sizeof(kAlways) / sizeof(kAlways[0]));
+    if (always || is_one_of(s, 1, j, kMaybe, sizeof(kMaybe) / sizeof(kMaybe[0]))) {
+        size_t t = k;
+        bool digits = true, underscore = false;
+        while (t < s.size() && s[t] != ' ') {
+            if (!is_digit(s[t])) digits = false;
+            if (s[t] == '_') underscore = true;
+            ++t;
+        }
+        if (always || digits || underscore) {
+            k = t;
+            while (k < s.size() && s[k] == ' ') ++k;
+        }
+    }
+    if (k >= s.size()) return false; // nothing to translate
+    head    = s.substr(0, k);
+    message = s.substr(k);
+    return true;
+}
+
 bool placeholders_intact(const std::string& translated, size_t n) {
     for (size_t k = 0; k < n; ++k) {
         const std::string ph = make_placeholder(k);

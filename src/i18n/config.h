@@ -52,7 +52,8 @@ struct Settings {
     // render at all (Urdu, Arabic, Hindi, ...); harmless for Latin languages.
     bool roman_output = false;
 
-    // --- Outbound: translate MY typed chat AND my dialog-input replies before
+    // --- Outbound: translate MY typed chat, the message of my message commands
+    // ("/pm 35 <message>", "/me <message>", ...) AND my dialog-input replies before
     // they are sent (opposite direction: my language -> the server's language).
     // Toggled live with a settable hotkey (hotkey_mods/hotkey_vk below, default
     // Ctrl+Shift) or the menu; outbound_enabled persists the last state.

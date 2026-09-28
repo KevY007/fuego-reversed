@@ -391,6 +391,29 @@ void test_protect() {
     CHECK(only_cmd(engine, "/engine on"), "'on' can be an argument");
     CHECK(only_cmd(mask("/engine on"), "/engine on"), "'/engine on' alone");
     CHECK(only_cmd(mask("use /gps ATM"), "/gps ATM"), "a short acronym is an argument");
+    // A typed message command, split for outgoing translation: the command (and its
+    // target) stays, only the message is translated.
+    {
+        std::string head, msg;
+        CHECK(split_message_command("/pm 12 hola amigo", head, msg) && head == "/pm 12 " && msg == "hola amigo",
+              "/pm: the player id stays");
+        CHECK(split_message_command("/pm Kevin_Smith  que tal", head, msg) && head == "/pm Kevin_Smith  " &&
+              msg == "que tal", "/pm: a name target stays");
+        CHECK(split_message_command("/pm Kevin hola", head, msg) && head == "/pm Kevin " && msg == "hola",
+              "/pm always has a target first");
+        CHECK(split_message_command("/me sonr\xED" "e", head, msg) && head == "/me " && msg == "sonr\xED" "e",
+              "/me: everything after it is the message");
+        CHECK(split_message_command("/w 12 hola", head, msg) && head == "/w 12 " && msg == "hola",
+              "/w with an id");
+        CHECK(split_message_command("/w hola amigo", head, msg) && head == "/w " && msg == "hola amigo",
+              "/w without one");
+        CHECK(split_message_command("/report 5 esta haciendo trampa", head, msg) && head == "/report 5 ",
+              "/report: the id stays");
+        CHECK(!split_message_command("/pm 12", head, msg), "no message: nothing to translate");
+        CHECK(!split_message_command("/me", head, msg), "no message at all");
+        CHECK(!split_message_command("/gps atm", head, msg), "not a message command");
+        CHECK(!split_message_command("hola", head, msg), "not a command");
+    }
     Masked numbered = mask("1. /stats shows your statistics");
     CHECK(only_cmd(numbered, "/stats") && numbered.text.find("shows") != std::string::npos,
           "a numbered list's entry begins the text too");

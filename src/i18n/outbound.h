@@ -1,15 +1,18 @@
 #pragma once
 // i18n/outbound.h -- translate MY outgoing chat before it is sent.
 //
-// Registers a net send-seam handler on RPC_Chat: while enabled (and only while the
-// per-frame pump runs -- hooks::pump_ready()), it swallows the player's typed chat
-// line, translates it the OPPOSITE way (my language -> the server's language,
-// config.outbound_target_lang) via the shared engine using a per-job prompt/target
-// override, and sends the translation through the real RakClient. A swallowed line
-// ALWAYS reaches the server: as typed if the translation fails, hasn't landed
-// within 5 s (tick), or the engine is about to be restarted/stopped
-// (flush_pending). Commands (/...) always pass through untranslated. Toggled live
-// with a settable hotkey (default Ctrl+Shift) or the menu; default off.
+// Registers a net send-seam handler on RPC_Chat and RPC_ServerCommand: while
+// enabled (and only while the per-frame pump runs -- hooks::pump_ready()), it
+// swallows the player's typed chat line, translates it the OPPOSITE way (my
+// language -> the server's language, config.outbound_target_lang) via the shared
+// engine using a per-job prompt/target override, and sends the translation through
+// the real RakClient. A message command (/pm 35 ..., /me ..., /b ..., see
+// protect::split_message_command) is handled the same way, but only its message is
+// translated -- the command and its target go out exactly as typed; every other
+// command passes through untranslated. A swallowed line ALWAYS reaches the server:
+// as typed if the translation fails, hasn't landed within 5 s (tick), or the engine
+// is about to be restarted/stopped (flush_pending). Toggled live with a settable
+// hotkey (default Ctrl+Shift) or the menu; default off.
 
 #include <cstddef>
 #include <cstdint>

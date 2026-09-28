@@ -2,6 +2,7 @@
 
 #include "engine.h"
 #include "config.h"
+#include "dlgq.h"    // the ordered, timing-faithful release queue (shared with held dialogs)
 #include "hooks.h"
 #include "protect.h" // split_message_command
 
@@ -14,8 +15,9 @@
 #include <windows.h> // GetTickCount
 #include <atomic>
 #include <cstdint>
-#include <map>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace i18n::outbound {
 
@@ -29,24 +31,27 @@ constexpr size_t kInputCap   = 127; // SA:MP's chat input takes 127 bytes -- cha
 // this long is sent as typed (mirrors surfaces' dialog INPUT-reply deadline) --
 // the player's chat must never be lost or held indefinitely.
 constexpr uint32_t kDeadlineMs = 5000;
+constexpr size_t   kMaxQueued  = 32;
 
 std::atomic<uint64_t> g_seq{ 1 };
 
-struct Pending {
-	std::string original;        // what the player typed: sent on failure / deadline / flush
-	std::string head;            // a message command's "/pm 35 ": kept verbatim before the translated message
-	bool        command = false; // goes back out as a command (RPC_ServerCommand), not as chat
-	uint32_t    t0 = 0;          // GetTickCount() when swallowed -- the deadline clock
-};
-// handle -> a swallowed line awaiting its translation. Ordered by handle (= the
-// order the lines were typed), so a flush sends several in the order typed.
-// Touched only on the main thread (the net send seam and engine::pump()/
-// apply_result/pump_tick all run there), so no lock is needed.
-std::map<uint64_t, Pending> g_pending;
+// The swallowed lines, released STRICTLY in the order typed -- a short "/do ..."
+// translated fast never overtakes the "/me ..." typed before it -- and each no
+// sooner than the previous one + the gap the player left between them (a server's
+// anti-spam sees the player's own pace). A line whose translation hasn't landed
+// within kDeadlineMs goes out as typed. While any line waits, even one that isn't
+// translated ("/gps bank") queues behind it rather than overtake it.
+i18n::dlgq::Queue g_queue( kDeadlineMs, kMaxQueued );
 
-// Wrap-safe "at least ms have elapsed since t0" for GetTickCount()-style clocks
-// (same arithmetic as surfaces' reply deadline and i18n::dlgq).
-bool elapsed_ms( uint32_t nowMs, uint32_t t0, uint32_t ms ) { return (int32_t) ( nowMs - t0 - ms ) >= 0; }
+// How each queued line goes out. Touched only on the main thread (the net send
+// seam and engine::pump()/apply_result/pump_tick all run there): no lock needed.
+struct Line {
+	bool        command   = false; // a "/command" (RPC_ServerCommand), else chat
+	std::string head;               // a message command's "/pm 35 ": kept verbatim before the translated message
+	bool        translate = false;  // a translation was asked for
+	bool        answered  = false;  // ... and came back (translated or not)
+};
+std::unordered_map<uint64_t, Line> g_lines; // queue seq -> its line
 
 // Sends a client chat line the way SA:MP does (RPC_Chat = uint8 length + bytes).
 // Goes through g_RakClient, which wraps the REAL RakClient interface, so it
@@ -76,10 +81,42 @@ void send_command( const std::string& bytes ) {
 	g_RakClient->RPC( kRpcCommand, &bs );
 }
 
-// Send `text` the way this pending line was typed: as chat, or as a command.
-void send( const Pending& p, const std::string& text ) {
-	if ( p.command ) send_command( text );
-	else             send_chat( text );
+// A finished translation as it goes out: line breaks as spaces, and -- after the
+// command's head -- within the input's 127 bytes, cut at the last space before
+// that rather than mid-word (single-byte codepage: any byte boundary is safe).
+std::string fit_input( const std::string& head, std::string t ) {
+	for ( char& c : t )
+		if ( c == '\n' || c == '\r' || c == '\t' ) c = ' ';
+	const size_t room = head.size() < kInputCap ? kInputCap - head.size() : 0;
+	if ( t.size() > room ) {
+		size_t cut = t.rfind( ' ', room );
+		if ( cut == std::string::npos || cut < room / 2 ) cut = room; // no space late enough: a plain cut
+		t.resize( cut );
+		while ( !t.empty() && t.back() == ' ' ) t.pop_back();
+	}
+	return head + t;
+}
+
+// Send everything released, each the way it was typed. `timed`: released by the
+// clock (tick), where a translated line without an answer ran out of time.
+void send_released( std::vector<i18n::dlgq::Release> released, bool timed ) {
+	for ( const auto& r : released ) {
+		auto it = g_lines.find( r.seq );
+		const bool command = it != g_lines.end() && it->second.command;
+		if ( timed && it != g_lines.end() && it->second.translate && !it->second.answered )
+			Log( "[i18n] outgoing %s sent as typed (translation took too long).", command ? "command" : "chat" );
+		const std::string text( r.payload.begin(), r.payload.end() );
+		if ( command ) send_command( text );
+		else           send_chat( text );
+		if ( it != g_lines.end() ) g_lines.erase( it );
+	}
+}
+
+// Queue a line as typed. False if the queue is full (the caller sends it at once).
+bool enqueue( uint64_t seq, const std::string& text, Line line ) {
+	if ( !g_queue.push( seq, GetTickCount(), std::vector<uint8_t>( text.begin(), text.end() ) ) ) return false;
+	g_lines[seq] = std::move( line );
+	return true;
 }
 
 // Net send-seam handler: return false to DROP the outgoing RPC, true to let it go.
@@ -88,10 +125,11 @@ void send( const Pending& p, const std::string& text ) {
 bool on_send_chat( int id, BitStream* params, PacketPriority, PacketReliability, char, bool ) {
 	if ( ( id != kRpcChat && id != kRpcCommand ) || !params ) return true; // not chat / a command -> pass
 	try {
-		if ( !i18n::config::get().outbound_enabled ) return true; // feature off -> pass
 		// Swallowing is only safe when the per-frame pump will deliver the result;
 		// without it nothing would ever send the line -- let it go as typed.
 		if ( !i18n::hooks::pump_ready() ) return true;
+		const bool on = i18n::config::get().outbound_enabled;
+		if ( !on && g_queue.empty() ) return true; // feature off, nothing waiting -> pass
 
 		// Parse the outgoing line (chat: uint8 length + bytes; a command: uint32
 		// length + bytes), fully bounds-checked so a malformed stream is passed
@@ -116,17 +154,32 @@ bool on_send_chat( int id, BitStream* params, PacketPriority, PacketReliability,
 		// anyway). A command only when its words are a MESSAGE (/pm, /me, /b, ...):
 		// "/pm 35 hey come here" keeps "/pm 35 " and translates "hey come here". Any
 		// other command's words are arguments ("/gps atm"): it is sent as typed.
-		std::string head, message;
-		if ( id == kRpcChat ) {
-			if ( text[0] == '/' ) return true;
-			message = text;
-		} else if ( !i18n::protect::split_message_command( text, head, message ) ) {
-			return true;
+		Line line;
+		line.command = ( id == kRpcCommand );
+		std::string message;
+		bool translate = false;
+		if ( on ) {
+			if ( !line.command ) {
+				translate = text[0] != '/';
+				message   = text;
+			} else {
+				translate = i18n::protect::split_message_command( text, line.head, message );
+			}
+		}
+
+		const uint64_t seq = g_seq.fetch_add( 1, std::memory_order_relaxed );
+		if ( !translate ) {
+			// Not translated -- but typed after a line still waiting: it queues behind
+			// it (ready as typed), so it can't overtake it.
+			if ( g_queue.empty() ) return true;
+			if ( !enqueue( seq, text, line ) ) return true;
+			g_queue.resolve( seq, std::vector<uint8_t>() );
+			return false;
 		}
 
 		auto& s = i18n::config::get();
 		i18n::engine::Job job;
-		job.handle             = g_seq.fetch_add( 1, std::memory_order_relaxed );
+		job.handle             = seq;
 		job.surface            = 1; // outbound (routed by hooks::apply_result -> on_result)
 		job.sourceBytes        = message;
 		job.srcCodepage        = s.source_cp; // 0 = auto-detect the client's typed codepage
@@ -135,17 +188,17 @@ bool on_send_chat( int id, BitStream* params, PacketPriority, PacketReliability,
 		job.promptOverride     = i18n::config::build_system_prompt( s.outbound_target_lang, /*roman=*/false );
 		job.targetLangOverride = s.outbound_target_lang;
 		job.displayCpOverride  = i18n::config::display_codepage( s.outbound_target_lang, false );
-		// A command's message must fit after its head within the input's 127 bytes.
-		if ( !head.empty() ) job.capBytes = (int) ( head.size() + 16 < kInputCap ? kInputCap - head.size() : 16 );
+		job.capBytes           = 4095; // the whole translation: fit_input cuts it at a word
 
-		// Submit FIRST, then remember the line: if either throws, the line goes out
-		// as typed right now (catch below) and a result that still comes back finds
-		// no entry and is ignored -- never lost, never sent twice. (No result can
-		// land in between: pump() runs on this same main thread.)
-		const uint64_t handle = job.handle;
+		// Queue FIRST, then submit: a full queue lets the line go out as typed right
+		// now; if submit throws, the queued line still goes out as typed at its
+		// deadline and a result that comes back anyway finds it already sent (or
+		// resolves it) -- never lost, never sent twice. (No result can land in
+		// between: pump() runs on this same main thread.)
+		line.translate = true;
+		if ( !enqueue( seq, text, line ) ) return true;
 		i18n::engine::submit( job );
-		g_pending.emplace( handle, Pending{ std::move( text ), std::move( head ), id == kRpcCommand, GetTickCount() } );
-		return false; // swallow; on_result(), the tick() deadline or flush_pending() sends it
+		return false; // swallow; on_result() + tick(), the deadline or flush_pending() sends it
 	} catch ( ... ) {
 		params->ResetReadPointer();
 		return true; // before the swallow decision -> the chat goes out untouched
@@ -172,42 +225,31 @@ void toggle() {
 }
 
 void on_result( const i18n::engine::Result& r ) {
-	auto it = g_pending.find( r.handle );
-	// Already sent as typed (deadline / flush) -- a late result is ignored, so the
-	// line never goes out twice.
-	if ( it == g_pending.end() ) return;
-	const bool ok = r.ok && !r.displayBytes.empty();
-	// Send, THEN forget: if sending throws (before the RPC), the entry survives and
-	// the deadline still delivers the original.
-	const Pending& p = it->second;
-	send( p, ok ? p.head + r.displayBytes : p.original ); // translation, or what the player typed
-	g_pending.erase( it );
+	auto it = g_lines.find( r.handle );
+	// Already sent as typed (deadline / flush / a new session) -- a late result is
+	// ignored, so the line never goes out twice.
+	if ( it == g_lines.end() ) return;
+	it->second.answered = true;
+	const bool ok = r.ok && !r.displayBytes.empty() && it->second.head.size() + 16 <= kInputCap;
+	// Empty = the original goes out (the translation failed or wasn't needed).
+	const std::string out = ok ? fit_input( it->second.head, r.displayBytes ) : std::string();
+	g_queue.resolve( r.handle, std::vector<uint8_t>( out.begin(), out.end() ) );
+	send_released( g_queue.tick( GetTickCount() ), true ); // its turn may be now
 }
 
 void tick( uint32_t nowMs ) {
-	for ( auto it = g_pending.begin(); it != g_pending.end(); ) {
-		if ( elapsed_ms( nowMs, it->second.t0, kDeadlineMs ) ) {
-			send( it->second, it->second.original );
-			Log( "[i18n] outgoing %s sent as typed (translation took too long).", it->second.command ? "command" : "chat" );
-			it = g_pending.erase( it );
-		} else {
-			++it;
-		}
-	}
+	if ( !g_queue.empty() ) send_released( g_queue.tick( nowMs ), true );
 }
 
 void flush_pending() {
-	// One at a time, forgetting each line only once it has gone out, in the order typed.
-	while ( !g_pending.empty() ) {
-		auto it = g_pending.begin();
-		send( it->second, it->second.original );
-		g_pending.erase( it );
-	}
+	// Everything still waiting goes out as typed, in the order typed.
+	send_released( g_queue.flush(), false );
 }
 
 size_t discard_pending() {
-	const size_t n = g_pending.size();
-	g_pending.clear(); // typed to the previous session: never sent to the new one
+	const size_t n = g_queue.size();
+	g_queue = i18n::dlgq::Queue( kDeadlineMs, kMaxQueued ); // typed to the previous session: never sent
+	g_lines.clear();
 	return n;
 }
 

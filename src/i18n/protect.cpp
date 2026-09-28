@@ -542,30 +542,33 @@ bool split_message_command(const std::string& s, std::string& head, std::string&
     if (s.size() < 2 || s[0] != '/' || !is_alpha(s[1])) return false;
     size_t j = 1;
     while (j < s.size() && is_word_char(s[j])) ++j;
-    if (!message_command(s, 1, j)) return false;
+    // Only commands whose words are a message on EVERY server: what we send is what
+    // the server runs, so one that takes arguments somewhere ("/call police",
+    // "/radio on", "/t lv", "/r fix") is never touched. Narrower than the incoming
+    // list (message_command), where a wrong guess only changes what is shown.
+    static const char* const kMessage[] = { "me", "do", "ame", "ado", "b", "o", "ooc", "low", "shout",
+                                            "pm", "w", "whisper", "sms", "report" };
+    if (!is_one_of(s, 1, j, kMessage, sizeof(kMessage) / sizeof(kMessage[0]))) return false;
     size_t k = j;
     while (k < s.size() && s[k] == ' ') ++k;
     if (k == j) return false; // "/me." -- no space after the command: not the usual shape
-    // The target: /pm and /report always take one first; /w, /whisper, /sms, /text
-    // when the first word looks like one (a number, a Name_Surname) -- else, on a
-    // server where they don't take one, that word is the message's first.
-    static const char* const kAlways[] = { "pm", "report" };
-    static const char* const kMaybe[]  = { "w", "whisper", "sms", "text" };
-    const bool always = is_one_of(s, 1, j, kAlways, sizeof(kAlways) / sizeof(kAlways[0]));
-    if (always || is_one_of(s, 1, j, kMaybe, sizeof(kMaybe) / sizeof(kMaybe[0]))) {
-        size_t t = k;
-        bool digits = true, underscore = false;
-        while (t < s.size() && s[t] != ' ') {
-            if (!is_digit(s[t])) digits = false;
-            if (s[t] == '_') underscore = true;
-            ++t;
-        }
-        if (always || digits || underscore) {
-            k = t;
-            while (k < s.size() && s[k] == ' ') ++k;
-        }
+    // Its target -- a player id or name, a phone number -- is always the first word
+    // and is never translated: a translated name could whisper to someone else.
+    static const char* const kTargeted[] = { "pm", "w", "whisper", "sms", "report" };
+    if (is_one_of(s, 1, j, kTargeted, sizeof(kTargeted) / sizeof(kTargeted[0]))) {
+        while (k < s.size() && s[k] != ' ') ++k;
+        while (k < s.size() && s[k] == ' ') ++k;
     }
-    if (k >= s.size()) return false; // nothing to translate
+    // A message of at least two words (like dialog input): a single word may still
+    // be an argument somewhere, and is cheap to understand as typed.
+    size_t words = 0;
+    for (size_t q = k; q < s.size();) {
+        while (q < s.size() && s[q] == ' ') ++q;
+        if (q >= s.size()) break;
+        ++words;
+        while (q < s.size() && s[q] != ' ') ++q;
+    }
+    if (words < 2) return false;
     head    = s.substr(0, k);
     message = s.substr(k);
     return true;

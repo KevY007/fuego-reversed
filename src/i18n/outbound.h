@@ -33,13 +33,17 @@ void toggle();
 bool enabled();
 
 // Delivers a finished outbound translation: called from hooks::apply_result for
-// Result.surface == 1, on the main thread. Sends the translated line (or the
-// original on failure) via RakClient. A result whose line was already sent as
-// typed (deadline / flush) is ignored.
+// Result.surface == 1, on the main thread. The line goes out through RakClient --
+// translated (cut at a word to fit the input's 127 bytes), or as typed on failure
+// -- once every line typed before it has gone out, and no sooner than the gap the
+// player left after the previous one (lines leave strictly in the order typed; a
+// line that needs no translation but was typed behind a waiting one queues too).
+// A result whose line was already sent as typed (deadline / flush) is ignored.
 void on_result(const i18n::engine::Result& r);
 
-// Guaranteed delivery: sends the ORIGINAL of every swallowed line still waiting
-// for its translation after 5 s. Call every frame (hooks::pump_tick). Main thread.
+// Sends the lines whose turn has come, in order: translated, or -- 5 s after it was
+// typed with no translation yet -- as typed. Call every frame (hooks::pump_tick).
+// Main thread.
 void tick(uint32_t nowMs);
 
 // Sends the ORIGINAL of every swallowed line right now, in the order typed, and

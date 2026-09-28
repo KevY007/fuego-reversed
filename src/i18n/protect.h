@@ -40,12 +40,14 @@ struct Masked {
 // it -- the HUD puts its real numbers back into exactly those places.
 Masked mask(const std::string& src, bool labels = false);
 
-// A typed chat command whose words are a MESSAGE (/me, /do, /pm, /b, /w, /report,
-// ...), split for outgoing translation: `head` = the command, its target when it
-// takes one -- /pm and /report always ("/pm 12", "/pm Kevin_Smith"); /w, /whisper,
-// /sms, /text when the first word is a number or a Name_Surname -- and the spaces
-// after it; `message` = the rest, the only part to translate. False for any other
-// command (its words are arguments: sent as typed), or with no message ("/pm 12").
+// A command I TYPED whose words are a message on every server -- /me /do /ame /ado
+// /b /o /ooc /low /shout /pm /w /whisper /sms /report -- split for outgoing
+// translation: `head` = the command, its target for /pm /w /whisper /sms /report
+// (always the first word -- a player id or name, a number -- never translated),
+// and the spaces after it; `message` = the rest, the only part to translate. False
+// for any other command (the server gets it exactly as typed: "/call police" and
+// "/radio on" take arguments on some servers) and for a message of fewer than two
+// words ("/pm 12 ok" goes as typed).
 bool split_message_command(const std::string& line, std::string& head, std::string& message);
 
 // True iff every placeholder "\x01k\x02" for k in [0, n) appears in

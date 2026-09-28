@@ -391,27 +391,36 @@ void test_protect() {
     CHECK(only_cmd(engine, "/engine on"), "'on' can be an argument");
     CHECK(only_cmd(mask("/engine on"), "/engine on"), "'/engine on' alone");
     CHECK(only_cmd(mask("use /gps ATM"), "/gps ATM"), "a short acronym is an argument");
-    // A typed message command, split for outgoing translation: the command (and its
-    // target) stays, only the message is translated.
+    // A typed message command, split for OUTGOING translation: the command (and its
+    // target) goes out as typed, only a message of two or more words is translated.
+    // Only commands that are messages on every server: the server receives what
+    // we send, so "/call police" or "/radio on" must never be touched.
     {
         std::string head, msg;
         CHECK(split_message_command("/pm 12 hola amigo", head, msg) && head == "/pm 12 " && msg == "hola amigo",
               "/pm: the player id stays");
         CHECK(split_message_command("/pm Kevin_Smith  que tal", head, msg) && head == "/pm Kevin_Smith  " &&
               msg == "que tal", "/pm: a name target stays");
-        CHECK(split_message_command("/pm Kevin hola", head, msg) && head == "/pm Kevin " && msg == "hola",
+        CHECK(split_message_command("/pm Kevin hola amigo", head, msg) && head == "/pm Kevin " && msg == "hola amigo",
               "/pm always has a target first");
-        CHECK(split_message_command("/me sonr\xED" "e", head, msg) && head == "/me " && msg == "sonr\xED" "e",
-              "/me: everything after it is the message");
-        CHECK(split_message_command("/w 12 hola", head, msg) && head == "/w 12 " && msg == "hola",
-              "/w with an id");
-        CHECK(split_message_command("/w hola amigo", head, msg) && head == "/w " && msg == "hola amigo",
-              "/w without one");
+        CHECK(split_message_command("/me sonr\xED" "e feliz", head, msg) && head == "/me " &&
+              msg == "sonr\xED" "e feliz", "/me: everything after it is the message");
+        CHECK(split_message_command("/w 12 hola amigo", head, msg) && head == "/w 12 " && msg == "hola amigo",
+              "/w: the target stays");
+        CHECK(split_message_command("/w Kev hola que tal", head, msg) && head == "/w Kev " && msg == "hola que tal",
+              "/w: a short name target stays too");
         CHECK(split_message_command("/report 5 esta haciendo trampa", head, msg) && head == "/report 5 ",
               "/report: the id stays");
+        CHECK(split_message_command("/b brb 5 min", head, msg) && head == "/b " && msg == "brb 5 min", "/b");
+        CHECK(!split_message_command("/me sonr\xED" "e", head, msg), "a one-word message goes as typed");
+        CHECK(!split_message_command("/pm 12 ok", head, msg), "a one-word /pm goes as typed");
         CHECK(!split_message_command("/pm 12", head, msg), "no message: nothing to translate");
         CHECK(!split_message_command("/me", head, msg), "no message at all");
         CHECK(!split_message_command("/gps atm", head, msg), "not a message command");
+        CHECK(!split_message_command("/call police now", head, msg), "/call takes arguments on some servers");
+        CHECK(!split_message_command("/radio on please", head, msg), "/radio too");
+        CHECK(!split_message_command("/text Mom hi there", head, msg), "/text too");
+        CHECK(!split_message_command("/r fix it now", head, msg), "/r is 'repair' on some servers");
         CHECK(!split_message_command("hola", head, msg), "not a command");
     }
     Masked numbered = mask("1. /stats shows your statistics");

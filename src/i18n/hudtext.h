@@ -46,8 +46,13 @@ struct Line {
     // is translated instead -- and while the coloured one is out, its translation is
     // shown if already in memory (a shadow textdraw has exactly this text).
     std::string              plainKey;
+    std::vector<std::string> plainNums;         // the numbers its stand-ins replaced (a code removed can join two)
     std::vector<Mark>        marks;             // the coloured stretches: coloured again in a plain translation where
                                                 // their text survives verbatim (a key name, a command, a name)
+    // Its colours are decoration -- a code inside a word (a gradient: "/{FF1300}h
+    // {FF1D00}e{FF2700}l..."), or more than six stretches: the coloured key could
+    // never come back intact, so only plainKey is ever translated.
+    bool                     plainOnly = false;
 };
 
 struct Plan {

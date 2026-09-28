@@ -89,9 +89,10 @@ size_t colour_code_len(const std::string& s, size_t i) {
     return 0;
 }
 
-// Split a core at its inner colour codes: `plain` = the core without them (two
-// words the codes kept apart stay apart), `marks` = every stretch that follows a
-// run of codes (the text before the first run keeps the line's own colour).
+// Split a core at its inner colour codes: `plain` = the core without them (a colour
+// change inside a word -- "Evo~R~lve", a gradient's letters -- joins it back),
+// `marks` = every stretch that follows a run of codes (the text before the first
+// run keeps the line's own colour).
 void split_marks(const std::string& core, std::string& plain, std::vector<Mark>& marks) {
     plain.clear();
     marks.clear();
@@ -110,11 +111,26 @@ void split_marks(const std::string& core, std::string& plain, std::vector<Mark>&
             c = colour_code_len(core, i);
         }
         if (!open.empty()) marks.push_back({ open, text, codes });
-        if (!plain.empty() && i < core.size() && is_word(plain.back()) && is_word(core[i])) plain += ' ';
         open = std::move(codes);
         text.clear();
     }
     if (!open.empty()) marks.push_back({ open, text, std::string() });
+}
+
+// A run of colour codes with a word character on both sides: a gradient colouring
+// letters of one word ("h{FF1D00}e").
+bool code_inside_word(const std::string& core) {
+    for (size_t i = 0; i < core.size();) {
+        size_t j = i;
+        while (size_t c = colour_code_len(core, j)) j += c;
+        if (j > i) {
+            if (i > 0 && is_word(core[i - 1]) && j < core.size() && is_word(core[j])) return true;
+            i = j;
+        } else {
+            ++i;
+        }
+    }
+    return false;
 }
 
 // core -> key (numbers replaced by stand-ins "2", "3", ...) + the numbers.
@@ -170,8 +186,8 @@ Line make_line(const std::string& raw) {
         std::string plain;
         split_marks(ln.core, plain, ln.marks);
         if (!ln.marks.empty()) {
-            std::vector<std::string> nums; // (the same numbers: colour codes hold none)
-            template_numbers(plain, ln.plainKey, nums);
+            template_numbers(plain, ln.plainKey, ln.plainNums);
+            ln.plainOnly = ln.marks.size() > 6 || code_inside_word(ln.core);
         }
     }
     return ln;
@@ -250,9 +266,9 @@ std::string base_colour(const Line& ln) {
 // would break the line: numbers put back, the same number of '~' as `origTildes`
 // (codes are restored exactly; one more or less is an unmatched tilde), line
 // breaks turned into spaces.
-std::string use_translation(const std::string& tr, const Line& ln, size_t origTildes) {
+std::string use_translation(const std::string& tr, const std::vector<std::string>& nums, size_t origTildes) {
     std::string t;
-    if (!put_numbers(tr, ln.nums, t) || t.empty() || count_tildes(t) != origTildes) return std::string();
+    if (!put_numbers(tr, nums, t) || t.empty() || count_tildes(t) != origTildes) return std::string();
     for (char& ch : t)
         if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
     return t;
@@ -344,12 +360,33 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
         std::string& core = cores.back();
         if (!ln.translate) continue;
 
+        if (ln.plainOnly) { // decoration: only the plain key, recoloured where it can be
+            std::string ptr;
+            switch (look(ln.plainKey, ptr, false)) {
+                case Look::Hit: {
+                    std::string t = use_translation(ptr, ln.plainNums, count_tildes(plain_core(ln)));
+                    if (!t.empty()) core = recolour(std::move(t), ln.marks, base_colour(ln));
+                    break;
+                }
+                case Look::Keep:
+                    break;
+                case Look::Later:
+                    if (later) *later = true;
+                    break;
+                case Look::Retry:
+                case Look::Miss:
+                    fetch(ln.plainKey);
+                    break;
+            }
+            continue;
+        }
+
         std::string tr;
         const Look r = look(ln.key, tr, false);
         if (r == Look::Keep) continue;
         bool failed = false; // the coloured key can't be used: it failed before, or its translation breaks the line
         if (r == Look::Hit) {
-            std::string t = use_translation(tr, ln, count_tildes(ln.core));
+            std::string t = use_translation(tr, ln.nums, count_tildes(ln.core));
             if (!t.empty()) { core = std::move(t); continue; }
             failed = true;
         } else if (r == Look::Later) {
@@ -365,7 +402,7 @@ bool resolve(const Plan& p, const Lookup& look, std::string& out, std::vector<st
         std::string ptr;
         const Look pr = look(ln.plainKey, ptr, /*hitOnly=*/!failed);
         if (pr == Look::Hit) {
-            std::string t = use_translation(ptr, ln, count_tildes(plain_core(ln)));
+            std::string t = use_translation(ptr, ln.plainNums, count_tildes(plain_core(ln)));
             if (!t.empty()) core = recolour(std::move(t), ln.marks, base_colour(ln));
         } else if (failed) {
             if (pr == Look::Later) {

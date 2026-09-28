@@ -76,6 +76,8 @@ std::string engine_signature( const i18n::ProviderConfig &pc, const std::string 
 // (SA:MP calls AddEntry and the pump both run on the game thread).
 struct PendingFlip {
 	std::vector<i18n::chatbuf::Piece> pieces;
+	std::string                       source;             // the line as the server sent it
+	bool                              plainTried = false; // already retried without its colour codes
 };
 std::unordered_map<uint64_t, PendingFlip> g_pendingFlips;
 
@@ -103,7 +105,26 @@ void apply_result( const i18n::engine::Result &r ) {
 		if ( it == g_pendingFlips.end() ) return;
 		PendingFlip pf = std::move( it->second );
 		g_pendingFlips.erase( it );
-		if ( !r.ok || r.displayBytes.empty() ) return;
+		if ( !r.ok || r.displayBytes.empty() ) {
+			// Failed -- often because the model lost colour codes inside the line
+			// (live: '... {FFFFFF}"Прокачка новичкам"{33AA33}. Подробнее: {FFFFFF}"/boostinfo"
+			// {33AA33}!'): try once more WITHOUT them. The line then shows translated in
+			// its own colour, rather than untranslated in several.
+			const std::string plain = i18n::surfaces::strip_colors( pf.source );
+			if ( pf.plainTried || plain == pf.source || plain.empty() ) return;
+			const uint64_t h = g_seq.fetch_add( 1, std::memory_order_relaxed );
+			pf.plainTried = true;
+			i18n::engine::Job job;
+			job.handle      = h;
+			job.surface     = 0;
+			job.sourceBytes = plain;
+			job.srcCodepage = i18n::config::get().source_cp;
+			job.noDedup     = true;
+			job.skipContext = true; // (the line is in the context ring already)
+			g_pendingFlips[h] = std::move( pf );
+			i18n::engine::submit( job );
+			return;
+		}
 
 		uint8_t *chat = static_cast<uint8_t *>( samp::chat_ptr() );
 		if ( !chat ) return; // left the server before the result landed
@@ -181,6 +202,7 @@ void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const ch
 		if ( g_pendingFlips.size() > 256 ) g_pendingFlips.clear(); // results that never came back
 		uint64_t h = g_seq.fetch_add( 1, std::memory_order_relaxed );
 		g_pendingFlips[h].pieces = i18n::chatbuf::read_newest( chat, n );
+		g_pendingFlips[h].source = msg;
 
 		i18n::engine::Job job;
 		job.handle      = h;

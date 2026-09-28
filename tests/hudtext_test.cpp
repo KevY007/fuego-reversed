@@ -262,7 +262,7 @@ int main() {
               p.lines[0].marks[0].text == "ARROW KEYS" && p.lines[0].marks[0].close == "~W~", "the coloured stretch");
         check(p.lines[1].plainKey == "Press ~k~~W~ now", "a key name after ~k~ is not a colour code");
         check(p.lines[2].plainKey.empty() && p.lines[2].marks.empty(), "no inner codes: no plain key");
-        check(plan_text("red~W~car", false).lines[0].plainKey == "red car", "words stay apart");
+        check(plan_text("Evo~R~lve", false).lines[0].plainKey == "Evolve", "a colour change inside a word joins it back");
         Plan q = plan_text("Time: ~G~~H~Saturday 15:32", false);
         check(q.lines[0].plainKey == "Time: Saturday 2:3" && q.lines[0].nums.size() == 2,
               "the plain key has the same stand-ins");
@@ -349,6 +349,24 @@ int main() {
         tq.hits = { { "Next city: Los Santos", "Los Santos es la siguiente ciudad" } };
         check(resolve(q, tq.look(), out, missing) && out == "Los Santos es la siguiente ciudad",
               "no colour of its own to close with: not coloured");
+    }
+    {   // Colours as decoration -- a code inside a word (a gradient), or more than six
+        // stretches: only the plain key is ever translated (the coloured one would
+        // fail every time: live, "/{FF1300}h{FF1D00}e{FF2700}l{FF3000}p ..." did).
+        Plan g = plan_text("/{FF1300}h{FF1D00}e{FF2700}l{FF3000}p{FF3A00} -{FF4400} game help", true);
+        check(g.lines[0].plainOnly && g.lines[0].plainKey == "/help - game help", "a gradient: plain only");
+        FakeTm tm;
+        tm.hits = { { "/help - game help", "/help - ayuda del juego" } };
+        std::string out;
+        std::vector<std::string> missing;
+        check(resolve(g, tm.look(), out, missing) && out == "/help - ayuda del juego" &&
+              tm.asked == std::vector<std::string>{ "/help - game help" }, "a gradient: the plain translation, one lookup");
+        FakeTm none;
+        check(!resolve(g, none.look(), out, missing) && missing == std::vector<std::string>{ "/help - game help" },
+              "a gradient: the plain key is fetched at once");
+        check(!plan_text("Welcome to ~P~Las Venturas~W~, ~Y~Bob~W~.", false).lines[0].plainOnly,
+              "codes between words: not decoration");
+        check(plan_text("a{FF0000}b c{00FF00}d e{0000FF}f", true).lines[0].plainOnly, "codes inside words");
     }
     {   // A middle stretch whose next stretch no longer follows it in the translation:
         // closed with the line's own colour, not the next stretch's.

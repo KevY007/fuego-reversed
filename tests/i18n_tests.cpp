@@ -536,6 +536,16 @@ void test_charset() {
 
     // "привет" (hello in Russian) has many high bytes, should return 1251
     CHECK_EQ(guess_codepage(ru), 1251);
+
+    // Mostly Latin, but a word made only of high bytes: a short Russian word among
+    // English ones (live, a sign "На EVOLVE ROLE PLAY" was read as "Íà EVOLVE ...").
+    CHECK_EQ(guess_codepage("\xCD\xE0 EVOLVE ROLE PLAY"), 1251);
+    CHECK_EQ(guess_codepage("Welcome to \xCB\xE0\xF1 \xC2\xE5\xED\xF2\xF3\xF0\xE0\xF1 now, friend"), 1251);
+    // ... while Latin accents sit INSIDE Latin words: still cp1252.
+    CHECK_EQ(guess_codepage("Caf\xE9 ol\xE9 for everyone here"), 1252);         // café olé
+    CHECK_EQ(guess_codepage("a\xE7\xE3o do jogo e mais coisas aqui"), 1252);     // ação
+    CHECK_EQ(guess_codepage("Gr\xF6\xDF" "e und Farbe hier bitte"), 1252);       // Größe
+    CHECK_EQ(guess_codepage("\xE0 la carte, s'il vous plait"), 1252);          // à (one letter)
 }
 
 #include "i18n/breaker.h"

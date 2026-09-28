@@ -49,8 +49,8 @@ struct Line {
     std::vector<std::string> plainNums;         // the numbers its stand-ins replaced (a code removed can join two)
     std::vector<Mark>        marks;             // the coloured stretches: coloured again in a plain translation where
                                                 // their text survives verbatim (a key name, a command, a name)
-    // Its colours are decoration -- a code inside a word (a gradient: "/{FF1300}h
-    // {FF1D00}e{FF2700}l..."), or more than six stretches: the coloured key could
+    // Its colours are decoration -- codes inside words (a gradient: "/{FF1300}h
+    // {FF1D00}e{FF2700}l...": two or more), or more than six stretches: the coloured key could
     // never come back intact, so only plainKey is ever translated.
     bool                     plainOnly = false;
 };

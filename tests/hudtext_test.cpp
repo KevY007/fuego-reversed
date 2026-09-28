@@ -367,6 +367,15 @@ int main() {
         check(!plan_text("Welcome to ~P~Las Venturas~W~, ~Y~Bob~W~.", false).lines[0].plainOnly,
               "codes between words: not decoration");
         check(plan_text("a{FF0000}b c{00FF00}d e{0000FF}f", true).lines[0].plainOnly, "codes inside words");
+        // Not decoration: a single code inside a word, or a code between a word and
+        // a number -- that number still gets its stand-in (a score must not become
+        // a new text every time it changes).
+        Plan k = plan_text("Kills~y~5", false);
+        check(!k.lines[0].plainOnly && k.lines[0].plainKey == "Kills 2" && k.lines[0].plainNums.size() == 1,
+              "Kills~y~5: the number keeps its stand-in in the plain key");
+        check(!plan_text("~w~Score~y~1500", false).lines[0].plainOnly, "a score line is not decoration");
+        check(!plan_text("Level~Y~5~W~ reached", false).lines[0].plainOnly, "a level line is not decoration");
+        check(!plan_text("Evo~R~lve RP", false).lines[0].plainOnly, "one code inside a word: not decoration");
     }
     {   // A middle stretch whose next stretch no longer follows it in the translation:
         // closed with the line's own colour, not the next stretch's.

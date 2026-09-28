@@ -104,12 +104,18 @@ void split_marks(const std::string& core, std::string& plain, std::vector<Mark>&
             text += core[i++];
             continue;
         }
+        const size_t start = i;
         std::string codes;
         while (c) {
             codes.append(core, i, c);
             i += c;
             c = colour_code_len(core, i);
         }
+        // Between a word and a number ("Kills~y~5") keep them apart, so the number
+        // still gets its stand-in; between two letters ("Evo~R~lve") join the word.
+        if (start > 0 && i < core.size() && is_word(core[start - 1]) && is_word(core[i]) &&
+            (is_digit(core[start - 1]) || is_digit(core[i])))
+            plain += ' ';
         if (!open.empty()) marks.push_back({ open, text, codes });
         open = std::move(codes);
         text.clear();
@@ -117,20 +123,26 @@ void split_marks(const std::string& core, std::string& plain, std::vector<Mark>&
     if (!open.empty()) marks.push_back({ open, text, std::string() });
 }
 
-// A run of colour codes with a word character on both sides: a gradient colouring
-// letters of one word ("h{FF1D00}e").
-bool code_inside_word(const std::string& core) {
+// How many runs of colour codes sit between two LETTERS -- colouring letters of one
+// word, as a gradient does ("h{FF1D00}e"). (A code between a word and a number,
+// "Kills~y~5", is no decoration.)
+size_t codes_inside_words(const std::string& core) {
+    auto letter = [](char ch) {
+        const unsigned char u = (unsigned char)ch;
+        return (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || u >= 0x80;
+    };
+    size_t n = 0;
     for (size_t i = 0; i < core.size();) {
         size_t j = i;
         while (size_t c = colour_code_len(core, j)) j += c;
         if (j > i) {
-            if (i > 0 && is_word(core[i - 1]) && j < core.size() && is_word(core[j])) return true;
+            if (i > 0 && letter(core[i - 1]) && j < core.size() && letter(core[j])) ++n;
             i = j;
         } else {
             ++i;
         }
     }
-    return false;
+    return n;
 }
 
 // core -> key (numbers replaced by stand-ins "2", "3", ...) + the numbers.
@@ -187,7 +199,7 @@ Line make_line(const std::string& raw) {
         split_marks(ln.core, plain, ln.marks);
         if (!ln.marks.empty()) {
             template_numbers(plain, ln.plainKey, ln.plainNums);
-            ln.plainOnly = ln.marks.size() > 6 || code_inside_word(ln.core);
+            ln.plainOnly = ln.marks.size() > 6 || codes_inside_words(ln.core) >= 2;
         }
     }
     return ln;

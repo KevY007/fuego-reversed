@@ -546,6 +546,9 @@ void test_charset() {
     CHECK_EQ(guess_codepage("a\xE7\xE3o do jogo e mais coisas aqui"), 1252);     // ação
     CHECK_EQ(guess_codepage("Gr\xF6\xDF" "e und Farbe hier bitte"), 1252);       // Größe
     CHECK_EQ(guess_codepage("\xE0 la carte, s'il vous plait"), 1252);          // à (one letter)
+    // Symbols in the high half are no letters: quotes, the euro sign, dashes.
+    CHECK_EQ(guess_codepage("\xAB\xBB hola amigos del server"), 1252);          // «» hola
+    CHECK_EQ(guess_codepage("price \x80\x80 and \x97\x97 more words here"), 1252);
 }
 
 #include "i18n/breaker.h"

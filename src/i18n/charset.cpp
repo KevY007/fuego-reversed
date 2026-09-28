@@ -74,15 +74,18 @@ int guess_codepage(const std::string& bytes) {
     // read as cp1252 is "Íà EVOLVE ..."): a word of 2+ letters made ONLY of high bytes
     // is Cyrillic, while Latin accents sit INSIDE Latin words ("café", "ação",
     // "Größe") -- so a word mixing ASCII letters and high bytes means cp1252.
+    // (A high byte counts as a letter only where cp1251 has letters -- 0xC0-0xFF,
+    // Ё 0xA8, ё 0xB8 -- so quotes, dashes and the euro sign never make a "word".)
+    auto highLetter = [](unsigned char d) { return d >= 0xC0 || d == 0xA8 || d == 0xB8; };
     int cyrWords = 0, latinAccented = 0;
     for (size_t i = 0; i < bytes.size();) {
         const unsigned char c = (unsigned char)bytes[i];
-        const bool letter = c >= 0x80 || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        const bool letter = highLetter(c) || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
         if (!letter) { ++i; continue; }
         size_t j = i, high = 0, ascii = 0;
         for (; j < bytes.size(); ++j) {
             const unsigned char d = (unsigned char)bytes[j];
-            if (d >= 0x80) ++high;
+            if (highLetter(d)) ++high;
             else if ((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z')) ++ascii;
             else break;
         }

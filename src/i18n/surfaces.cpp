@@ -100,8 +100,14 @@ struct PendingDialog {
     bool                     late      = false;
     uint32_t                 lateUntil = 0;
     std::string              shownTitle; // the title SA:MP shows for it (late only): how it's recognised
+    uint64_t                 shownAt = 0; // g_dialogShows right after it was shown (late only)
 };
 constexpr uint32_t kLateDialogMs = 60000;
+// Every dialog shown -- each ShowDialog that arrives, each one released through
+// show_payload -- counts one: a late dialog switches to its translation only if
+// nothing was shown since it (many servers show every info box with the same id
+// and title "Information": id + title alone can't tell them apart).
+uint64_t g_dialogShows = 0;
 std::unordered_map<uint64_t, PendingDialog> g_pendingDialogs; // seq -> dialog
 
 // One batch job of a held dialog: groups[i] = every unit whose core is the batch's
@@ -157,6 +163,7 @@ void note_shown(const std::vector<uint8_t>& original, const std::vector<uint8_t>
 
 // Show a released payload (translated or original) through SA:MP's own Show.
 void show_payload(const std::vector<uint8_t>& pkt) {
+    ++g_dialogShows;
     DialogPlan d;
     if (!plan_dialog(pkt.data(), pkt.size(), d) || !d.haveBody) return;
     const std::vector<std::string> cores = original_cores(d);
@@ -204,20 +211,23 @@ void track_late(PendingDialog pd, std::string shownTitle, uint32_t now, uint64_t
     pd.late       = true;
     pd.lateUntil  = now + kLateDialogMs;
     pd.shownTitle = std::move(shownTitle);
+    pd.shownAt    = g_dialogShows;
     g_pendingDialogs[seq] = std::move(pd);
 }
 
 // One engine BATCH job per chunk (chunk_groups): the chunk's distinct missing cores
 // go out as one numbered-list request. A HELD dialog's jobs (surface 3, priority
-// lane) report back through on_part_result; a background fill (surface 2, normal
-// lane -- the dialog is already on screen) only fills the translation memory.
+// lane) and a LATE one's (surface 5, normal lane: it is already on screen) report
+// back through on_part_result; a background fill (surface 2, normal lane) only
+// fills the translation memory.
+constexpr int kSurfaceFill = 2, kSurfaceHeld = 3, kSurfaceLate = 5;
 void submit_batches(const DialogPlan& d, const std::vector<std::vector<size_t>>& groups,
-                    const std::vector<std::vector<size_t>>& chunks, uint64_t seq, bool fillOnly) {
+                    const std::vector<std::vector<size_t>>& chunks, uint64_t seq, int surface) {
     const auto& s = i18n::config::get();
     for (const std::vector<size_t>& chunk : chunks) {
         i18n::engine::Job j;
         j.handle      = g_seq.fetch_add(1, std::memory_order_relaxed);
-        j.surface     = fillOnly ? 2 : 3;
+        j.surface     = surface;
         j.srcCodepage = s.source_cp;
         j.skipContext = true;
         j.noDedup     = true;           // every held dialog must get its own result back
@@ -229,7 +239,7 @@ void submit_batches(const DialogPlan& d, const std::vector<std::vector<size_t>>&
             j.units.push_back(d.units[groups[g].front()].core);
             pj.groups.push_back(groups[g]);
         }
-        if (!fillOnly) g_partJobs[j.handle] = std::move(pj);
+        if (surface != kSurfaceFill) g_partJobs[j.handle] = std::move(pj);
         i18n::engine::submit(j);
     }
 }
@@ -341,17 +351,29 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
             // other one is translated in the background for next time -- re-showing a
             // list or an input box would lose the row picked / the text typed.
             const bool late = (d.style == 0 && !passthru && !d.units.empty());
+            const std::vector<std::vector<size_t>> fill = not_recently_filled(d, groups, GetTickCount());
+            const std::vector<std::vector<size_t>> fillChunks = chunk_groups(d, fill, maxItems, kBatchMaxBytes);
             if (late) {
-                const uint64_t seq = g_seq.fetch_add(1, std::memory_order_relaxed);
-                PendingDialog pd;
-                pd.plan        = d;
-                pd.cores       = cores;
-                pd.outstanding = (int)chunks.size();
-                track_late(std::move(pd), unit_text(d.units[0], cores[0]), GetTickCount(), seq);
-                submit_batches(d, groups, chunks, seq, /*fillOnly=*/false);
+                const std::string shownTitle = unit_text(d.units[0], cores[0]);
+                if (fillChunks.empty()) {
+                    // Re-opened while its translation is still on the way: the pending
+                    // one switches THIS opening when it lands.
+                    for (auto& [pseq, ppd] : g_pendingDialogs)
+                        if (ppd.late && ppd.plan.id == d.id && ppd.shownTitle == shownTitle) {
+                            ppd.shownAt   = g_dialogShows;
+                            ppd.lateUntil = GetTickCount() + kLateDialogMs;
+                        }
+                } else {
+                    const uint64_t seq = g_seq.fetch_add(1, std::memory_order_relaxed);
+                    PendingDialog pd;
+                    pd.plan        = d;
+                    pd.cores       = cores;
+                    pd.outstanding = (int)fillChunks.size();
+                    track_late(std::move(pd), shownTitle, GetTickCount(), seq);
+                    submit_batches(d, fill, fillChunks, seq, kSurfaceLate);
+                }
             } else {
-                const std::vector<std::vector<size_t>> fill = not_recently_filled(d, groups, GetTickCount());
-                submit_batches(d, fill, chunk_groups(d, fill, maxItems, kBatchMaxBytes), 0, /*fillOnly=*/true);
+                submit_batches(d, fill, fillChunks, 0, kSurfaceFill);
             }
             if (anyTranslated) {
                 std::vector<uint8_t> pkt = assemble_dialog(d, fit_list_budgets(d, cores));
@@ -396,7 +418,7 @@ bool handle_dialog(RPCParameters* rpc, const uint8_t* p, size_t n) {
         pd.cores       = std::move(cores);
         pd.outstanding = (int)chunks.size(); // counts BATCH jobs, not units
         g_pendingDialogs[seq] = std::move(pd);
-        submit_batches(d, groups, chunks, seq, /*fillOnly=*/false); // -> priority lane -> on_part_result
+        submit_batches(d, groups, chunks, seq, kSurfaceHeld); // -> priority lane -> on_part_result
     } catch (...) {
         // Still held (see above): it is released as the original once its hold expires.
     }
@@ -1007,6 +1029,7 @@ bool on_incoming_rpc(unsigned char id, RPCParameters* rpc, void (*handler)(RPCPa
 
     try {
         if (id == RPC_ShowDialog) {
+            ++g_dialogShows; // (counted as shown even when held: conservative for late switches)
             if (!s.translate_dialogs) {
                 note_shown(std::vector<uint8_t>(p, p + n), nullptr); // shown natively -> erase any stale entry
                 return false;
@@ -1087,7 +1110,17 @@ void on_part_result(const i18n::engine::Result& r) {
     if (pd.late) {
         // It was shown in the original after the 10 s hold: switch it to the
         // translation if the player is still reading that same dialog.
-        if (i18n::config::get().translate_dialogs && still_showing(pd.plan, pd.shownTitle)) {
+        if (i18n::config::get().translate_dialogs && g_dialogShows == pd.shownAt &&
+            still_showing(pd.plan, pd.shownTitle)) {
+            // Cells another job was already translating (it was re-opened) may be
+            // in the memory by now.
+            const int target = i18n::engine::active_target_lang();
+            const int cp     = i18n::config::get().source_cp;
+            for (size_t k = 0; k < pd.plan.units.size() && k < pd.cores.size(); ++k) {
+                if (!pd.plan.units[k].translate || pd.cores[k] != pd.plan.units[k].core) continue;
+                std::string t;
+                if (i18n::engine::cache_lookup(pd.plan.units[k].core, cp, target, t, kDialogUnitCap)) pd.cores[k] = t;
+            }
             show_payload(assemble_dialog(pd.plan, fit_list_budgets(pd.plan, pd.cores)));
             Log("[i18n] dialog %d: translation ready -- switched to it (it was still open).", (int)(int16_t)pd.plan.id);
         }
@@ -1108,6 +1141,8 @@ void tick(uint32_t nowMs) {
     const bool on = i18n::config::get().translate_dialogs;
     std::vector<i18n::dlgq::Release> out = on ? g_dlgq.tick(nowMs) : g_dlgq.flush();
     for (auto& r : out) {
+        show_payload(r.payload);
+        note_shown(r.original, r.translated ? &r.payload : nullptr);
         auto pd = g_pendingDialogs.find(r.seq);
         if (pd != g_pendingDialogs.end()) {
             // Released untranslated: its 10 s were up (or the feature went off). A
@@ -1119,6 +1154,7 @@ void tick(uint32_t nowMs) {
                 pd->second.late       = true;
                 pd->second.lateUntil  = nowMs + kLateDialogMs;
                 pd->second.shownTitle = unit_text(pd->second.plan.units[0], pd->second.plan.units[0].core);
+                pd->second.shownAt    = g_dialogShows; // (show_payload above counted it)
                 Log("[i18n] dialog %d shown in the original: translating it took over 10 s -- it switches to the "
                     "translation if still open when that is ready.", id);
             } else {
@@ -1128,8 +1164,6 @@ void tick(uint32_t nowMs) {
                 g_pendingDialogs.erase(pd);
             }
         }
-        show_payload(r.payload);
-        note_shown(r.original, r.translated ? &r.payload : nullptr);
     }
 }
 

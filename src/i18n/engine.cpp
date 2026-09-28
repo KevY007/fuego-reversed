@@ -387,13 +387,14 @@ void worker_loop() {
         std::vector<std::string> unitOut;
         bool ok = false;
         std::vector<char> provFailed;
+        bool provFailedOne = false;
         try {
             if (!job.units.empty())
                 ok = process_batch(job.units, job.srcCodepage, g_provider.get(), sp, unitOut,
                                    tl, dcp, job.capBytes, job.labels, &provFailed);
             else
                 ok = process_one(job.sourceBytes, job.srcCodepage, g_provider.get(), sp, disp,
-                                 tl, dcp, job.rollingCtx, job.capBytes);
+                                 tl, dcp, job.rollingCtx, job.capBytes, &provFailedOne);
         } catch (...) {
             // Realistically only std::bad_alloc anywhere in this call graph
             // (string/vector/wstring allocations along the pipeline). An
@@ -414,6 +415,7 @@ void worker_loop() {
             Result r{ job.handle, job.surface, disp, ok };
             r.unitOut        = std::move(unitOut);
             r.unitProviderFailed = std::move(provFailed);
+            r.providerFailed     = provFailedOne;
             std::lock_guard<std::mutex> lock(g_resultMutex);
             g_results.push_back(std::move(r));
         }
@@ -429,7 +431,7 @@ void worker_loop() {
 
 bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
                   const std::string& sysPrompt, std::string& displayOut,
-                  int targetLang, int displayCp, const std::string& rollingCtx, int capBytes) {
+                  int targetLang, int displayCp, const std::string& rollingCtx, int capBytes, bool* providerFailed) {
     const size_t cap = (size_t)(capBytes > 0 ? capBytes : 144);
     Prepared p = prepare(srcBytes, cp, targetLang, cap); // steps 1-5
     if (p.kind == Prepared::Hit) { displayOut = std::move(p.hit); return true; }
@@ -443,6 +445,7 @@ bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
     std::string err;
     if (!call_provider(prov, { p.send }, sysPrompt, rollingCtx, out, err) || out.empty()) {
         note_failure("provider failed (" + (err.empty() ? std::string("no reply") : err) + ")", std::string());
+        if (providerFailed) *providerFailed = true;
         return false;
     }
 

@@ -86,8 +86,9 @@ std::unordered_map<uint64_t, PendingFlip> g_pendingFlips;
 void apply_result( const i18n::engine::Result &r ) {
 	// Outbound chat (surface 1) is SENT to the server, not shown.
 	if ( r.surface == 1 ) { i18n::outbound::on_result( r ); return; }
-	// Dialog unit translations (surface 3) complete a held dialog.
-	if ( r.surface == 3 ) { i18n::surfaces::on_part_result( r ); return; }
+	// Dialog unit translations complete a held dialog (surface 3) or switch a late one
+	// still open to its translation (surface 5: normal lane, it is already on screen).
+	if ( r.surface == 3 || r.surface == 5 ) { i18n::surfaces::on_part_result( r ); return; }
 	// Outgoing dialog-input translations (surface 4) are sent to the server.
 	if ( r.surface == 4 ) { i18n::surfaces::on_response_result( r ); return; }
 	// Surface 2: translation-memory fill (labels/HUD lines, and the background batches
@@ -110,8 +111,9 @@ void apply_result( const i18n::engine::Result &r ) {
 			// (live: '... {FFFFFF}"Прокачка новичкам"{33AA33}. Подробнее: {FFFFFF}"/boostinfo"
 			// {33AA33}!'): try once more WITHOUT them. The line then shows translated in
 			// its own colour, rather than untranslated in several.
+			// (Not after a provider failure: that says nothing about the colour codes.)
 			const std::string plain = i18n::surfaces::strip_colors( pf.source );
-			if ( pf.plainTried || plain == pf.source || plain.empty() ) return;
+			if ( pf.plainTried || r.providerFailed || plain == pf.source || plain.empty() ) return;
 			const uint64_t h = g_seq.fetch_add( 1, std::memory_order_relaxed );
 			pf.plainTried = true;
 			i18n::engine::Job job;

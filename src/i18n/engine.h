@@ -25,7 +25,7 @@ namespace i18n::engine {
 // later phases and reuse this same Job/Result shape.
 struct Job {
     uint64_t handle;
-    int surface;          // 0 inbound chat, 1 outbound chat, 2 TM fill, 3 dialog unit, 4 dialog response. See hooks::apply_result.
+    int surface;          // 0 inbound chat, 1 outbound chat, 2 TM fill, 3 held-dialog unit, 4 dialog response, 5 late-dialog unit (normal lane). See hooks::apply_result.
     std::string sourceBytes;
     int srcCodepage; // 0 = auto-detect via charset::guess_codepage
     // Recent chat lines (UTF-8, already labeled) to send as background context
@@ -71,6 +71,9 @@ struct Result {
     // request failed outright (down, circuit open, network) -- that "" says nothing
     // about the text itself. Empty when nothing failed that way.
     std::vector<char> unitProviderFailed;
+    // SINGLE jobs only: the provider request failed outright -- the "" / !ok says
+    // nothing about the text itself.
+    bool providerFailed = false;
 };
 
 // The engine's two-lane job queue. PURE (the engine guards its one instance with
@@ -183,10 +186,12 @@ void pump();
 // true, `displayOut` holds the finished, capped, display-codepage-encoded
 // text (never empty), and the cache has been updated. A cached entry that is
 // empty once capped for display is treated as a miss, never returned.
+// *providerFailed (if given) is set when the provider request failed outright
+// (down, circuit open, network) -- nothing to do with the text itself.
 bool process_one(const std::string& srcBytes, int cp, IProvider* prov,
                   const std::string& sysPrompt, std::string& displayOut,
                   int targetLang = 1033, int displayCp = 1252,
-                  const std::string& rollingCtx = "", int capBytes = 144);
+                  const std::string& rollingCtx = "", int capBytes = 144, bool* providerFailed = nullptr);
 
 // The same pipeline for MANY texts (the cells of one dialog) with ONE provider
 // request: every text is skipped / served from the cache / masked exactly like

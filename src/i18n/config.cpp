@@ -68,9 +68,27 @@ static std::string escape(const std::string& s) {
     return result;
 }
 
+// The provider kind a saved profile's id ("google", "anthropic", ...) names; -1 if none.
+static int profile_kind(const std::string& id) {
+    for (const auto& p : provider_presets())
+        if (id == p.id && p.kind >= 0 && p.kind < kProviderKinds) return p.kind;
+    return -1;
+}
+
+// The provider a config with no provider_kind line (one from before the Provider
+// dropdown) was set up for, told from its URL: a preset's URL -> that provider; the
+// default (no URL) -> Ollama / Local; any other URL -> Custom.
+static int kind_for_url(std::string url) {
+    while (!url.empty() && url.back() == '/') url.pop_back();
+    for (const auto& p : provider_presets())
+        if (p.url && p.url[0] && url == p.url) return p.kind;
+    return url.empty() ? 4 : 0;
+}
+
 void from_text(const std::string& text) {
     std::istringstream in(text);
     std::string line;
+    bool sawKind = false;
     while (std::getline(in, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#') continue;
@@ -91,15 +109,17 @@ void from_text(const std::string& text) {
             } else if (key == "source_cp") {
                 g_settings.source_cp = std::stoi(value);
             } else if (key == "provider_kind") {
-                g_settings.provider_kind = std::stoi(value);
+                const int kind = std::stoi(value);
+                // An unknown kind (hand edit, a newer build) is treated as Custom: its
+                // URL/key/model stay in plain view and are kept on a switch.
+                g_settings.provider_kind = (kind >= 0 && kind < kProviderKinds) ? kind : 0;
+                sawKind = true;
             } else if (key == "base_url") {
                 g_settings.base_url = unescape(value);
             } else if (key == "api_key") {
                 g_settings.api_key = unescape(value);
             } else if (key == "model") {
                 g_settings.model = unescape(value);
-            } else if (key == "marker_style") {
-                g_settings.marker_style = std::stoi(value);
             } else if (key == "read_timeout_ms") {
                 g_settings.read_timeout_ms = std::stoi(value);
             } else if (key == "translate_temp") {
@@ -126,12 +146,37 @@ void from_text(const std::string& text) {
                 g_settings.translate_dialogs = (value == "true" || value == "1");
             } else if (key == "translate_hud") {
                 g_settings.translate_hud = (value == "true" || value == "1");
+            } else if (key.compare(0, 8, "profile.") == 0) {
+                // profile.<provider id>.<field>: another provider's remembered values
+                const size_t dot = key.find('.', 8);
+                const int kind = dot == std::string::npos ? -1 : profile_kind(key.substr(8, dot - 8));
+                if (kind >= 0) {
+                    ProviderProfile& p = g_settings.profiles[kind];
+                    const std::string field = key.substr(dot + 1);
+                    if (field == "base_url") {
+                        p.base_url = unescape(value); p.saved = true;
+                    } else if (field == "api_key") {
+                        p.api_key = unescape(value); p.saved = true;
+                    } else if (field == "model") {
+                        p.model = unescape(value); p.saved = true;
+                    } else if (field == "request_min_gap_ms") {
+                        p.request_min_gap_ms = std::stoi(value); p.saved = true;
+                    }
+                }
             }
-            // unknown keys are silently ignored
+            // unknown keys (like the retired marker_style) are silently ignored
         } catch (...) {
             // a malformed integer value leaves that field at its default
         }
     }
+    // A config from before the Provider dropdown has no provider_kind: tell the
+    // provider from the URL, so its key shows (and stays) under the right one.
+    if (!sawKind) g_settings.provider_kind = kind_for_url(g_settings.base_url);
+    // An empty URL on a provider that has a preset one (its URL field is folded away
+    // under Advanced) is the preset's; Custom's stays empty -- it's typed in plain view.
+    if (g_settings.base_url.empty())
+        for (const auto& p : provider_presets())
+            if (p.kind == g_settings.provider_kind && p.url && p.url[0]) g_settings.base_url = p.url;
 }
 
 std::string to_text() {
@@ -144,7 +189,6 @@ std::string to_text() {
     out << "base_url=" << escape(g_settings.base_url) << "\n";
     out << "api_key=" << escape(g_settings.api_key) << "\n";
     out << "model=" << escape(g_settings.model) << "\n";
-    out << "marker_style=" << g_settings.marker_style << "\n";
     out << "read_timeout_ms=" << g_settings.read_timeout_ms << "\n";
     out << "translate_temp=" << g_settings.translate_temp << "\n";
     out << "request_min_gap_ms=" << g_settings.request_min_gap_ms << "\n";
@@ -158,7 +202,61 @@ std::string to_text() {
     out << "debug_lab=" << (g_settings.debug_lab ? "true" : "false") << "\n";
     out << "translate_dialogs=" << (g_settings.translate_dialogs ? "true" : "false") << "\n";
     out << "translate_hud=" << (g_settings.translate_hud ? "true" : "false") << "\n";
+    // The other providers' remembered values (the active one's are the keys above).
+    for (const auto& preset : provider_presets()) {
+        if (preset.kind < 0 || preset.kind >= kProviderKinds || preset.kind == g_settings.provider_kind) continue;
+        const ProviderProfile& p = g_settings.profiles[preset.kind];
+        if (!p.saved) continue;
+        const std::string head = std::string("profile.") + preset.id + ".";
+        out << head << "base_url=" << escape(p.base_url) << "\n";
+        out << head << "api_key=" << escape(p.api_key) << "\n";
+        out << head << "model=" << escape(p.model) << "\n";
+        out << head << "request_min_gap_ms=" << p.request_min_gap_ms << "\n";
+    }
     return out.str();
+}
+
+static std::string g_savedText; // to_text() as of the last mark_saved()
+static bool        g_savedKnown = false;
+
+void mark_saved() {
+    g_savedText  = to_text();
+    g_savedKnown = true;
+}
+
+bool has_unsaved_changes() {
+    return g_savedKnown && to_text() != g_savedText;
+}
+
+void switch_provider(int kind) {
+    Settings& s = g_settings;
+    if (kind < 0 || kind >= kProviderKinds || kind == s.provider_kind) return;
+    const ProviderPreset* preset = nullptr;
+    for (const auto& p : provider_presets())
+        if (p.kind == kind) { preset = &p; break; }
+    if (!preset) return;
+
+    if (s.provider_kind >= 0 && s.provider_kind < kProviderKinds) {
+        ProviderProfile& cur = s.profiles[s.provider_kind];
+        cur.saved              = true;
+        cur.base_url           = s.base_url;
+        cur.api_key            = s.api_key;
+        cur.model              = s.model;
+        cur.request_min_gap_ms = s.request_min_gap_ms;
+    }
+    s.provider_kind = kind;
+
+    // Its own values -- or, the first time, its preset URL + default model with no key
+    // or gap: nothing of the previous provider's carries over (Custom, with no preset,
+    // starts empty, so a key typed there never goes to the previous provider's server).
+    // A URL/model missing from a partial profile (hand edit) also comes from the preset.
+    const ProviderProfile& next = s.profiles[kind];
+    const std::string presetUrl   = preset->url ? preset->url : "";
+    const std::string presetModel = preset->model ? preset->model : "";
+    s.base_url           = next.saved && !next.base_url.empty() ? next.base_url : presetUrl;
+    s.model              = next.saved && !next.model.empty() ? next.model : presetModel;
+    s.api_key            = next.saved ? next.api_key : std::string();
+    s.request_min_gap_ms = next.saved ? next.request_min_gap_ms : 0;
 }
 
 void load(const char* path) {
@@ -184,16 +282,18 @@ void save() {
 }
 
 const std::vector<ProviderPreset>& provider_presets() {
-    // Order = menu dropdown order. Custom first (empty url/model = don't touch the
-    // user's values). Cloud defaults chosen from live testing (2026-09): Gemini 2.0
-    // and 2.5 flash are retired, so "gemini-flash-latest" tracks the current flash;
-    // claude-haiku-4-5 and gpt-4o-mini are the cheap, strong translation models.
+    // Order = menu dropdown order. Custom first (no url/model: the first time it is
+    // picked it starts empty). Cloud defaults chosen from live
+    // testing (2026-09): Gemini 2.0 and 2.5 flash are retired, so
+    // "gemini-flash-latest" tracks the current flash; claude-haiku-4-5 and
+    // gpt-4o-mini are the cheap, strong translation models.
+    // The last field names each one's saved profile in the config -- never rename it.
     static const std::vector<ProviderPreset> presets = {
-        {0, "Custom (edit URL below)", "", ""},
-        {1, "Google (Gemini)", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-flash-latest"},
-        {2, "Anthropic (Claude)", "https://api.anthropic.com/v1", "claude-haiku-4-5"},
-        {3, "OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"},
-        {4, "Ollama / Local", "http://127.0.0.1:11434/v1", "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M"},
+        {0, "Custom (your own URL)", "", "", "custom"},
+        {1, "Google (Gemini)", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-flash-latest", "google"},
+        {2, "Anthropic (Claude)", "https://api.anthropic.com/v1", "claude-haiku-4-5", "anthropic"},
+        {3, "OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", "openai"},
+        {4, "Ollama / Local", "http://127.0.0.1:11434/v1", "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M", "local"},
     };
     return presets;
 }

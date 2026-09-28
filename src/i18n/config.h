@@ -4,6 +4,21 @@
 
 namespace i18n::config {
 
+// The provider kinds (Settings::provider_kind): 0 Custom, 1 Google, 2 Anthropic,
+// 3 OpenAI, 4 Ollama / Local. See provider_presets().
+constexpr int kProviderKinds = 5;
+
+// What each provider remembers on its own: switching Google -> Anthropic -> back
+// to Google brings the Google key, model, URL and request gap back instead of
+// losing them (see switch_provider()).
+struct ProviderProfile {
+    bool saved = false;          // false = never used: switching to it starts from its preset
+    std::string base_url;
+    std::string api_key;
+    std::string model;
+    int request_min_gap_ms = 0;
+};
+
 struct Settings {
     bool inbound_chat = false;
     int target_lang = 1033;  // LANG_ENGLISH default (see language_options())
@@ -14,7 +29,8 @@ struct Settings {
     int source_lang = 0;     // 0 = Auto (detect)
     int source_cp = 0;       // 0 = auto-detect (byte codepage, not language)
     // Provider preset the endpoint is configured for. Selecting one in the menu
-    // overwrites base_url (+ a default model) and drives per-provider request
+    // (switch_provider()) brings back that provider's own URL/key/model/gap -- its
+    // preset URL + default model the first time -- and drives per-provider request
     // quirks in provider.cpp (see provider_presets() / ProviderConfig::providerKind):
     //   0 = Custom (edit URL freely; permissive request, like local)
     //   1 = Google (Gemini)     -- permissive
@@ -22,7 +38,9 @@ struct Settings {
     //                              set) and needs an "anthropic-version" header
     //   3 = OpenAI              -- MUST omit reasoning_effort (400 "unrecognized")
     //   4 = Ollama / Local      -- permissive (the offline default)
-    // Default 4 matches the local base_url/model below.
+    // Default 4 matches the local base_url/model below. A config with no
+    // provider_kind line (from before the dropdown) gets it from its URL; an
+    // unknown value loads as Custom (see from_text()).
     int provider_kind = 4;
     std::string base_url = "http://127.0.0.1:11434/v1";
     std::string api_key;     // empty = no key (local Ollama)
@@ -31,7 +49,6 @@ struct Settings {
     // language's NATIVE script, so romanized output (Roman Urdu etc.) is unreliable
     // with it -- use a general LLM (e.g. qwen3:4b) for romanized targets.
     std::string model = "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M";
-    int marker_style = 0;
     // Read timeout (ms) for a translation request. Local LLMs cold-load the model
     // on the first call (seconds to tens of seconds), so this needs headroom;
     // 30s is a safe default. Menu exposes it as "Response timeout".
@@ -45,7 +62,14 @@ struct Settings {
     // cloud key (e.g. Gemini free) to stay under its requests-per-minute cap and
     // avoid HTTP 429/503 throttling. Independent of the automatic 429/503 retry
     // (which always backs off + retries a few times). Menu: "Min request gap".
+    // Kept per provider, like the URL/key/model (a free-tier gap never slows the
+    // local model down).
     int request_min_gap_ms = 0;
+
+    // The OTHER providers' remembered URL/key/model/gap, indexed by provider kind.
+    // The ACTIVE provider's values are always the fields above (what the engine and
+    // the menu use); switch_provider() moves values between the two.
+    ProviderProfile profiles[kProviderKinds];
     // Write the target language phonetically in the Latin/Roman alphabet
     // (Roman Urdu, Hinglish, Arabizi, ...) instead of its native script. This
     // is REQUIRED for languages whose script SA:MP's cp1251/cp1252 font can't
@@ -117,14 +141,31 @@ void save(const char* path);
 std::string to_text();             // serialize this block to key=value lines
 void from_text(const std::string& text); // parse key=value lines into get()
 
+// Bookkeeping for the menu's "changes pending" hint: mark_saved() remembers the
+// current settings as the saved + applied ones -- cfg::load() calls it after loading
+// and the menu's Save after saving AND applying (not every cfg::save(): /compat
+// saves the file without applying the translator settings) -- and
+// has_unsaved_changes() is true once anything differs from that.
+void mark_saved();
+bool has_unsaved_changes();
+
+// Switch the active provider: the current provider's URL/key/model/gap are kept
+// in its profile, and the new one's come back -- or, the first time, its preset
+// URL + default model with no key and no gap (Custom, which has no preset, starts
+// empty: a key typed there must never go to the previous provider's server). A
+// URL/model missing from a partial profile also comes from the preset. The same
+// kind, or an unknown one, is a no-op.
+void switch_provider(int kind);
+
 // --- helpers shared by the engine + the menu -------------------------------
 
 // A selectable provider preset for the menu's Provider dropdown. `kind` is the
-// value stored in Settings::provider_kind. `url` / `model` are applied to
-// base_url / model when the preset is chosen; both are empty for Custom, which
-// leaves the user's typed values untouched. The per-provider request quirks are
-// applied in provider.cpp based on `kind` (see Settings::provider_kind).
-struct ProviderPreset { int kind; const char* name; const char* url; const char* model; };
+// value stored in Settings::provider_kind. `url` / `model` are what a provider
+// starts with the first time it is chosen; both are empty for Custom, which starts
+// empty. `id` names its saved profile in the config
+// ("profile.<id>.api_key=..."). The per-provider request quirks are applied in
+// provider.cpp based on `kind` (see Settings::provider_kind).
+struct ProviderPreset { int kind; const char* name; const char* url; const char* model; const char* id; };
 const std::vector<ProviderPreset>& provider_presets();
 
 struct LangOption { int code; const char* name; };

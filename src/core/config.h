@@ -8,6 +8,6 @@
 */
 
 namespace cfg {
-void save();
+bool save(); // false if the file couldn't be written
 void load();
 }

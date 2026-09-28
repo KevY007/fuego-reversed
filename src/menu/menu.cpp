@@ -38,16 +38,17 @@ bool g_open = false;
 // --- translator model dropdown: async fetch of the endpoint's model list -----
 // list_models() is a blocking WinHTTP call, so it runs on a detached worker;
 // the render thread reads results under g_modelMtx. State: 0 idle, 1 fetching,
-// 2 done, 3 error.
+// 2 done, 3 error. Only the NEWEST fetch reports (g_modelGen): switching provider
+// or editing the key/URL while one is in flight must not show the old list. A
+// fetch for exactly what is already being fetched (g_modelAsk) isn't started twice.
 std::mutex               g_modelMtx;
 std::vector<std::string> g_models;
 std::atomic<int>         g_modelState{ 0 };
+std::atomic<int>         g_modelGen{ 0 };
 std::string              g_modelErr;
+std::string              g_modelAsk; // URL + key + provider of the fetch in flight
 
-void fetch_models_async() {
-	if ( g_modelState.load() == 1 ) return; // a fetch is already in flight
-	g_modelState.store( 1 );
-
+void fetch_models_async( bool clearList = false ) {
 	// Snapshot the endpoint/key now (the user may keep typing while it runs).
 	i18n::ProviderConfig pc;
 	auto &s = i18n::config::get();
@@ -55,21 +56,48 @@ void fetch_models_async() {
 	pc.apiKey       = s.api_key;
 	pc.model        = s.model;
 	pc.providerKind = s.provider_kind; // e.g. Anthropic /models needs its version header
+	const std::string ask = pc.baseUrl + '\n' + pc.apiKey + '\n' + std::to_string( pc.providerKind );
 
-	std::thread( [pc]() {
-		std::vector<std::string> out;
-		std::string err;
-		bool ok = i18n::list_models( pc, out, err );
-		std::lock_guard<std::mutex> lk( g_modelMtx );
-		if ( ok ) {
-			g_models = std::move( out );
+	int gen;
+	{
+		std::lock_guard<std::mutex> lk( g_modelMtx ); // atomic with a finishing fetch's check + store
+		if ( clearList ) g_models.clear();
+		if ( pc.baseUrl.empty() ) { // nothing to ask yet (a new Custom provider): no error either
+			++g_modelGen;
 			g_modelErr.clear();
-			g_modelState.store( 2 );
-		} else {
-			g_modelErr = err;
-			g_modelState.store( 3 );
+			g_modelState.store( 0 );
+			return;
 		}
-	} ).detach();
+		if ( g_modelState.load() == 1 && ask == g_modelAsk ) return; // that list is already on its way
+		gen = ++g_modelGen;
+		g_modelAsk = ask;
+		g_modelState.store( 1 );
+	}
+
+	// This runs inside the EndScene hook: nothing may escape it, and a worker that
+	// can't be started must not leave "loading..." up forever.
+	try {
+		std::thread( [pc, gen]() {
+			std::vector<std::string> out;
+			std::string err;
+			bool ok = false;
+			try { ok = i18n::list_models( pc, out, err ); }
+			catch ( ... ) { ok = false; err = "internal error"; }
+			std::lock_guard<std::mutex> lk( g_modelMtx );
+			if ( gen != g_modelGen.load() ) return; // a newer fetch replaced this one
+			if ( ok ) {
+				g_models = std::move( out );
+				g_modelErr.clear();
+				g_modelState.store( 2 );
+			} else {
+				g_modelErr = err;
+				g_modelState.store( 3 );
+			}
+		} ).detach();
+	} catch ( ... ) {
+		std::lock_guard<std::mutex> lk( g_modelMtx );
+		if ( gen == g_modelGen.load() ) { g_modelErr = "couldn't start"; g_modelState.store( 3 ); }
+	}
 }
 
 // --- translator self-test: translate a sample line so the user can verify the
@@ -95,18 +123,28 @@ void run_selftest_async() {
 	pc.temperature = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0;
 	std::string prompt = i18n::config::build_system_prompt( s.target_lang, s.roman_output, s.source_lang );
 
-	std::thread( [pc, prompt]() {
-		auto prov = i18n::make_openai_compatible( pc );
-		std::vector<std::string> out;
-		std::string err;
-		DWORD t0 = GetTickCount();
-		bool ok = prov && prov->translate( { kSelfSample }, prompt, "", out, err );
-		DWORD t1 = GetTickCount();
+	try { // (inside the EndScene hook: nothing may escape)
+		std::thread( [pc, prompt]() {
+			std::vector<std::string> out;
+			std::string err;
+			DWORD t0 = GetTickCount();
+			bool ok = false;
+			try {
+				auto prov = i18n::make_openai_compatible( pc );
+				ok = prov && prov->translate( { kSelfSample }, prompt, "", out, err );
+			} catch ( ... ) { ok = false; err = "internal error"; }
+			DWORD t1 = GetTickCount();
+			std::lock_guard<std::mutex> lk( g_selfMtx );
+			g_selfMs = (long)( t1 - t0 );
+			if ( ok && !out.empty() ) { g_selfResult = out[0]; g_selfState.store( 2 ); }
+			else { g_selfResult = err.empty() ? "(failed)" : err; g_selfState.store( 3 ); }
+		} ).detach();
+	} catch ( ... ) {
 		std::lock_guard<std::mutex> lk( g_selfMtx );
-		g_selfMs = (long)( t1 - t0 );
-		if ( ok && !out.empty() ) { g_selfResult = out[0]; g_selfState.store( 2 ); }
-		else { g_selfResult = err.empty() ? "(failed)" : err; g_selfState.store( 3 ); }
-	} ).detach();
+		g_selfMs = 0;
+		g_selfResult = "couldn't start the test";
+		g_selfState.store( 3 );
+	}
 }
 
 // Small "(?)" hover-help marker (ImGui demo idiom; the built-in demo helper
@@ -120,6 +158,33 @@ void HelpMarker( const char* desc ) {
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
 	}
+}
+
+// Wrapped grey text (a hint or an error that can be long).
+void HintWrapped( const char* fmt, const char* arg ) {
+	ImGui::PushStyleColor( ImGuiCol_Text, ImGui::GetStyleColorVec4( ImGuiCol_TextDisabled ) );
+	ImGui::TextWrapped( fmt, arg );
+	ImGui::PopStyleColor();
+}
+
+// A language dropdown (names, not LCID numbers) over config::language_options().
+// autoLabel adds a first "0 = detect" entry (the source language).
+void LanguageCombo( const char* label, int* code, const char* autoLabel = nullptr ) {
+	const auto &langs = i18n::config::language_options();
+	const char *preview = ( autoLabel && *code == 0 ) ? autoLabel : "(custom)";
+	for ( const auto &l : langs )
+		if ( l.code == *code ) { preview = l.name; break; }
+	if ( !ImGui::BeginCombo( label, preview ) ) return;
+	if ( autoLabel ) {
+		if ( ImGui::Selectable( autoLabel, *code == 0 ) ) *code = 0;
+		if ( *code == 0 ) ImGui::SetItemDefaultFocus();
+	}
+	for ( const auto &l : langs ) {
+		const bool sel = ( l.code == *code );
+		if ( ImGui::Selectable( l.name, sel ) ) *code = l.code;
+		if ( sel ) ImGui::SetItemDefaultFocus();
+	}
+	ImGui::EndCombo();
 }
 
 void style() {
@@ -287,6 +352,8 @@ void draw_ui() {
 			ImGui::EndTabItem();
 		}
 		// ---------------- Translator ----------------
+		// The everyday settings up top (what to translate, which AI); the rarely touched
+		// ones fold away under Advanced / Debug.
 		if ( ImGui::BeginTabItem( "Translator" ) ) {
 			auto &s = i18n::config::get();
 
@@ -295,198 +362,70 @@ void draw_ui() {
 			static bool auto_fetched = false;
 			if ( !auto_fetched ) { auto_fetched = true; fetch_models_async(); }
 
-			ImGui::TextWrapped( "Translate incoming server chat into your language. Runs against a local "
-			                    "Ollama (default) or any OpenAI-compatible endpoint. Everything here saves to "
-			                    "the main config and applies when you hit Save config -- no restart." );
-			ImGui::Checkbox( "Enable inbound chat translation", &s.inbound_chat );
-			if ( ImGui::Checkbox( "Translate dialogs, 3D labels + signs", &s.translate_dialogs ) )
+			// Edit buffers for the ACTIVE provider's URL / key / model, refilled whenever
+			// the provider changes (each provider remembers its own -- switch_provider()).
+			static char endpoint_buf[256] = "";
+			static char api_key_buf[256]  = "";
+			static char model_buf[256]    = "";
+			static bool bufs_init         = false;
+			static int  bufs_kind         = 0;
+			static bool local_key         = false; // Ollama / Local shows its key field only if it has a key
+			auto sync_bufs = [&]() {
+				bufs_init = true;
+				bufs_kind = s.provider_kind;
+				local_key = !s.api_key.empty(); // (stays shown while you clear it)
+				strncpy_s( endpoint_buf, sizeof endpoint_buf, s.base_url.c_str(), _TRUNCATE );
+				strncpy_s( api_key_buf,  sizeof api_key_buf,  s.api_key.c_str(),  _TRUNCATE );
+				strncpy_s( model_buf,    sizeof model_buf,    s.model.c_str(),    _TRUNCATE );
+			};
+			if ( !bufs_init || bufs_kind != s.provider_kind ) sync_bufs();
+
+			// Narrower fields than the window-wide default keep each label next to its field.
+			const float fieldW = ImGui::GetFontSize() * 20.0f;
+			const float halfW  = ImGui::GetContentRegionAvail().x * 0.55f;
+			ImGui::PushItemWidth( fieldW < halfW ? fieldW : halfW );
+
+			// ---- What the server shows me ----
+			ImGui::SeparatorText( "Translate for me" );
+			if ( ImGui::Checkbox( "Chat", &s.inbound_chat ) )
 				i18n::hooks::apply_config(); // live: (re)start the engine if needed
 			ImGui::SameLine();
-			HelpMarker( "Translates incoming dialog boxes, 3D world text labels and signs/billboards "
-			            "(object text). A dialog you haven't seen translated before is held while it's "
-			            "translated ('translating dialog...' shows), then appears translated -- in the order "
-			            "the server sent them and with the server's original timing between them. If "
-			            "translating takes longer than 10 s, it appears in the original instead; a text-only "
-			            "one still open when its translation is ready switches to it. Dialogs seen before "
-			            "appear translated at once. Password dialogs are translated too -- the password you "
-			            "type is never touched. A 3D label or sign not translated before shows in the "
-			            "original and switches to the translation a moment later." );
-			if ( ImGui::Checkbox( "Translate HUD (textdraws, gametext, chat bubbles)", &s.translate_hud ) )
+			HelpMarker( "Server chat. A line seen before shows translated at once; a new one shows in the "
+			            "original and turns into its translation in place a moment later." );
+			ImGui::SameLine( 0.0f, ImGui::GetFontSize() * 1.5f );
+			if ( ImGui::Checkbox( "Dialogs, labels + signs", &s.translate_dialogs ) )
 				i18n::hooks::apply_config();
 			ImGui::SameLine();
-			HelpMarker( "Translates HUD textdraws, big center gametext, and chat bubbles, line by line. "
-			            "Numbers (timers, counts, prices) stay as they are, so a changing number doesn't "
-			            "need a new translation. A textdraw not translated before shows in the original "
-			            "and switches to the translation a moment later; gametext and chat bubbles show "
-			            "translated from the next time. NOTE: textdraws/gametext use GTA's glyph font -- "
-			            "best for English/romanized targets; Cyrillic/Arabic may not render there "
-			            "(dialogs/labels/chat are fine)." );
-			ImGui::Separator();
-
-			// Endpoint + model text buffers (declared together so the Provider
-			// preset dropdown below can overwrite both when a provider is picked).
-			static char endpoint_buf[256] = "";
-			static char model_buf[256]    = "";
-			static bool bufs_init = false;
-			if ( !bufs_init ) {
-				bufs_init = true;
-				strncpy_s( endpoint_buf, sizeof endpoint_buf, s.base_url.c_str(), _TRUNCATE );
-				strncpy_s( model_buf,    sizeof model_buf,    s.model.c_str(),    _TRUNCATE );
-			}
-
-			// Provider preset: pick a known API to auto-fill the URL + a default
-			// model and apply that provider's request quirks (see provider.cpp),
-			// or Custom to type any OpenAI-compatible URL yourself.
-			{
-				const auto &presets = i18n::config::provider_presets();
-				int cur = 0;
-				for ( size_t i = 0; i < presets.size(); ++i )
-					if ( presets[i].kind == s.provider_kind ) { cur = (int) i; break; }
-				if ( ImGui::BeginCombo( "Provider", presets[cur].name ) ) {
-					for ( size_t i = 0; i < presets.size(); ++i ) {
-						bool sel = ( presets[i].kind == s.provider_kind );
-						if ( ImGui::Selectable( presets[i].name, sel ) ) {
-							s.provider_kind = presets[i].kind;
-							// A concrete provider overwrites the URL + default model
-							// (Custom has empty url/model -> leaves them untouched),
-							// then refresh the model list against the new endpoint.
-							if ( presets[i].url && presets[i].url[0] ) {
-								s.base_url = presets[i].url;
-								strncpy_s( endpoint_buf, sizeof endpoint_buf, presets[i].url, _TRUNCATE );
-							}
-							if ( presets[i].model && presets[i].model[0] ) {
-								s.model = presets[i].model;
-								strncpy_s( model_buf, sizeof model_buf, presets[i].model, _TRUNCATE );
-							}
-							fetch_models_async();
-						}
-						if ( sel ) ImGui::SetItemDefaultFocus();
-					}
-					ImGui::EndCombo();
-				}
-				ImGui::SameLine();
-				HelpMarker( "Your API provider. Google / Anthropic / OpenAI fill in the URL and a "
-				            "default model and apply that provider's required request tweaks "
-				            "automatically (paste your API key below). Ollama / Local is the offline "
-				            "default. Custom lets you type any OpenAI-compatible base URL." );
-			}
-
-			// Endpoint (auto-filled by the preset above; edit freely for Custom)
-			ImGui::InputText( "Endpoint (base URL, ends in /v1)", endpoint_buf, sizeof endpoint_buf );
-			s.base_url = endpoint_buf;
-
-			// API key (cloud endpoints; blank for local Ollama)
-			static char api_key_buf[256] = "";
-			static bool api_key_init = false;
-			if ( !api_key_init ) { api_key_init = true; strncpy_s( api_key_buf, sizeof api_key_buf, s.api_key.c_str(), _TRUNCATE ); }
-			ImGui::InputText( "API key (blank for local Ollama)", api_key_buf, sizeof api_key_buf, ImGuiInputTextFlags_Password );
-			s.api_key = api_key_buf;
-
-			// Model: a live dropdown of what the endpoint ACTUALLY serves (so you
-			// can't pick one that isn't installed) + a manual-override text field.
-
-			if ( ImGui::Button( "Refresh models" ) ) fetch_models_async();
+			HelpMarker( "Dialog boxes, 3D world text labels and signs/billboards (object text). A dialog you "
+			            "haven't seen translated before is held while it's translated ('translating "
+			            "dialog...' shows), then appears translated -- in the order the server sent them and "
+			            "with the server's original timing between them. If translating takes longer than "
+			            "10 s, it appears in the original instead; a text-only one still open when its "
+			            "translation is ready switches to it. Dialogs seen before appear translated at once. "
+			            "Password dialogs are translated too -- the password you type is never touched. A 3D "
+			            "label or sign not translated before shows in the original and switches to the "
+			            "translation a moment later." );
+			ImGui::SameLine( 0.0f, ImGui::GetFontSize() * 1.5f );
+			if ( ImGui::Checkbox( "HUD", &s.translate_hud ) )
+				i18n::hooks::apply_config();
 			ImGui::SameLine();
-			int mst = g_modelState.load();
-			if ( mst == 1 )      ImGui::TextDisabled( "fetching..." );
-			else if ( mst == 3 ) { std::lock_guard<std::mutex> lk( g_modelMtx ); ImGui::TextDisabled( "fetch failed (%s)", g_modelErr.c_str() ); }
-			else if ( mst == 2 ) { std::lock_guard<std::mutex> lk( g_modelMtx ); ImGui::TextDisabled( "%d installed", (int) g_models.size() ); }
-
-			{
-				std::lock_guard<std::mutex> lk( g_modelMtx );
-				const char* preview = s.model.empty() ? "(pick a model)" : s.model.c_str();
-				if ( ImGui::BeginCombo( "Installed models", preview ) ) {
-					for ( const auto &m : g_models ) {
-						bool sel = ( m == s.model );
-						if ( ImGui::Selectable( m.c_str(), sel ) ) {
-							s.model = m;
-							strncpy_s( model_buf, sizeof model_buf, m.c_str(), _TRUNCATE );
-						}
-						if ( sel ) ImGui::SetItemDefaultFocus();
-					}
-					if ( g_models.empty() )
-						ImGui::TextDisabled( "none found -- click Refresh, or type below" );
-					ImGui::EndCombo();
-				}
-			}
-			ImGui::InputText( "Model (or type manually)", model_buf, sizeof model_buf );
-			s.model = model_buf;
-
-			ImGui::TextDisabled( "Local (Ollama): Hy-MT2-7B is great for native-script languages (Spanish/Russian/etc.)." );
-			if ( ImGui::SmallButton( "copy 7B pull" ) )
-				ImGui::SetClipboardText( "ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M" );
-			ImGui::TextDisabled( "  For ROMANIZED output (Roman Urdu/Arabic/Hindi), pick a cloud Provider above and" );
-			ImGui::TextDisabled( "  paste your key -- local models can't romanize well. Google has a free tier;" );
-			ImGui::TextDisabled( "  Anthropic (Claude Haiku) and OpenAI (gpt-4o-mini) are cheap and excellent." );
-
-			ImGui::Separator();
-
-			// Source language dropdown: "Auto (detect)" (default) + the same list.
-			// Auto = the model detects the incoming language per line (best for
-			// mixed-language servers); a specific pick just hints the model.
-			{
-				const auto &langs = i18n::config::language_options();
-				const char* preview = "Auto (detect)";
-				if ( s.source_lang != 0 )
-					for ( const auto &l : langs ) if ( l.code == s.source_lang ) { preview = l.name; break; }
-				if ( ImGui::BeginCombo( "Source language", preview ) ) {
-					if ( ImGui::Selectable( "Auto (detect)", s.source_lang == 0 ) ) s.source_lang = 0;
-					if ( s.source_lang == 0 ) ImGui::SetItemDefaultFocus();
-					for ( const auto &l : langs ) {
-						bool sel = ( l.code == s.source_lang );
-						if ( ImGui::Selectable( l.name, sel ) ) s.source_lang = l.code;
-						if ( sel ) ImGui::SetItemDefaultFocus();
-					}
-					ImGui::EndCombo();
-				}
-				ImGui::SameLine();
-				HelpMarker( "Language of INCOMING server text. Leave on Auto -- the model detects it per "
-				            "line, which handles servers that mix English with a local language. Pick a "
-				            "specific language only to hint the model on a reliably single-language server." );
-			}
-
-			// Target language dropdown (names, not raw LCID numbers).
-			{
-				const auto &langs = i18n::config::language_options();
-				int cur = -1;
-				for ( size_t i = 0; i < langs.size(); ++i )
-					if ( langs[i].code == s.target_lang ) { cur = (int) i; break; }
-				const char* preview = ( cur >= 0 ) ? langs[cur].name : "(custom)";
-				if ( ImGui::BeginCombo( "Target language", preview ) ) {
-					for ( size_t i = 0; i < langs.size(); ++i ) {
-						bool sel = ( (int) i == cur );
-						if ( ImGui::Selectable( langs[i].name, sel ) ) s.target_lang = langs[i].code;
-						if ( sel ) ImGui::SetItemDefaultFocus();
-					}
-					ImGui::EndCombo();
-				}
-			}
-
-			ImGui::Checkbox( "Romanized output (Latin script)", &s.roman_output );
+			HelpMarker( "HUD textdraws, big center gametext and chat bubbles, line by line. Numbers (timers, "
+			            "counts, prices) stay as they are, so a changing number doesn't need a new "
+			            "translation. A textdraw not translated before shows in the original and switches to "
+			            "the translation a moment later; gametext and chat bubbles show translated from the "
+			            "next time. NOTE: textdraws/gametext use GTA's glyph font -- best for English/"
+			            "romanized targets; Cyrillic/Arabic may not render there (dialogs/labels/chat are "
+			            "fine)." );
+			LanguageCombo( "Into (my language)", &s.target_lang );
+			ImGui::Checkbox( "Romanized (Latin letters)", &s.roman_output );
 			ImGui::SameLine();
-			HelpMarker( "Write the target language phonetically in the Roman/Latin alphabet "
-			            "(Roman Urdu, Hinglish, Arabizi...). REQUIRED for Urdu/Arabic/Hindi and other "
-			            "scripts SA:MP's chat font can't draw; harmless for Latin languages." );
+			HelpMarker( "Write your language phonetically in the Roman/Latin alphabet (Roman Urdu, Hinglish, "
+			            "Arabizi...). REQUIRED for Urdu/Arabic/Hindi and other scripts SA:MP's chat font "
+			            "can't draw; harmless for Latin languages." );
 
-			ImGui::SliderInt( "Source codepage (0 = auto)", &s.source_cp, 0, 1258 );
-			ImGui::SliderInt( "Temperature (x100)", &s.translate_temp, 0, 100 );
-			ImGui::SameLine();
-			HelpMarker( "Sampling temperature x100 (30 = 0.30). 0.30 works well for both Hy-MT2 and general "
-			            "models. Higher = more creative/varied; too low (0) can make Hy-MT2 loop. Applies on Save." );
-
-			ImGui::SliderInt( "Min request gap (ms, 0=off)", &s.request_min_gap_ms, 0, 5000 );
-			ImGui::SameLine();
-			HelpMarker( "Minimum time between translation requests, paced across all workers. Leave 0 for "
-			            "local or paid cloud. For a FREE-tier cloud key (e.g. Gemini free) set ~1000-4000ms to "
-			            "stay under its requests-per-minute limit and avoid 429/503 throttling. (Transient "
-			            "429/503 are also auto-retried with backoff regardless.) Applies on Save." );
-
-			const char* marker_styles[] = { "Glyph + tint", "Tint only", "Prefix tag" };
-			ImGui::Combo( "Marker style", &s.marker_style, marker_styles, 3 );
-
-			// --- Outgoing chat translation (my messages -> server language) ---
-			ImGui::SeparatorText( "Outgoing (translate MY chat + dialog input)" );
-			if ( ImGui::Checkbox( "Translate my messages before sending", &s.outbound_enabled ) )
+			// ---- What I send ----
+			ImGui::SeparatorText( "Translate what I send" );
+			if ( ImGui::Checkbox( "My chat + dialog replies", &s.outbound_enabled ) )
 				i18n::hooks::apply_config(); // apply live
 			ImGui::SameLine();
 			HelpMarker( "Your typed chat AND your text in input dialogs are translated into the server's "
@@ -497,11 +436,13 @@ void draw_ui() {
 			            "sentence of 3+ words ('/megaphone stop right here and now!'). Short arguments "
 			            "('/gps atm', '/engine on') and numbers are never translated. If translation "
 			            "fails, your original text is sent." );
+			LanguageCombo( "Into (server language)", &s.outbound_target_lang );
 			{
 				bool c  = ( s.hotkey_mods & 1 ) != 0;
 				bool sh = ( s.hotkey_mods & 2 ) != 0;
 				bool a  = ( s.hotkey_mods & 4 ) != 0;
-				ImGui::TextUnformatted( "Toggle hotkey:" );
+				ImGui::AlignTextToFramePadding(); // level with the checkboxes beside it
+				ImGui::TextUnformatted( "On/off key:" );
 				ImGui::SameLine();
 				if ( ImGui::Checkbox( "Ctrl", &c ) ) s.hotkey_mods ^= 1;
 				ImGui::SameLine();
@@ -517,63 +458,143 @@ void draw_ui() {
 				const char *cur = "(custom)";
 				for ( const auto &k : kKeys )
 					if ( k.vk == s.hotkey_vk ) cur = k.name;
-				ImGui::SetNextItemWidth( 120.0f );
+				ImGui::SetNextItemWidth( ImGui::GetFontSize() * 6.0f );
 				if ( ImGui::BeginCombo( "##hotkey_vk", cur ) ) {
 					for ( const auto &k : kKeys )
 						if ( ImGui::Selectable( k.name, k.vk == s.hotkey_vk ) ) s.hotkey_vk = k.vk;
 					ImGui::EndCombo();
 				}
 				ImGui::SameLine();
-				HelpMarker( "One hotkey for outgoing chat AND dialog input. Default Ctrl+Shift with no key. "
-				            "Only keys SA:MP and this menu leave free are offered: F1, F2, F4-F9, F12 and "
-				            "PageUp/PageDown are already taken. Saved with Save config." );
+				HelpMarker( "Turns 'Translate what I send' on/off while you play -- a short notice fades in "
+				            "on screen. Default Ctrl+Shift with no extra key. Only keys SA:MP and this menu "
+				            "leave free are offered: F1, F2, F4-F9, F12 and PageUp/PageDown are taken." );
 			}
-			ImGui::Checkbox( "Show translation indicators", &s.show_translate_indicators );
-			ImGui::SameLine();
-			HelpMarker( "On-screen hints: 'your message will be sent in <language>' while you type in chat "
-			            "or an input dialog with outgoing translation on, and 'translating dialog...' while "
-			            "a dialog is held for translation." );
+
+			// ---- The AI that translates ----
+			ImGui::SeparatorText( "AI provider" );
 			{
-				const auto &langs = i18n::config::language_options();
-				int cur = -1;
-				for ( size_t i = 0; i < langs.size(); ++i )
-					if ( langs[i].code == s.outbound_target_lang ) { cur = (int) i; break; }
-				const char* preview = ( cur >= 0 ) ? langs[cur].name : "(custom)";
-				if ( ImGui::BeginCombo( "Server language (translate into)", preview ) ) {
-					for ( size_t i = 0; i < langs.size(); ++i ) {
-						bool sel = ( (int) i == cur );
-						if ( ImGui::Selectable( langs[i].name, sel ) ) s.outbound_target_lang = langs[i].code;
+				const auto &presets = i18n::config::provider_presets();
+				const char *cur = "(unknown)";
+				for ( const auto &p : presets )
+					if ( p.kind == s.provider_kind ) cur = p.name;
+				if ( ImGui::BeginCombo( "Provider", cur ) ) {
+					for ( const auto &p : presets ) {
+						const bool sel = ( p.kind == s.provider_kind );
+						if ( ImGui::Selectable( p.name, sel ) && !sel ) {
+							i18n::config::switch_provider( p.kind ); // stores the old one's key/model, restores this one's
+							sync_bufs();
+							fetch_models_async( /*clearList=*/true );
+						}
 						if ( sel ) ImGui::SetItemDefaultFocus();
 					}
 					ImGui::EndCombo();
 				}
+				ImGui::SameLine();
+				HelpMarker( "Where the translations come from. Each provider keeps its own API key, model, "
+				            "server URL and request gap, so you can switch back and forth without losing "
+				            "anything (languages and the rest are shared). Google (has a free tier), "
+				            "Anthropic and OpenAI need an API key; Ollama / Local runs offline on your PC; "
+				            "Custom is any OpenAI-compatible server." );
+			}
+			auto endpoint_input = [&]() {
+				if ( ImGui::InputTextWithHint( "Server URL", "http://host:port/v1", endpoint_buf, sizeof endpoint_buf ) )
+					s.base_url = endpoint_buf;
+				if ( ImGui::IsItemDeactivatedAfterEdit() ) fetch_models_async( true );
+				ImGui::SameLine();
+				HelpMarker( "The provider's OpenAI-compatible API address (usually ends in /v1). Filled in "
+				            "for you for Google / Anthropic / OpenAI / Ollama; change it for a server on "
+				            "another port or a proxy. Kept per provider." );
+			};
+			if ( s.provider_kind == 0 ) endpoint_input(); // Custom: the URL is the whole point
+			if ( s.provider_kind != 4 || local_key ) {    // Ollama / Local needs no key
+				if ( ImGui::InputText( "API key", api_key_buf, sizeof api_key_buf, ImGuiInputTextFlags_Password ) )
+					s.api_key = api_key_buf;
+				if ( ImGui::IsItemDeactivatedAfterEdit() ) fetch_models_async( true ); // the list this key unlocks
+				ImGui::SameLine();
+				HelpMarker( s.provider_kind == 4
+				    ? "Ollama needs no key -- clear this unless your local server asks for one. Kept "
+				      "for this provider only, in fuego_reversed.cfg on this PC."
+				    : "Kept for this provider only -- every provider remembers its own key. Stored in "
+				      "fuego_reversed.cfg on this PC (never share that file)." );
+			}
+			// Model: type any name, or pick from what the endpoint actually serves (the arrow).
+			{
+				const ImGuiStyle &st = ImGui::GetStyle();
+				ImGui::SetNextItemWidth( ImGui::CalcItemWidth() - ImGui::GetFrameHeight() - st.ItemInnerSpacing.x );
+				if ( ImGui::InputText( "##model", model_buf, sizeof model_buf ) ) s.model = model_buf;
+				ImGui::SameLine( 0.0f, st.ItemInnerSpacing.x );
+				if ( ImGui::BeginCombo( "##model_list", nullptr,
+				         ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft | ImGuiComboFlags_HeightLarge ) ) {
+					if ( ImGui::SmallButton( "Refresh list" ) ) fetch_models_async();
+					std::lock_guard<std::mutex> lk( g_modelMtx );
+					const int mst = g_modelState.load();
+					ImGui::SameLine();
+					if ( mst == 1 )      ImGui::TextDisabled( "loading..." );
+					else if ( mst == 2 ) ImGui::TextDisabled( "%d available", (int) g_models.size() );
+					else if ( mst == 3 ) ImGui::TextDisabled( "couldn't load the list" );
+					ImGui::Separator();
+					for ( const auto &m : g_models ) {
+						const bool sel = ( m == s.model );
+						if ( ImGui::Selectable( m.c_str(), sel ) ) {
+							s.model = m;
+							strncpy_s( model_buf, sizeof model_buf, m.c_str(), _TRUNCATE );
+						}
+						if ( sel ) ImGui::SetItemDefaultFocus();
+					}
+					if ( g_models.empty() && mst != 1 )
+						ImGui::TextDisabled( !s.base_url.empty()     ? "none listed -- type the model name instead"
+						                     : s.provider_kind == 0 ? "enter the Server URL first"
+						                                            : "enter the Server URL first (under Advanced)" );
+					ImGui::EndCombo();
+				}
+				ImGui::SameLine( 0.0f, st.ItemInnerSpacing.x );
+				ImGui::TextUnformatted( "Model" );
+				ImGui::SameLine();
+				HelpMarker( "Type a model name, or open the arrow to pick one this provider offers. Kept per "
+				            "provider." );
+				if ( g_modelState.load() == 3 ) {
+					std::lock_guard<std::mutex> lk( g_modelMtx );
+					if ( s.provider_kind == 4 )
+						HintWrapped( "Couldn't reach Ollama (%s) -- is it running?", g_modelErr.c_str() );
+					else
+						HintWrapped( "Couldn't list the models (%s) -- check the key / URL, or type the name.",
+						             g_modelErr.c_str() );
+				}
+			}
+			if ( s.provider_kind == 4 ) {
+				ImGui::TextDisabled( "Tip: Hy-MT2-7B is a strong local translation model." );
+				ImGui::SameLine();
+				if ( ImGui::SmallButton( "copy its pull command" ) )
+					ImGui::SetClipboardText( "ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M" );
+				if ( s.roman_output )
+					HintWrapped( "%s", "Romanized output: local models romanize poorly -- a cloud provider "
+					                   "(Google has a free tier) does it well." );
 			}
 
-			ImGui::Separator();
-			ImGui::Text( "Status: %s", i18n::engine::status() );
+			ImGui::Spacing();
 			{
-				std::string le = i18n::engine::last_error();
-				if ( !le.empty() ) { ImGui::SameLine(); ImGui::TextDisabled( "(%s)", le.c_str() ); }
-			}
-			{
+				ImGui::Text( "Status: %s", i18n::engine::status() );
+				ImGui::SameLine();
 				auto rs = i18n::engine::response_stats();
 				if ( rs.count > 0 )
-					ImGui::Text( "Avg response: %lu ms  (last %lu ms, %llu calls)",
-					             rs.avgMs, rs.lastMs, (unsigned long long) rs.count );
+					ImGui::TextDisabled( "-- avg %lu ms (last %lu ms, %llu calls)",
+					                     rs.avgMs, rs.lastMs, (unsigned long long) rs.count );
 				else
-					ImGui::TextDisabled( "Avg response: (no translations yet)" );
+					ImGui::TextDisabled( "-- no translations yet" );
 				ImGui::SameLine();
 				HelpMarker( "Average round-trip delay of translation requests since the translator engine last "
 				            "(re)started -- turning translation on, or a Save that changes the provider, URL, "
 				            "key, model, languages, romanization or request settings -- and the most recent "
-				            "one. A Save that "
-				            "changes none of those keeps the numbers. This is the REAL end-to-end delay -- it includes the Min request "
-				            "gap wait and any 429/503 retry backoff, not just the model's inference time. "
-				            "Cache hits (repeated lines) are instant and not counted." );
+				            "one. A Save that changes none of those keeps the numbers. This is the REAL "
+				            "end-to-end delay -- it includes the Min request gap wait and any 429/503 retry "
+				            "backoff, not just the model's inference time. Cache hits (repeated lines) are "
+				            "instant and not counted." );
+				std::string le = i18n::engine::last_error();
+				if ( !le.empty() ) HintWrapped( "Last error: %s", le.c_str() );
 			}
 
-			// Self-test: translate a sample line right now so you can verify the
-			// endpoint/model/prompt without joining a server.
+			// Self-test: translate a sample line right now (with the settings above, even
+			// unsaved) so you can verify the provider/model without joining a server.
 			if ( ImGui::Button( "Test translation" ) ) run_selftest_async();
 			ImGui::SameLine();
 			int sst = g_selfState.load();
@@ -588,17 +609,94 @@ void draw_ui() {
 				}
 			}
 
-			ImGui::SeparatorText( "Debug (helps build dialogs/labels/textdraws)" );
-			ImGui::Checkbox( "Log dialog/label/textdraw/gametext packets", &s.debug_capture );
-			ImGui::SameLine();
-			HelpMarker( "Read-only. Enable, join a server, trigger a dialog/3D label/textdraw/gametext, "
-			            "then share fuego_reversed.log. Never modifies packets. (Saved with the config.)" );
+			// ---- Rarely needed: folded away ----
+			ImGui::Spacing();
+			if ( ImGui::CollapsingHeader( "Advanced" ) ) {
+				if ( s.provider_kind != 0 ) endpoint_input(); // (Custom shows it above)
 
-			ImGui::Checkbox( "Lab: log chat/dialog internals", &s.debug_lab );
-			ImGui::SameLine();
-			HelpMarker( "Read-only. Logs the newest chat line and each decoded ShowDialog "
-			            "(id/style/title/buttons/body -- never a password dialog's body) to "
-			            "fuego_reversed.log. Applies immediately (no Save needed)." );
+				LanguageCombo( "Incoming language", &s.source_lang, "Auto (detect)" );
+				ImGui::SameLine();
+				HelpMarker( "Language of INCOMING server text. Leave on Auto -- the model detects it per "
+				            "line, which handles servers that mix English with a local language. Pick a "
+				            "specific language only to hint the model on a reliably single-language server." );
+
+				{
+					static const struct { int cp; const char *name; } kCps[] = {
+						{ 0, "Auto (detect)" },
+						{ 1252, "1252 Western (English, Spanish, ...)" },
+						{ 1251, "1251 Cyrillic (Russian, Ukrainian, ...)" },
+						{ 1250, "1250 Central European (Polish, Czech, ...)" },
+						{ 1254, "1254 Turkish" }, { 1253, "1253 Greek" }, { 1257, "1257 Baltic" },
+						{ 1255, "1255 Hebrew" }, { 1256, "1256 Arabic" }, { 1258, "1258 Vietnamese" },
+						{ 874, "874 Thai" } };
+					char custom[16];
+					const char *cur = nullptr;
+					for ( const auto &c : kCps )
+						if ( c.cp == s.source_cp ) cur = c.name;
+					if ( !cur ) { snprintf( custom, sizeof custom, "%d", s.source_cp ); cur = custom; }
+					if ( ImGui::BeginCombo( "Server text encoding", cur ) ) {
+						for ( const auto &c : kCps ) {
+							const bool sel = ( c.cp == s.source_cp );
+							if ( ImGui::Selectable( c.name, sel ) ) s.source_cp = c.cp;
+							if ( sel ) ImGui::SetItemDefaultFocus();
+						}
+						ImGui::EndCombo();
+					}
+					ImGui::SameLine();
+					HelpMarker( "How the server's text bytes are encoded. Leave on Auto: it tells Russian "
+					            "(1251) from Western (1252) text by itself. Pick one only if a server's text "
+					            "comes out garbled (e.g. 1250 for a Polish or Czech server)." );
+				}
+
+				{
+					float t = ( s.translate_temp >= 0 ? s.translate_temp : 30 ) / 100.0f;
+					if ( ImGui::SliderFloat( "Temperature", &t, 0.0f, 1.0f, "%.2f" ) )
+						s.translate_temp = (int) ( t * 100.0f + 0.5f );
+					ImGui::SameLine();
+					HelpMarker( "How free the model is with wording. 0.30 works well for both Hy-MT2 and "
+					            "general models. Higher = more varied; 0 can make Hy-MT2 loop." );
+				}
+
+				// (Keep %d in both formats: Ctrl+click typing parses the number with it.)
+				ImGui::SliderInt( "Min request gap", &s.request_min_gap_ms, 0, 5000,
+				                  s.request_min_gap_ms > 0 ? "%d ms" : "%d (off)" );
+				ImGui::SameLine();
+				HelpMarker( "Minimum time between translation requests, paced across all workers. Leave off "
+				            "for local or paid cloud. For a FREE-tier cloud key (e.g. Gemini free) set "
+				            "~1000-4000 ms to stay under its requests-per-minute limit and avoid 429/503 "
+				            "throttling (those are also retried with backoff anyway). Kept per provider." );
+
+				{
+					int secs = ( s.read_timeout_ms > 0 ? s.read_timeout_ms : 30000 ) / 1000;
+					if ( ImGui::SliderInt( "Response timeout", &secs, 5, 120, "%d s" ) )
+						s.read_timeout_ms = secs * 1000;
+					ImGui::SameLine();
+					HelpMarker( "How long to wait for one translation before giving up on it (the original "
+					            "text stays). Local models need headroom: the first request loads the model, "
+					            "which can take tens of seconds. Default 30 s." );
+				}
+
+				ImGui::Checkbox( "On-screen hints", &s.show_translate_indicators );
+				ImGui::SameLine();
+				HelpMarker( "'Your message will be sent in <language>' while you type in chat or an input "
+				            "dialog with outgoing translation on, and 'translating dialog...' while a dialog "
+				            "is held for translation." );
+			}
+
+			if ( ImGui::CollapsingHeader( "Debug" ) ) {
+				ImGui::Checkbox( "Log dialog/label/textdraw/gametext packets", &s.debug_capture );
+				ImGui::SameLine();
+				HelpMarker( "Read-only. Enable, join a server, trigger a dialog/3D label/textdraw/gametext, "
+				            "then share fuego_reversed.log. Never modifies packets. (Saved with the config.)" );
+
+				ImGui::Checkbox( "Lab: log chat/dialog internals", &s.debug_lab );
+				ImGui::SameLine();
+				HelpMarker( "Read-only. Logs the newest chat line and each decoded ShowDialog "
+				            "(id/style/title/buttons/body -- never a password dialog's body) to "
+				            "fuego_reversed.log. Applies immediately (no Save needed)." );
+			}
+
+			ImGui::PopItemWidth();
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();
@@ -608,12 +706,20 @@ void draw_ui() {
 	ImGui::Spacing();
 	ImGui::Separator();
 	ImGui::Spacing();
+	static DWORD saveFailedAt = 0;
 	if ( ImGui::Button( "Save config" ) ) {
-		cfg::save();                 // unified: cheats + /compat + translator -> fuego_reversed.cfg
-		i18n::hooks::apply_config(); // apply translator changes live (start/stop/reconfigure the engine)
+		const bool saved = cfg::save(); // unified: cheats + /compat + translator -> fuego_reversed.cfg
+		i18n::hooks::apply_config();    // apply translator changes live (start/stop/reconfigure the engine)
+		if ( saved ) i18n::config::mark_saved(); // saved + applied: the "changes pending" hint clears
+		saveFailedAt = saved ? 0 : GetTickCount();
 	}
 	ImGui::SameLine();
-	ImGui::TextDisabled( "one file (fuego_reversed.cfg), loads on startup." );
+	if ( saveFailedAt && GetTickCount() - saveFailedAt < 5000 )
+		ImGui::TextColored( ImVec4( 1.0f, 0.35f, 0.35f, 1.0f ), "Couldn't write fuego_reversed.cfg -- is it read-only?" );
+	else if ( i18n::config::has_unsaved_changes() )
+		ImGui::TextColored( ImVec4( 1.0f, 0.65f, 0.25f, 1.0f ), "Translator changes pending -- press Save config." );
+	else
+		ImGui::TextDisabled( "one file (fuego_reversed.cfg), loads on startup." );
 	ImGui::End();
 }
 
@@ -687,7 +793,7 @@ void on_frame( IDirect3DDevice9 *dev ) {
 
 	// Outgoing-translation hotkey (config hotkey_mods/hotkey_vk, default Ctrl+Shift),
 	// shared by outgoing chat + dialog-input replies. Edge-detected + 400ms cooldown so
-	// a held combo fires once; toggle() prints a chat notice so it's never silent.
+	// a held combo fires once; toggle() shows a fading on-screen notice so it's never silent.
 	{
 		static bool  prevCombo  = false;
 		static DWORD lastToggle = 0;

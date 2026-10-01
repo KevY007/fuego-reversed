@@ -849,6 +849,15 @@ void test_provider_profiles() {
     from_text("provider_kind=-1\n");
     CHECK_EQ(s.provider_kind, 0);
 
+    // The debug logging switches are never kept: an old config with them on loads them
+    // off (they once filled the log with megabytes), and they aren't written.
+    s = Settings{};
+    from_text("debug_capture=true\ndebug_lab=true\ninbound_chat=true\n");
+    CHECK(!s.debug_capture && !s.debug_lab, "debug logging is off at every start, whatever the config says");
+    CHECK(s.inbound_chat, "... the rest of that config still loads");
+    s.debug_capture = s.debug_lab = true;
+    CHECK(to_text().find("debug_") == std::string::npos, "debug logging switches are not saved");
+
     // Unsaved-changes tracking (the menu's "press Save" hint).
     s = Settings{};
     from_text("provider_kind=1\napi_key=k\n"); // what cfg::load() does: load, then mark

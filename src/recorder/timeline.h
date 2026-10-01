@@ -153,7 +153,9 @@ private:
 	float myPos_[3] = { 0, 0, 0 };
 	uint32_t lastKeys_ = 0;       // the game's last sync's keys (overlay)
 	bool lastKeysOnFoot_ = true;
-	std::vector<uint8_t> lastStats_, lastWeapons_;
+	std::vector<uint8_t> lastWeapons_;
+	bool    haveStats_ = false;
+	int32_t lastMoney_ = 0, lastDrunk_ = 0;
 
 	std::map<uint16_t, TextDraw> textdraws_;
 	std::set<uint16_t> objects_, labels_;

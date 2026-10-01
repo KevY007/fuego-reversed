@@ -52,6 +52,10 @@ Desktop.ini
 #  migrated away on first start).
 /fuego_reversed.cfg
 /fuego_reversed.log
+/fuego_reversed.old.log
+#  the packet recorder's output (/.rec): a whole play session, with server/player data
+/fuego_packets.log
+/fuego_packets.old.log
 /fuego_reversed_memory.txt
 /fuego_reversed_memory.txt.v1.bak
 /fuego_i18n.cfg

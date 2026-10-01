@@ -18,6 +18,7 @@
 #include "../cheats/cheats.h"
 #include "../cheats/server.h"
 #include "../recorder/recorder.h"
+#include "../fishing/autofish.h"
 
 #include <vector>
 #include <cstdio>
@@ -513,6 +514,12 @@ static void __cdecl cmd_rec( char * ) {
 	}
 }
 
+// /.autofish -- Mike's CnR auto fish on/off (the same as the menu toggle).
+static void __cdecl cmd_autofish( char * ) {
+	traceLastFunc( "cmd_autofish" );
+	autofish::set_enabled( !autofish::enabled() );
+}
+
 // /.mark [note] -- a numbered note in the recording at this moment ("line broke").
 static void __cdecl cmd_mark( char *params ) {
 	traceLastFunc( "cmd_mark" );
@@ -736,6 +743,7 @@ void install() {
 	add( "meleedmg",         cmd_meleedmg,         false );
 	add( ".rec",             cmd_rec,              false ); // packet recorder (debug)
 	add( ".mark",            cmd_mark,             false );
+	add( ".autofish",        cmd_autofish,         false ); // Mike's CnR auto fish (never /fish: that's the server's)
 	Log( "[cmd] %zu commands registered.", g_visible.size() );
 }
 

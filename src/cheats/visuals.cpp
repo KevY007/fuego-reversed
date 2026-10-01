@@ -12,6 +12,7 @@
 #include "friends.h"
 #include "status.h"
 #include "cheats.h"
+#include "../fishing/autofish.h" // "Auto Fish" in the active-cheat list
 
 #include "imgui.h"
 
@@ -487,6 +488,7 @@ void draw_active_list( ImDrawList *dl ) {
 		{ set.moonwalk, "Moonwalk" }, { set.upside_down, "Upside Down" }, { set.fake_lag, "Fake Lag" },
 		{ set.explode_cars || set.explode_cars_silent, "Explode Cars" },
 		{ set.floating_cars, "Floating Cars" }, { set.remove_cars, "Remove Cars" },
+		{ autofish::enabled(), "Auto Fish" },
 	};
 	const float lh = ImGui::GetTextLineHeight();
 

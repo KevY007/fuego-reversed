@@ -18,6 +18,7 @@
 #include "../i18n/surfaces.h"  // translate incoming dialogs / 3D labels in place
 #include "../i18n/lab.h"       // debug lab: verify in-place chat/dialog replacement
 #include "../recorder/recorder.h" // packet recorder (debug): the server's RPCs, as sent
+#include "../fishing/autofish.h"  // Mike's CnR auto fish: what the server says while fishing
 #include "../hook/CDetour.h"
 
 #include <windows.h>
@@ -139,6 +140,10 @@ void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback
 	// Packet recorder (no-op unless recording): the server's bytes exactly as they came,
 	// before anything below holds, translates or rewrites them. Read-only.
 	recorder::on_incoming_rpc( id, rpc );
+
+	// Mike's CnR auto fish: reads the server's own words (chat, our animations, the
+	// reel stats textdraw) before the translator below could rewrite them. Read-only.
+	autofish::on_incoming_rpc( id, rpc );
 
 	// Read-only capture for building the dialog/label/textdraw/gametext surfaces
 	// (no-op unless config.debug_capture is on; never modifies the packet).

@@ -17,6 +17,7 @@
 #include "../i18n/outbound.h" // settable-hotkey outgoing-chat + dialog-input toggle (default Ctrl+Shift)
 #include "../i18n/indicator.h" // on-screen "translating..." hints
 #include "../recorder/recorder.h" // packet recorder (debug): Main tab toggle + REC pill
+#include "../fishing/autofish.h"  // Mike's CnR auto fish: Misc tab toggle + status pill
 
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
@@ -288,6 +289,32 @@ void draw_ui() {
 			ImGui::Checkbox( "Upside Down", &g_set.upside_down );
 			ImGui::Checkbox( "Ghost Mode", &g_set.ghost_mode );
 			ImGui::Checkbox( "Twister Mode", &g_set.twister_mode );
+
+			// Mike's CnR auto fish: runtime only (never saved), no hotkey -- see autofish.h.
+			ImGui::SeparatorText( "Mike's CnR" );
+			{
+				bool fishOn = autofish::enabled();
+				if ( ImGui::Checkbox( "Mike's CnR auto fish", &fishOn ) )
+					autofish::set_enabled( fishOn );
+				ImGui::SameLine();
+				HelpMarker( "Fishes for you on Mike's CnR. Stand at the water, take the rod out (/fish) and turn "
+				            "this on (or type /.autofish). It casts (aim + fire), waits for a bite, then taps "
+				            "SPRINT at a safe pace for the fish's weight -- slowing down by itself if the line "
+				            "takes damage -- and casts again; after a rotten fish it waits out the stun. Every step "
+				            "waits for the server's answer, so it can't get out of step. It stops by itself if you "
+				            "walk away, get in a vehicle, die, press PANIC or reconnect, and if the server stops "
+				            "answering (rod put away, not at the water). A dialog pauses it until it's closed, and "
+				            "it holds still while the game is paused (ESC menu). While it casts or reels, AIM / "
+				            "FIRE / SPRINT are its keys. Only on Mike's Cops and Robbers, and not together with "
+				            "cheats that change your syncs (Fake Lag, Invisibility, Moonwalker, slappers...). "
+				            "Not saved: off at every game start." );
+				if ( fishOn ) {
+					ImGui::TextDisabled( "%s", autofish::status_text() );
+					ImGui::TextDisabled( "%s", autofish::stats_text() );
+				} else {
+					ImGui::TextDisabled( "Rod out (/fish) at the water, then turn it on." );
+				}
+			}
 			ImGui::EndTabItem();
 		}
 		// ---------------- Vehicle Functions (Fuego order) ----------------
@@ -717,13 +744,15 @@ void draw_ui() {
 				ImGui::Checkbox( "Log dialog/label/textdraw/gametext packets", &s.debug_capture );
 				ImGui::SameLine();
 				HelpMarker( "Read-only. Enable, join a server, trigger a dialog/3D label/textdraw/gametext, "
-				            "then share fuego_reversed.log. Never modifies packets. (Saved with the config.)" );
+				            "then share fuego_reversed.log. Never modifies packets. Writes a LOT -- not saved, "
+				            "so it's off again at the next game start. (For everything in and out, decoded, "
+				            "use the packet recorder in the Main tab.)" );
 
 				ImGui::Checkbox( "Lab: log chat/dialog internals", &s.debug_lab );
 				ImGui::SameLine();
 				HelpMarker( "Read-only. Logs the newest chat line and each decoded ShowDialog "
 				            "(id/style/title/buttons/body -- never a password dialog's body) to "
-				            "fuego_reversed.log. Applies immediately (no Save needed)." );
+				            "fuego_reversed.log. Applies immediately; not saved -- off at the next game start." );
 			}
 
 			ImGui::PopItemWidth();
@@ -859,6 +888,7 @@ void on_frame( IDirect3DDevice9 *dev ) {
 	if ( !render::overlay_hidden() && !fx::g_set.cheat_panic ) {
 		i18n::indicator::draw(); // "will be translated" / "translating dialog..." hints
 		recorder::draw_overlay(); // the REC pill while the packet recorder runs
+		autofish::draw_overlay(); // what the auto fisher is doing
 	}
 
 	// Use SA:MP's cursor (shown by toggle_cursor) as the single visible cursor;
@@ -918,7 +948,7 @@ void install() {
 	render::on_frame( on_frame );
 	render::on_reset( on_reset );
 	render::on_wndproc( on_wndproc );
-	Log( "[menu] registered (INSERT to toggle)." );
+	Log( "[menu] registered (F2 to toggle)." );
 }
 
 } // namespace menu

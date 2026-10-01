@@ -6,7 +6,6 @@
 
 #include <string>
 #include <cstdint>
-#include <unordered_set>
 
 namespace i18n::capture {
 
@@ -36,32 +35,15 @@ std::string ascii(const unsigned char* p, int n) {
     return s;
 }
 
-// Dedup for the always-on (menu/object) logging so a re-sent packet isn't logged
-// repeatedly. FNV-1a over the id + first bytes; capped set.
-bool already_logged(unsigned char id, const RPCParameters* rpc) {
-    static std::unordered_set<uint32_t> seen;
-    const int nbytes = (int)((rpc->numberOfBitsOfData + 7) / 8);
-    uint32_t h = 2166136261u; // FNV-1a (32-bit; size_t is 32-bit on this Win32 build)
-    h ^= id; h *= 16777619u;
-    for (int i = 0; i < nbytes && i < 512; ++i) { h ^= rpc->input[i]; h *= 16777619u; }
-    if (seen.count(h)) return true;
-    if (seen.size() > 128) seen.clear();
-    seen.insert(h);
-    return false;
-}
-
 } // namespace
 
 void on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
     if (!rpc || !rpc->input || rpc->numberOfBitsOfData < 8) return;
 
-    // Menus (RPC 76) and object/billboard material text (84) are ALWAYS logged --
-    // we have no captures for them yet, so this runs without needing debug_capture
-    // toggled on (deduped so a re-send doesn't spam). Every other surface logs only
-    // when config.debug_capture is enabled.
-    const bool always = (id == 76 || id == 84);
-    if (!always && !i18n::config::get().debug_capture) return;
-    if (always && already_logged(id, rpc)) return;
+    // Only while config.debug_capture is on (runtime only: off at every start). Menus
+    // (76) and object material text (84) used to be logged always, too -- the signs
+    // they were captured for are built, and that alone added thousands of lines.
+    if (!i18n::config::get().debug_capture) return;
 
     // Server->client surfaces that carry player-visible natural-language text.
     //  61 ShowDialog, 36 Create3DTextLabel, 134 ShowTextDraw, 105 TextDrawSetString,

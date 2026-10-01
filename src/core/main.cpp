@@ -28,6 +28,7 @@
 #include "../i18n/outbound.h"
 #include "../i18n/surfaces.h"
 #include "../recorder/recorder.h"
+#include "../fishing/autofish.h"
 
 #include <windows.h>
 
@@ -109,6 +110,8 @@ void bring_up_subsystems() {
 	// Packet recorder (debug, idle until /.rec): its wire taps + per-frame summary,
 	// registered before net::install() / render::install() like everything above.
 	recorder::install();
+	// Mike's CnR auto fish (idle until turned on): its sync seam + per-frame driver.
+	autofish::install();
 
 	// --- networking / RakNet hook (accurate) ---
 	// Poll until SA:MP's RakClient interface is live, then swap in our hook.

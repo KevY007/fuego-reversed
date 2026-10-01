@@ -190,6 +190,12 @@ int main() {
 
         W cl; cl.put<uint16_t>(7);
         expect(in(t, 4300, 87, cl), "IN  ClearAnim me", "our animation cleared");
+
+        // A server that keeps resetting our chat bubble to blank (Mike's CnR: ~2 a second).
+        W bb; bb.put<uint16_t>(7).put<uint32_t>(0).put<float>(0.0f).put<uint32_t>(0).s8(" ");
+        check(in(t, 4310, 59, bb).empty(), "a blank bubble on us isn't written");
+        W bt; bt.put<uint16_t>(7).put<uint32_t>(0xFFFFFFFFu).put<float>(20.0f).put<uint32_t>(3000).s8("*reels in*");
+        expect(in(t, 4320, 59, bt), "IN  Bubble me", "a bubble with text on us is written");
     }
     {   // 6. Weapons, freeze, sounds, health.
         W gw; gw.put<uint32_t>(15).put<uint32_t>(1);
@@ -431,6 +437,11 @@ int main() {
         check(packet(v, 3400, 205, stats, sizeof stats).empty(), "unchanged stats not written");
         stats[0] = 150;
         expect(packet(v, 3500, 205, stats, sizeof stats), "money=150", "changed money written");
+        stats[1] = 2000;
+        expect(packet(v, 3510, 205, stats, sizeof stats), "drunk=2000", "getting drunk is written");
+        bool decay = true;
+        for (int d = 1999; d > 1900; --d) { stats[1] = d; decay = decay && packet(v, 3520, 205, stats, sizeof stats).empty(); }
+        check(decay, "the drunk level wearing off by itself (every frame) isn't written");
         const uint8_t wp[6] = { 0, 0, 2, 15, 1, 0 };
         expect(packet(v, 3600, 204, wp, sizeof wp), "OUT weapons", "weapon slots");
         check(packet(v, 3700, 204, wp, sizeof wp).empty(), "unchanged weapon slots not written");

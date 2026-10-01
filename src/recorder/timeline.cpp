@@ -727,6 +727,7 @@ bool Timeline::in_rpc( uint32_t nowMs, int id, const uint8_t *p, size_t bits, st
 		ok = r.get( pid );
 		if ( ok && ( !me || pid != (uint16_t) localId_ ) ) { skip( "Bubble (others)" ); return false; }
 		ok = ok && r.get( color ) && r.get( dist ) && r.get( expire ) && r.str8( t );
+		if ( ok && t.find_first_not_of( " \t" ) == std::string::npos ) { skip( "Bubble me (blank)" ); return false; }
 		if ( ok ) line = fmt( "Bubble me color=%08X time=%u ", color, expire ) + quote( t );
 		break; }
 	case 153: { uint32_t pid = 0, skin = 0; // 0.3.DL: u16 player, skin, custom skin; 0.3.7 (compat): u32 player, skin
@@ -1134,14 +1135,20 @@ void Timeline::outgoing_packet( uint32_t nowMs, const uint8_t *p, size_t bits, b
 		                       s.sTargetID, s.byteWeaponID, weapon_name( s.byteWeaponID ) ) + xyz( s.fTarget ), out );
 		return; }
 
-	case 205: { // money + drunk level, sent every few seconds: only changes
+	case 205: { // money + drunk level, sent every few seconds: only real changes
 		++sent_[injected ? "[fuego] stats" : "stats"];
-		std::vector<uint8_t> v( d, d + n );
-		if ( v == lastStats_ ) return;
-		lastStats_ = v;
+		if ( n < 8 ) { skip( "stats (cut off)" ); return; }
 		int32_t money = 0, drunk = 0;
-		if ( n >= 8 ) { std::memcpy( &money, d, 4 ); std::memcpy( &drunk, d + 4, 4 ); }
-		emit( nowMs, tag, fmt( "stats money=%d drunk=%d", money, drunk ), out );
+		std::memcpy( &money, d, 4 );
+		std::memcpy( &drunk, d + 4, 4 );
+		// The drunk level wears off by itself every frame: only money changes and
+		// getting (more) drunk are written.
+		const bool first = !haveStats_;
+		const bool changed = first || money != lastMoney_ || drunk > lastDrunk_;
+		haveStats_ = true;
+		lastMoney_ = money;
+		lastDrunk_ = drunk;
+		if ( changed ) emit( nowMs, tag, fmt( "stats money=%d drunk=%d", money, drunk ), out );
 		return; }
 
 	case 204: { // weapon slots: only changes

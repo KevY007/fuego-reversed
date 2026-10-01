@@ -16,6 +16,18 @@ namespace i18n::lab {
 
 namespace {
 std::string g_lastBottom;
+
+// One log line per entry: a dialog body's line breaks would otherwise split it.
+std::string one_line(const std::string& s) {
+    std::string r;
+    r.reserve(s.size());
+    for (char c : s) {
+        if (c == '\n')      r += "\\n";
+        else if (c == '\r') continue;
+        else                r += c;
+    }
+    return r;
+}
 } // namespace
 
 void on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
@@ -42,8 +54,9 @@ void on_incoming_rpc(unsigned char id, RPCParameters* rpc) {
             body = i18n::surfaces::assemble_body(plan, i18n::surfaces::original_cores(plan));
         }
 
-        Log("[lab] dialog RPC61: id=%d style=%d title='%s' btn1='%s' btn2='%s' body='%.120s'",
-            (int)(int16_t)plan.id, (int)plan.style, title.c_str(), btn1.c_str(), btn2.c_str(), body.c_str());
+        Log("[lab] dialog RPC61: id=%d style=%d title='%s' btn1='%s' btn2='%s' body='%.160s'",
+            (int)(int16_t)plan.id, (int)plan.style, one_line(title).c_str(), one_line(btn1).c_str(),
+            one_line(btn2).c_str(), one_line(body).c_str());
     } catch (...) {
         // compat.cpp's RPC dispatch has no try/catch here (nor can the naked trampolines
         // above it): a C++ exception must never cross this C-ABI seam.
@@ -60,7 +73,7 @@ void on_frame() {
     if (newest.empty() || newest[0].text.empty()) return;
     if (newest[0].text == g_lastBottom) return;
     g_lastBottom = newest[0].text;
-    Log("[lab] chat[99]: '%s'", g_lastBottom.c_str());
+    Log("[lab] chat[99]: '%s'", one_line(g_lastBottom).c_str());
 }
 
 } // namespace i18n::lab

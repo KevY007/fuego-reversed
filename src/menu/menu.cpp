@@ -465,7 +465,7 @@ void draw_ui() {
 		}
 		// ---------------- Translator ----------------
 		// The everyday settings up top (what to translate, which AI); the rarely touched
-		// ones fold away under Advanced / Debug.
+		// ones fold away under Advanced. (Its debug tools are gone: /.rec replaced them.)
 		if ( ImGui::BeginTabItem( "Translator" ) ) {
 			auto &s = i18n::config::get();
 

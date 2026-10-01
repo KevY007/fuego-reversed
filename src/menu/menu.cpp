@@ -237,86 +237,163 @@ void draw_ui() {
 	ImGui::SetNextWindowSizeConstraints( ImVec2( 640, 480 ), ImVec2( 4000, 4000 ) );
 	ImGui::Begin( "Fuego Reversed", &g_open, ImGuiWindowFlags_NoCollapse );
 
+	// The cheats scroll in their own box; the config box (Save + tips) stays pinned
+	// below it, always in view, so you never scroll to the bottom to reach Save.
+	const float footerH = ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeightWithSpacing() * 2.0f +
+	                      ImGui::GetStyle().WindowPadding.y * 2.0f + ImGui::GetStyle().ItemSpacing.y;
+	ImGui::BeginChild( "##cheats", ImVec2( 0, -footerH ), false );
+
 	// Scroll (don't shrink) tabs that overflow + a popup button to jump to any tab.
 	if ( ImGui::BeginTabBar( "tabs",
 	         ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_TabListPopupButton ) ) {
-		// ---------------- Weapon Functions (Fuego order) ----------------
-		if ( ImGui::BeginTabItem( "Weapon Functions" ) ) {
-			ImGui::SliderInt( "Shot Repeater", &g_set.shot_repeater, 0, 100 );
-			ImGui::Checkbox( "Fake Headshot", &g_set.fake_headshot );
-			ImGui::Checkbox( "Trigger Bot", &g_set.trigger_bot );
-			ImGui::Checkbox( "No Spread", &g_set.no_spread );
-			ImGui::SliderInt( "No Spread Trigger", &g_set.no_spread_trigger, 0, 10 );
-			ImGui::Checkbox( "No Reload", &g_set.no_reload );
-			ImGui::Checkbox( "Dual Shot", &g_set.dual_shot );
-			ImGui::SliderInt( "Dual Shot Delay", &g_set.dual_shot_delay, 0, 3000 );
+		// ---------------- Weapon ----------------
+		if ( ImGui::BeginTabItem( "Weapon" ) ) {
+			ImGui::SliderInt( "Shot Repeater", &g_set.shot_repeater, 0, 100 ); ImGui::SameLine();
+			HelpMarker( "Re-sends each bullet you fire this many extra times, so one trigger pull can register as "
+			            "several hits. 0 = off." );
+			ImGui::Checkbox( "Fake Headshot", &g_set.fake_headshot ); ImGui::SameLine();
+			HelpMarker( "Tells the server every hit you deal struck the head (body part 9). Works on servers that "
+			            "trust the shooter's hit report; no effect where the victim's own client reports it." );
+			ImGui::Checkbox( "Trigger Bot", &g_set.trigger_bot ); ImGui::SameLine();
+			HelpMarker( "Auto-fires the instant your crosshair is on a player while you are aiming (never with "
+			            "fists). Sends a real left-click." );
+			ImGui::Checkbox( "No Spread", &g_set.no_spread ); ImGui::SameLine();
+			HelpMarker( "Zeroes the game's bullet-spread value so shots go exactly where the crosshair is." );
+			ImGui::SliderInt( "No Spread Trigger", &g_set.no_spread_trigger, 0, 10 ); ImGui::SameLine();
+			HelpMarker( "With No Spread on: accuracy is on for only one shot every N bullets (0 = always accurate), "
+			            "so perfect aim looks less obvious." );
+			ImGui::Checkbox( "No Reload", &g_set.no_reload ); ImGui::SameLine();
+			HelpMarker( "The weapon flips back to ready the moment it would reload -- you never wait. Ammo counts "
+			            "stay honest, so the server sees normal numbers." );
+			ImGui::Checkbox( "Dual Shot", &g_set.dual_shot ); ImGui::SameLine();
+			HelpMarker( "Re-fires each bullet once more after the delay below, so a single trigger pull lands twice." );
+			ImGui::SliderInt( "Dual Shot Delay", &g_set.dual_shot_delay, 0, 3000 ); ImGui::SameLine();
+			HelpMarker( "Milliseconds between the two Dual Shot bullets." );
+
 			ImGui::SeparatorText( "Silent Aim" );
-			ImGui::Checkbox( "Silent Aimbot", &g_set.silent_aim );
-			ImGui::Checkbox( "Random False Shots", &g_set.silent_aim_random_shots );
-			ImGui::Checkbox( "Range Hack", &g_set.silent_aim_range_hack );
-			ImGui::Checkbox( "Shoot Through Walls", &g_set.silent_aim_wall_shot );
-			{ const char *tr[] = { "Off", "ESP Only", "ESP & FOV" }; ImGui::Combo( "Draw Tracer", &g_set.silent_aim_tracer, tr, 3 ); }
-			ImGui::SliderFloat( "Search FOV", &g_set.silent_aim_fov, 1.0f, 1024.0f, "%.0f" );
-			ImGui::Checkbox( "Friend Filter", &g_set.silent_aim_friend_filter );
-			ImGui::Checkbox( "Color Filter", &g_set.silent_aim_color_filter );
-			ImGui::Checkbox( "Skin Filter", &g_set.silent_aim_skin_filter );
-			ImGui::Checkbox( "Team Filter", &g_set.silent_aim_team_filter );
-			ImGui::Checkbox( "AFK Filter", &g_set.silent_aim_afk_filter );
-			ImGui::Checkbox( "Alive Filter", &g_set.silent_aim_alive_filter );
-			// Aim point is randomized across bones each shot; Always Headshot forces the head.
-			ImGui::Checkbox( "Always Headshot", &g_set.always_headshot );
-			ImGui::Checkbox( "Lead Prediction", &g_set.silent_aim_prediction );
+			ImGui::Checkbox( "Silent Aimbot", &g_set.silent_aim ); ImGui::SameLine();
+			HelpMarker( "Redirects your bullets to a locked target (picked by the FOV + filters below), registering "
+			            "a hit without your crosshair being on them." );
+			ImGui::Checkbox( "Random False Shots", &g_set.silent_aim_random_shots ); ImGui::SameLine();
+			HelpMarker( "Now and then sends a genuine miss so your accuracy isn't a suspicious 100%." );
+			ImGui::Checkbox( "Range Hack", &g_set.silent_aim_range_hack ); ImGui::SameLine();
+			HelpMarker( "Lets silent aim hit targets farther than the weapon's normal range." );
+			ImGui::Checkbox( "Shoot Through Walls", &g_set.silent_aim_wall_shot ); ImGui::SameLine();
+			HelpMarker( "Lets silent aim hit a target even with a wall between you." );
+			{ const char *tr[] = { "Off", "ESP Only", "ESP & FOV" }; ImGui::Combo( "Draw Tracer", &g_set.silent_aim_tracer, tr, 3 ); } ImGui::SameLine();
+			HelpMarker( "Draw a line to the silent-aim target: off, only when it's on screen, or always (plus the "
+			            "search-FOV circle)." );
+			ImGui::SliderFloat( "Search FOV", &g_set.silent_aim_fov, 1.0f, 1024.0f, "%.0f" ); ImGui::SameLine();
+			HelpMarker( "How wide a circle (in pixels) around your crosshair silent aim looks in for a target." );
+			ImGui::Checkbox( "Friend Filter", &g_set.silent_aim_friend_filter ); ImGui::SameLine();
+			HelpMarker( "Never target players on your friends list (/friend, /fr)." );
+			ImGui::Checkbox( "Color Filter", &g_set.silent_aim_color_filter ); ImGui::SameLine();
+			HelpMarker( "Never target players who share your map-marker colour (often your own team/faction)." );
+			ImGui::Checkbox( "Skin Filter", &g_set.silent_aim_skin_filter ); ImGui::SameLine();
+			HelpMarker( "Never target players wearing the same skin as you." );
+			ImGui::Checkbox( "Team Filter", &g_set.silent_aim_team_filter ); ImGui::SameLine();
+			HelpMarker( "Never target players on your SA:MP team." );
+			ImGui::Checkbox( "AFK Filter", &g_set.silent_aim_afk_filter ); ImGui::SameLine();
+			HelpMarker( "Never target players who are AFK." );
+			ImGui::Checkbox( "Alive Filter", &g_set.silent_aim_alive_filter ); ImGui::SameLine();
+			HelpMarker( "Never target players who are already dead/dying." );
+			ImGui::Checkbox( "Bullets Point to Head", &g_set.always_headshot ); ImGui::SameLine();
+			HelpMarker( "Silent aim puts the hit on the head bone instead of a random body part. (Whether the "
+			            "server is TOLD it was a headshot is the separate Fake Headshot option.)" );
+			ImGui::Checkbox( "Lead Prediction", &g_set.silent_aim_prediction ); ImGui::SameLine();
+			HelpMarker( "Aims a little ahead of a moving target (along their current speed) so fast runners still "
+			            "get hit. No effect on a standing target." );
+
 			ImGui::SeparatorText( "Killer" );
-			ImGui::Checkbox( "Auto Killer", &g_set.killer_enabled );
-			ImGui::SliderInt( "Killer Delay", &g_set.killer_delay, 1, 10000 );
-			ImGui::SliderInt( "Bullets Per Person", &g_set.killer_bullets, 1, 92 );
-			ImGui::SliderInt( "Statistics Interval", &g_set.killer_stats_interval, 1, 10 );
-			ImGui::Checkbox( "Killer Friend Filter", &g_set.killer_friend_filter );
+			ImGui::Checkbox( "Auto Killer", &g_set.killer_enabled ); ImGui::SameLine();
+			HelpMarker( "Automatically attacks every connected, streamed-in player in turn (damage bullets + a "
+			            "GiveDamage report each)." );
+			ImGui::SliderInt( "Killer Delay", &g_set.killer_delay, 1, 10000 ); ImGui::SameLine();
+			HelpMarker( "Milliseconds to wait between each player the Killer attacks." );
+			ImGui::SliderInt( "Bullets Per Person", &g_set.killer_bullets, 1, 92 ); ImGui::SameLine();
+			HelpMarker( "How many damage bullets to send each player." );
+			ImGui::SliderInt( "Statistics Interval", &g_set.killer_stats_interval, 1, 10 ); ImGui::SameLine();
+			HelpMarker( "How often (seconds) the Killer prints how many players and bullets it has sent." );
+			ImGui::Checkbox( "Killer Friend Filter", &g_set.killer_friend_filter ); ImGui::SameLine();
+			HelpMarker( "Skip players on your friends list." );
 			ImGui::EndTabItem();
 		}
-		// ---------------- Misc Functions (Fuego order) ----------------
-		if ( ImGui::BeginTabItem( "Misc Functions" ) ) {
+		// ---------------- Misc ----------------
+		if ( ImGui::BeginTabItem( "Misc" ) ) {
 			ImGui::SeparatorText( "Invisibility" );
-			ImGui::Checkbox( "Invisibility", &g_set.invisibility );
-			ImGui::Checkbox( "Smart Invisibility", &g_set.smart_invis );
+			ImGui::Checkbox( "Invisibility", &g_set.invisibility ); ImGui::SameLine();
+			HelpMarker( "Hides you from other players by changing the position your client broadcasts." );
+			ImGui::Checkbox( "Smart Invisibility", &g_set.smart_invis ); ImGui::SameLine();
+			HelpMarker( "Invisible only while you're NOT clicking: on foot you're sent as a spectator, in a car the "
+			            "car is sent as empty -- so you pop back into view the instant you shoot." );
 			ImGui::SeparatorText( "Slappers" );
-			ImGui::Checkbox( "Aim Slapper", &g_set.aim_slapper );
-			ImGui::SliderInt( "Aim Slapper Power", &g_set.aim_slapper_power, 0, 100 );
-			ImGui::Checkbox( "Near Slapper", &g_set.near_slapper );
-			ImGui::Checkbox( "Near Slapper Friend Filter", &g_set.near_slapper_friend_filter );
+			ImGui::Checkbox( "Aim Slapper", &g_set.aim_slapper ); ImGui::SameLine();
+			HelpMarker( "Flings the player you're aiming at (rewrites their sync with an upward speed)." );
+			ImGui::SliderInt( "Aim Slapper Power", &g_set.aim_slapper_power, 0, 100 ); ImGui::SameLine();
+			HelpMarker( "How hard the Aim Slapper throws the target." );
+			ImGui::Checkbox( "Near Slapper", &g_set.near_slapper ); ImGui::SameLine();
+			HelpMarker( "Flings any player who gets close to you." );
+			ImGui::Checkbox( "Near Slapper Friend Filter", &g_set.near_slapper_friend_filter ); ImGui::SameLine();
+			HelpMarker( "Don't slap players on your friends list." );
 			ImGui::SeparatorText( "Visuals" );
 			ImGui::Checkbox( "Chams", &g_set.chams ); ImGui::SameLine();
-			ImGui::Checkbox( "Wireframe", &g_set.chams_wireframe );
-			ImGui::Checkbox( "Nametag", &g_set.nametags );
-			ImGui::Checkbox( "Nametag Type (SA-MP)", &g_set.nametags_samp );
-			// [M] (server-hidden), [F] (friend) + AFK now show automatically in custom mode.
-			ImGui::Checkbox( "Locked Vehicle ESP", &g_set.locked_vehicle_esp );
-			ImGui::Checkbox( "Weapon Finder", &g_set.weapon_finder );
-			ImGui::Checkbox( "Show Players Guns", &g_set.show_players_guns );
-			ImGui::SliderFloat( "Nametag Distance", &g_set.player_tags_dist, 20.0f, 500.0f, "%.0f" );
-			ImGui::SliderFloat( "Vehicle Tag Distance", &g_set.vehicle_tags_dist, 20.0f, 300.0f, "%.0f" );
-			ImGui::Checkbox( "Player ESP (box)", &g_set.player_esp );
+			ImGui::Checkbox( "Wireframe", &g_set.chams_wireframe ); ImGui::SameLine();
+			HelpMarker( "Chams: draws players as a solid colour visible through walls. Wireframe draws them as an "
+			            "outline instead." );
+			ImGui::Checkbox( "Nametag", &g_set.nametags ); ImGui::SameLine();
+			HelpMarker( "Draws a name above each player ([M] = server-hidden, [F] = friend, AFK shown too)." );
+			ImGui::Checkbox( "Nametag Type (SA-MP)", &g_set.nametags_samp ); ImGui::SameLine();
+			HelpMarker( "Use SA:MP's own nametag look instead of the custom one." );
+			ImGui::Checkbox( "Locked Vehicle ESP", &g_set.locked_vehicle_esp ); ImGui::SameLine();
+			HelpMarker( "Marks locked vehicles in the world (behind-wall ones are hidden)." );
+			ImGui::Checkbox( "Weapon Finder", &g_set.weapon_finder ); ImGui::SameLine();
+			HelpMarker( "Marks weapon pickups lying in the world." );
+			ImGui::Checkbox( "Show Players Guns", &g_set.show_players_guns ); ImGui::SameLine();
+			HelpMarker( "Lists the weapons each nearby player is carrying, by their tag." );
+			ImGui::SliderFloat( "Nametag Distance", &g_set.player_tags_dist, 20.0f, 500.0f, "%.0f" ); ImGui::SameLine();
+			HelpMarker( "How far away player name tags still show." );
+			ImGui::SliderFloat( "Vehicle Tag Distance", &g_set.vehicle_tags_dist, 20.0f, 300.0f, "%.0f" ); ImGui::SameLine();
+			HelpMarker( "How far away vehicle tags still show." );
+			ImGui::Checkbox( "Player ESP (box)", &g_set.player_esp ); ImGui::SameLine();
+			HelpMarker( "Draws a box around players, with the details you tick below." );
 			if ( g_set.player_esp ) { ImGui::Indent();
 				ImGui::Checkbox( "Box", &g_set.esp_box ); ImGui::SameLine(); ImGui::Checkbox( "Name", &g_set.esp_name ); ImGui::SameLine();
 				ImGui::Checkbox( "HP", &g_set.esp_health ); ImGui::SameLine(); ImGui::Checkbox( "Dist", &g_set.esp_distance ); ImGui::Unindent(); }
 			ImGui::Separator();
-			ImGui::Checkbox( "Onfoot Break Dance", &g_set.break_dance );
-			ImGui::Checkbox( "Auto Unscrambler LSRP", &g_set.auto_unscramble );
+			ImGui::Checkbox( "Onfoot Break Dance", &g_set.break_dance ); ImGui::SameLine();
+			HelpMarker( "Makes your character break-dance on foot." );
+			ImGui::Checkbox( "Auto Unscrambler LSRP", &g_set.auto_unscramble ); ImGui::SameLine();
+			HelpMarker( "Auto-answers LS-RP's word-unscramble events from your wordlist (/wordlist_add, "
+			            "/autouns_delay)." );
 			ImGui::SeparatorText( "Health" );
-			ImGui::Checkbox( "Health Hack", &g_set.health_hack );
-			ImGui::Checkbox( "Extra Godmode (block vehicle-health drops)", &g_set.enable_extra_godmode );
-			ImGui::Checkbox( "Smart Health Hack", &g_set.smart_health_hack );
-			ImGui::SliderInt( "Smart HH Proc Chance", &g_set.smart_hh_proc, 0, 100 );
+			ImGui::Checkbox( "Health Hack", &g_set.health_hack ); ImGui::SameLine();
+			HelpMarker( "Makes you invulnerable by answering the server's anti-cheat actor-flags check with the "
+			            "invulnerable flags set." );
+			ImGui::Checkbox( "Extra Godmode (block vehicle-health drops)", &g_set.enable_extra_godmode ); ImGui::SameLine();
+			HelpMarker( "Also blocks the server from lowering your current vehicle's health." );
+			ImGui::Checkbox( "Smart Health Hack", &g_set.smart_health_hack ); ImGui::SameLine();
+			HelpMarker( "Blocks only SOME incoming damage (by the chance below) so godmode looks less obvious." );
+			ImGui::SliderInt( "Smart HH Proc Chance", &g_set.smart_hh_proc, 0, 100 ); ImGui::SameLine();
+			HelpMarker( "Percent of incoming damage Smart Health Hack blocks." );
 			ImGui::SeparatorText( "Fake Lag" );
-			ImGui::Checkbox( "Fake Movement Lag", &g_set.fake_lag );
-			ImGui::Checkbox( "Fake Random Spikes", &g_set.fake_lag_random_spikes );
-			ImGui::SliderInt( "Lag Delay", &g_set.fake_lag_delay, 0, 10000 );
-			ImGui::Checkbox( "Teleportish Movement", &g_set.fake_lag_teleportish );
+			ImGui::Checkbox( "Fake Movement Lag", &g_set.fake_lag ); ImGui::SameLine();
+			HelpMarker( "Holds your position syncs back and releases them in bursts, so you look laggy and hard to "
+			            "hit to other players." );
+			ImGui::Checkbox( "Fake Random Spikes", &g_set.fake_lag_random_spikes ); ImGui::SameLine();
+			HelpMarker( "Randomises the hold time so the lag looks natural instead of steady." );
+			ImGui::SliderInt( "Lag Delay", &g_set.fake_lag_delay, 0, 10000 ); ImGui::SameLine();
+			HelpMarker( "How long (ms) syncs are held back." );
+			ImGui::Checkbox( "Teleportish Movement", &g_set.fake_lag_teleportish ); ImGui::SameLine();
+			HelpMarker( "Makes the held-back movement land as teleports rather than smooth catch-up." );
 			ImGui::SeparatorText( "Skin Trolls" );
-			ImGui::Checkbox( "Moonwalker", &g_set.moonwalk );
-			ImGui::Checkbox( "Upside Down", &g_set.upside_down );
-			ImGui::Checkbox( "Ghost Mode", &g_set.ghost_mode );
-			ImGui::Checkbox( "Twister Mode", &g_set.twister_mode );
+			ImGui::Checkbox( "Moonwalker", &g_set.moonwalk ); ImGui::SameLine();
+			HelpMarker( "You face backwards while moving (moonwalk), for other players." );
+			ImGui::Checkbox( "Upside Down", &g_set.upside_down ); ImGui::SameLine();
+			HelpMarker( "Shows your character upside-down to everyone." );
+			ImGui::Checkbox( "Ghost Mode", &g_set.ghost_mode ); ImGui::SameLine();
+			HelpMarker( "Puts your ped into an unusual special-action state for other clients." );
+			ImGui::Checkbox( "Twister Mode", &g_set.twister_mode ); ImGui::SameLine();
+			HelpMarker( "Spins your character on the spot for everyone to see." );
 
 			// Mike's CnR auto fish: runtime only (never saved), no hotkey -- see autofish.h.
 			ImGui::SeparatorText( "Mike's CnR" );
@@ -345,51 +422,97 @@ void draw_ui() {
 			}
 			ImGui::EndTabItem();
 		}
-		// ---------------- Vehicle Functions (Fuego order) ----------------
-		if ( ImGui::BeginTabItem( "Vehicle Functions" ) ) {
+		// ---------------- Vehicle ----------------
+		if ( ImGui::BeginTabItem( "Vehicle" ) ) {
 			ImGui::SeparatorText( "iTroll (hold I while driving)" );
 			ImGui::TextDisabled( "1)Ground 2)SpeedAway 3)BurnDown 4)BurnUp 5)Spin 6)Ocean 7)SlowSpeed" );
-			ImGui::SliderInt( "iTroll Mode", &g_set.itroll_mode, 0, 7 );
+			ImGui::SliderInt( "iTroll Mode", &g_set.itroll_mode, 0, 7 ); ImGui::SameLine();
+			HelpMarker( "While driving, hold I to apply the chosen troll to the nearest other occupied car "
+			            "(0 = off)." );
 			ImGui::SeparatorText( "Generic" );
-			ImGui::Checkbox( "Car Shooter", &g_set.car_shooter );
-			ImGui::Checkbox( "Car Remover", &g_set.remove_cars );
-			ImGui::Checkbox( "Car Exploder", &g_set.explode_cars );
-			ImGui::Checkbox( "Floating Cars", &g_set.floating_cars );
-			ImGui::Checkbox( "Car Exploder Silent", &g_set.explode_cars_silent );
-			ImGui::Checkbox( "Unoccupied Car Remover", &g_set.unoccupied_remover );
+			ImGui::Checkbox( "Car Shooter", &g_set.car_shooter ); ImGui::SameLine();
+			HelpMarker( "Hold fire to launch streamed vehicles toward where you aim." );
+			ImGui::Checkbox( "Car Remover", &g_set.remove_cars ); ImGui::SameLine();
+			HelpMarker( "Deletes streamed vehicles around you (client-side)." );
+			ImGui::Checkbox( "Car Exploder", &g_set.explode_cars ); ImGui::SameLine();
+			HelpMarker( "Blows up streamed vehicles around you." );
+			ImGui::Checkbox( "Floating Cars", &g_set.floating_cars ); ImGui::SameLine();
+			HelpMarker( "Lifts nearby vehicles into the air." );
+			ImGui::Checkbox( "Car Exploder Silent", &g_set.explode_cars_silent ); ImGui::SameLine();
+			HelpMarker( "Blows up nearby vehicles without the blast being tied to you." );
+			ImGui::Checkbox( "Unoccupied Car Remover", &g_set.unoccupied_remover ); ImGui::SameLine();
+			HelpMarker( "Removes empty (driverless) vehicles around you." );
 			ImGui::SeparatorText( "Actions (on your current vehicle)" );
 			// Repair is a menu button, NOT a hotkey -- an instant full repair is server-
 			// detectable, so it must be a deliberate click, never an accidental keypress.
-			if ( ImGui::Button( "Repair Vehicle" ) )        game::repair_local_vehicle();
+			if ( ImGui::Button( "Repair Vehicle" ) )        game::repair_local_vehicle(); ImGui::SameLine();
+			HelpMarker( "Patches up the car you're driving (and anything it tows): +50 health each click, and a "
+			            "full visual fix once it's near max -- click a few times for a wreck. A button, not a "
+			            "hotkey: an instant repair is easy for a server to spot, so it's a deliberate click." );
 			ImGui::SeparatorText( "Actions (click a vehicle to pick it)" );
+			ImGui::TextDisabled( "Each closes the menu, then you click the target vehicle." );
 			if ( ImGui::Button( "Unlock Vehicle" ) )        { veh::start_pick( 1 ); g_open = false; }
 			if ( ImGui::Button( "Damage Vehicle Doors" ) )  { veh::start_pick( 2 ); g_open = false; }
 			if ( ImGui::Button( "Destroy Vehicle" ) )       { veh::start_pick( 3 ); g_open = false; }
 			if ( ImGui::Button( "Attach/Tow Vehicle" ) )    { veh::start_pick( 4 ); g_open = false; }
 			ImGui::EndTabItem();
 		}
-		// ---------------- Movement (our extras) ----------------
+		// ---------------- Movement ----------------
 		if ( ImGui::BeginTabItem( "Movement" ) ) {
-			ImGui::Checkbox( "Fly (WASD + Space/Ctrl)", &g_set.fly );
+			ImGui::Checkbox( "Fly (WASD + Space/Ctrl)", &g_set.fly ); ImGui::SameLine();
+			HelpMarker( "Fly on foot: WASD to move, Space up, Ctrl down. Cancels gravity while on." );
 			ImGui::SliderFloat( "Fly speed", &g_set.fly_speed, 0.1f, 3.0f, "%.2f" );
 			ImGui::Separator();
-			ImGui::Checkbox( "Air Brake (freeze + WASD)", &g_set.air_brake );
+			ImGui::Checkbox( "Air Brake (freeze + WASD)", &g_set.air_brake ); ImGui::SameLine();
+			HelpMarker( "Freezes you in place, then WASD nudges you around (works in a vehicle too)." );
 			ImGui::SliderFloat( "Air brake speed", &g_set.air_brake_speed, 0.1f, 4.0f, "%.2f" );
 			ImGui::EndTabItem();
 		}
-		// ---------------- Main / Compat ----------------
-		if ( ImGui::BeginTabItem( "Main" ) ) {
-			ImGui::Checkbox( "Disable Unsafe/Big Hacks", &g_set.no_big_hacks );
-			ImGui::Checkbox( "PANIC (hide everything)", &g_set.cheat_panic );
+		// ---------------- Client (safety, join mode, display) ----------------
+		if ( ImGui::BeginTabItem( "Client" ) ) {
+			ImGui::SeparatorText( "Safety" );
+			ImGui::Checkbox( "Disable Unsafe/Big Hacks", &g_set.no_big_hacks ); ImGui::SameLine();
+			HelpMarker( "A master safety switch: while on, the riskiest, most obvious cheats are forced off every "
+			            "frame so you can't turn them on by accident." );
+			ImGui::Checkbox( "PANIC (hide everything)", &g_set.cheat_panic ); ImGui::SameLine();
+			HelpMarker( "Instantly stops touching any network traffic and drops godmode -- as if the mod were off. "
+			            "Also closes the menu. Untick to resume." );
 			ImGui::SeparatorText( "0.3.7 Compat" );
 			bool on = compat::in_037_mode();
 			ImGui::Text( "Join mode: %s", on ? "0.3.7 (spoofed)" : "0.3.DL" );
 			if ( ImGui::Button( on ? "Switch to 0.3.DL" : "Switch to 0.3.7" ) )
 				compat::toggle_mode();
-			ImGui::TextWrapped( "0.3.7 servers auto-detected on join; /compat before connecting." );
-
-			// Packet recorder (debug): runtime only, never saved -- see recorder.h.
-			ImGui::SeparatorText( "Packet recorder (debug)" );
+			ImGui::SameLine();
+			HelpMarker( "Which SA:MP version you join as. 0.3.7 servers are auto-detected on join; use /compat (or "
+			            "this button) before connecting to force it." );
+			ImGui::SeparatorText( "Display" );
+			ImGui::Checkbox( "Uncap FPS (frame limiter off)", &g_set.uncap_fps ); ImGui::SameLine();
+			HelpMarker( "Turns off GTA's built-in frame limiter." );
+			ImGui::Checkbox( "Borderless window (fill screen)", &g_set.borderless ); ImGui::SameLine();
+			HelpMarker( "Runs the game in a borderless window that fills the screen (easy alt-tab)." );
+			if ( ImGui::Checkbox( "Exclusive fullscreen: max refresh rate", &g_set.fullscreen_max_hz ) )
+				render::set_max_fullscreen_refresh( g_set.fullscreen_max_hz ); // applies at once
+			ImGui::SameLine();
+			HelpMarker( "Forces GTA's EXCLUSIVE fullscreen to your monitor's HIGHEST refresh at the current "
+			            "resolution (GTA hardcodes the lowest >=60Hz). No borderless needed. Applies at once "
+			            "when you tick or untick it, and on every game start when saved -- the screen flickers "
+			            "once as the display resets. Only matters in exclusive fullscreen." );
+			ImGui::EndTabItem();
+		}
+		// ---------------- UI (the mod's own on-screen overlay) ----------------
+		if ( ImGui::BeginTabItem( "UI" ) ) {
+			ImGui::SeparatorText( "Overlay" );
+			ImGui::Checkbox( "Cheat state text (top-right)", &g_set.status_text ); ImGui::SameLine();
+			HelpMarker( "Shows a short status line, top-right, for what a cheat just did." );
+			ImGui::Checkbox( "Active-cheat watermark", &g_set.show_active_list ); ImGui::SameLine();
+			HelpMarker( "Lists the cheats you currently have on, bottom-right." );
+			ImGui::TextDisabled( "Menu and these overlays draw above SA:MP's chat; ESP/nametags stay in the world." );
+			ImGui::EndTabItem();
+		}
+		// ---------------- Debug (packet recorder / tracer) ----------------
+		if ( ImGui::BeginTabItem( "Debug" ) ) {
+			// Packet recorder: runtime only, never saved -- see recorder.h.
+			ImGui::SeparatorText( "Packet recorder / tracer" );
 			{
 				static bool openFailed = false;
 				bool rec = recorder::active();
@@ -443,24 +566,6 @@ void draw_ui() {
 					ImGui::TextDisabled( "In game: /.rec [normal|others|all] starts/stops, /.mark <note> marks a moment." );
 				}
 			}
-			ImGui::EndTabItem();
-		}
-		// ---------------- Display ----------------
-		if ( ImGui::BeginTabItem( "Display" ) ) {
-			ImGui::Checkbox( "Uncap FPS (frame limiter off)", &g_set.uncap_fps );
-			ImGui::Checkbox( "Borderless window (fill screen)", &g_set.borderless );
-			if ( ImGui::Checkbox( "Exclusive fullscreen: max refresh rate", &g_set.fullscreen_max_hz ) )
-				render::set_max_fullscreen_refresh( g_set.fullscreen_max_hz ); // applies at once
-			ImGui::SameLine();
-			HelpMarker( "Forces GTA's EXCLUSIVE fullscreen to your monitor's HIGHEST refresh at the current "
-			            "resolution (GTA hardcodes the lowest >=60Hz). No borderless needed. Applies at once "
-			            "when you tick or untick it, and on every game start when saved -- the screen flickers "
-			            "once as the display resets. Only matters in exclusive fullscreen." );
-			ImGui::SeparatorText( "Overlay" );
-			ImGui::Checkbox( "Cheat state text (top-right)", &g_set.status_text );
-			ImGui::Checkbox( "Active-cheat watermark", &g_set.show_active_list );
-			ImGui::SameLine();
-			HelpMarker( "Lists the cheats you have on in the bottom-right corner." );
 			ImGui::EndTabItem();
 		}
 		// ---------------- Translator ----------------
@@ -800,11 +905,10 @@ void draw_ui() {
 		}
 		ImGui::EndTabBar();
 	}
+	ImGui::EndChild(); // ##cheats
 
-	ImGui::Spacing(); // breathing room between the tab content and the footer
-	ImGui::Spacing();
-	ImGui::Separator();
-	ImGui::Spacing();
+	// The config box: its own framed box, pinned under the cheats and always in view.
+	ImGui::BeginChild( "##config", ImVec2( 0, 0 ), true );
 	static DWORD saveFailedAt = 0;
 	if ( ImGui::Button( "Save config" ) ) {
 		const bool saved = cfg::save(); // unified: cheats + /compat + translator -> fuego_reversed.cfg
@@ -818,7 +922,9 @@ void draw_ui() {
 	else if ( i18n::config::has_unsaved_changes() )
 		ImGui::TextColored( ImVec4( 1.0f, 0.65f, 0.25f, 1.0f ), "Translator changes pending -- press Save config." );
 	else
-		ImGui::TextDisabled( "one file (fuego_reversed.cfg), loads on startup." );
+		ImGui::TextDisabled( "Saves cheats, join mode + translator to fuego_reversed.cfg (loads on startup)." );
+	ImGui::TextDisabled( "Tip: type /fuego_cmds in chat for every command -- the menu doesn't cover them all." );
+	ImGui::EndChild(); // ##config
 	ImGui::End();
 }
 
@@ -967,7 +1073,14 @@ void on_frame( IDirect3DDevice9 *dev ) {
 
 // The 2D UI layer, after SA:MP has drawn its chat / dialogs (render::on_present).
 void on_present( IDirect3DDevice9 * ) {
-	if ( !g_init || !g_uiPending ) return;
+	if ( !g_init ) return;
+	if ( g_presentFallback ) { // Present came back (render hooked it again): over the chat from the next frame
+		g_presentFallback = false;
+		g_missedPresents = 0;
+		Log( "[menu] SA:MP's Present is back -- menu/HUD over the chat again." );
+		return;
+	}
+	if ( !g_uiPending ) return;
 	g_uiPending = false;
 	if ( g_uiLayer.CmdListsCount > 0 ) ImGui_ImplDX9_RenderDrawData( &g_uiLayer );
 }

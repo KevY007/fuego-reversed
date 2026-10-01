@@ -112,6 +112,9 @@ void bring_up_subsystems() {
 	recorder::install();
 	// Mike's CnR auto fish (idle until turned on): its sync seam + per-frame driver.
 	autofish::install();
+	// Guards for known GTA crashes: patched on the first frame, on the render thread
+	// (they patch code that thread runs -- never from this one).
+	render::on_frame( []( IDirect3DDevice9 * ) { crashlog::install_guards(); } );
 
 	// --- networking / RakNet hook (accurate) ---
 	// Poll until SA:MP's RakClient interface is live, then swap in our hook.

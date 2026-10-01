@@ -5,6 +5,9 @@
 
 #include <d3d9.h>
 #include <atomic>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -25,6 +28,7 @@ Present_t  g_origPresent  = nullptr;
 void     **g_vtable       = nullptr; // the device GTA calls: SA:MP's wrapper (see samp::addr::D3D_DEVICE)
 void     **g_realVtable   = nullptr; // the real device's: its Present comes after SA:MP's UI
 IDirect3DDevice9 *const *g_realDeviceSlot = nullptr; // where SA:MP keeps that device (samp.dll data)
+unsigned   g_presentCalls = 0;       // UI passes run in hkPresent (to notice a lost hook)
 bool       g_installed    = false;
 
 IDirect3DDevice9 *g_device = nullptr;
@@ -174,6 +178,8 @@ void ensure_window( IDirect3DDevice9 *dev ) {
 	if ( g_refreshPending && g_msgApplyRefresh ) PostMessage( g_window, g_msgApplyRefresh, 0, 0 );
 }
 
+void present_keepalive(); // (below: needs hook_real_present)
+
 HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
 	// Re-entrancy guard (render thread only, so a plain static is enough). EndScene is
 	// hooked via the device VTABLE, so anything that calls dev->EndScene() while we're
@@ -187,6 +193,7 @@ HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
 	if ( !g_device ) { g_device = dev; Log( "[render] device captured (0x%p).", dev ); }
 	ensure_window( dev );
 	for ( auto fn : frameCbs() ) fn( dev );
+	present_keepalive();
 	HRESULT hr = g_origEndScene( dev );
 
 	s_inside = false;
@@ -205,6 +212,7 @@ HRESULT __stdcall hkPresent( IDirect3DDevice9 *dev, const RECT *src, const RECT 
 	const bool ours = g_realDeviceSlot && dev == *g_realDeviceSlot;
 	if ( ours && !s_inside && !presentCbs().empty() ) {
 		s_inside = true;
+		++g_presentCalls;
 		if ( SUCCEEDED( dev->BeginScene() ) ) {
 			for ( auto fn : presentCbs() ) fn( dev );
 			dev->EndScene();
@@ -270,32 +278,100 @@ void patch_vtable_entry( void **vtable, int index, void *fn, void **outOrig ) {
 	VirtualProtect( &vtable[index], sizeof( void * ), old, &old );
 }
 
-// Is `p` inside the loaded d3d9.dll's image (the system one, or a wrapper like ReShade's)?
-bool in_d3d9_module( const void *p ) {
-	HMODULE m = GetModuleHandleA( "d3d9.dll" );
-	if ( !m || !p ) return false;
-	const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>( m );
-	if ( dos->e_magic != IMAGE_DOS_SIGNATURE ) return false;
-	const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>( reinterpret_cast<const BYTE *>( m ) + dos->e_lfanew );
-	const uintptr_t lo = reinterpret_cast<uintptr_t>( m ), hi = lo + nt->OptionalHeader.SizeOfImage;
-	return reinterpret_cast<uintptr_t>( p ) >= lo && reinterpret_cast<uintptr_t>( p ) < hi;
+// The module whose executable code `p` points into ("d3d9.dll"), or null (heap, data,
+// unmapped). For the log too: `name` gets the module's file name.
+HMODULE code_module( const void *p, char *name = nullptr, size_t nameSize = 0 ) {
+	if ( name && nameSize ) name[0] = 0;
+	MEMORY_BASIC_INFORMATION mbi = {};
+	if ( !p || !VirtualQuery( p, &mbi, sizeof mbi ) || mbi.State != MEM_COMMIT ) return nullptr;
+	const DWORD exec = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+	if ( !( mbi.Protect & exec ) ) return nullptr;
+	HMODULE m = nullptr;
+	if ( !GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	                          reinterpret_cast<LPCSTR>( p ), &m ) || !m )
+		return nullptr;
+	if ( name && nameSize ) {
+		char full[MAX_PATH] = {};
+		GetModuleFileNameA( m, full, sizeof full );
+		const char *slash = strrchr( full, '\\' );
+		lstrcpynA( name, slash ? slash + 1 : full, (int) nameSize );
+	}
+	return m;
 }
 
-// Hook the REAL device's Present (see hkPresent). Only when everything checks out --
-// the device SA:MP forwards to exists, isn't the wrapper GTA calls, and its vtable is
-// d3d9.dll's -- otherwise the 2D UI is drawn at EndScene as before.
-bool hook_real_present( IDirect3DDevice9 *gameDev ) {
+HMODULE own_module() {
+	HMODULE m = nullptr;
+	GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	                    reinterpret_cast<LPCSTR>( &code_module ), &m );
+	return m;
+}
+
+// Hook the REAL device's Present (see hkPresent). Only when everything checks out: the
+// device SA:MP forwards to exists and isn't the wrapper GTA calls, and its Present /
+// BeginScene / EndScene are real code in a module other than samp.dll or ours (d3d9.dll
+// -- or an overlay that hooked them first). Where the vtable itself lives doesn't
+// matter: d3d9 and overlays like RivaTuner give a device a per-device copy on the heap.
+// Otherwise the 2D UI is drawn at EndScene as before; `why` says what was off.
+bool set_why( char *why, size_t whySize, const char *f, ... ) {
+	va_list ap;
+	va_start( ap, f );
+	vsnprintf( why, whySize, f, ap );
+	va_end( ap );
+	return false;
+}
+
+bool hook_real_present( IDirect3DDevice9 *gameDev, char *why, size_t whySize ) {
+	auto fail = [&]( const char *f, auto... args ) { return set_why( why, whySize, f, args... ); };
 	const uint32_t base = samp::base();
-	if ( !base || !samp::detected() ) return false;
+	if ( !base || !samp::detected() ) return fail( "SA:MP not detected" );
 	IDirect3DDevice9 **slot = reinterpret_cast<IDirect3DDevice9 **>( base + samp::addr::D3D_DEVICE );
 	IDirect3DDevice9 *real = *slot;
-	if ( !real || real == gameDev ) return false;
+	if ( !real ) return fail( "SA:MP has no device yet" );
+	if ( real == gameDev ) return fail( "SA:MP's device is the one GTA calls (0x%p)", real );
 	void **vt = *reinterpret_cast<void ***>( real );
-	if ( !vt || vt == g_vtable || !in_d3d9_module( vt ) ) return false;
+	if ( !vt || vt == g_vtable ) return fail( "device 0x%p has a bad vtable 0x%p", real, vt );
+	const HMODULE samp = reinterpret_cast<HMODULE>( (uintptr_t) base ), self = own_module();
+	char mod[MAX_PATH] = {};
+	for ( int slotIdx : { 17, 41, 42 } ) { // Present, BeginScene, EndScene
+		const HMODULE m = code_module( vt[slotIdx], mod, sizeof mod );
+		if ( !m || m == samp || m == self )
+			return fail( "device 0x%p vtable 0x%p slot %d -> 0x%p (%s)", real, vt, slotIdx, vt[slotIdx], m ? mod : "not code" );
+	}
+	code_module( vt[17], mod, sizeof mod );
 	g_realDeviceSlot = slot;
 	patch_vtable_entry( vt, 17, (void *) hkPresent, (void **) &g_origPresent ); // IDirect3DDevice9::Present
 	g_realVtable = vt;
+	snprintf( why, whySize, "device 0x%p, vtable 0x%p, Present in %s", real, vt, mod );
 	return true;
+}
+
+// Once a second from hkEndScene: hook Present if that failed at install (SA:MP not done
+// yet), and hook it again if an overlay put a new vtable on the device since (no UI pass
+// ran in a second, and Present isn't ours any more). Never re-patches a Present that
+// still calls ours -- so never two of ours in one chain.
+void present_keepalive() {
+	static unsigned frames = 0, tries = 0, rehooks = 0, lastCalls = 0;
+	if ( ++frames % 60 ) return;
+	char why[200] = {};
+	if ( !g_realVtable ) {
+		if ( tries >= 600 ) return; // ~10 minutes of trying: it isn't coming
+		if ( hook_real_present( g_device, why, sizeof why ) )
+			Log( "[render] menu/HUD now drawn after SA:MP's UI -- over the chat (%s).", why );
+		else if ( ++tries == 600 )
+			Log( "[render] gave up hooking Present (%s): menu/HUD stay at EndScene.", why );
+		return;
+	}
+	if ( g_presentCalls != lastCalls ) { lastCalls = g_presentCalls; return; }
+	if ( !g_realDeviceSlot || !*g_realDeviceSlot || rehooks >= 20 ) return;
+	void **vt = *reinterpret_cast<void ***>( *g_realDeviceSlot );
+	if ( vt && vt[17] != (void *) hkPresent ) {
+		++rehooks;
+		g_realVtable = nullptr;
+		if ( hook_real_present( g_device, why, sizeof why ) )
+			Log( "[render] Present hooked again (the device's vtable changed: %s).", why );
+		else
+			Log( "[render] Present hook lost (%s): menu/HUD at EndScene.", why );
+	}
 }
 
 // GTA:SA's live D3D9 device: RenderWare's _RwD3DDevice at 0xC97C28 (confirmed in
@@ -347,10 +423,11 @@ bool install() {
 	patch_vtable_entry( g_vtable, 16, (void *) hkReset,    (void **) &g_origReset );    // IDirect3DDevice9::Reset
 	g_installed = true;
 	Log( "[render] EndScene/Reset hook installed on game device (0x%p).", g_device );
-	if ( hook_real_present( g_device ) )
-		Log( "[render] menu/HUD drawn after SA:MP's UI (real device Present hooked) -- over the chat." );
+	char why[200] = {};
+	if ( hook_real_present( g_device, why, sizeof why ) )
+		Log( "[render] menu/HUD drawn after SA:MP's UI -- over the chat (%s).", why );
 	else
-		Log( "[render] real device not found: menu/HUD drawn at EndScene (under SA:MP's chat)." );
+		Log( "[render] Present not hooked yet (%s): menu/HUD at EndScene, retrying.", why );
 	return true;
 }
 

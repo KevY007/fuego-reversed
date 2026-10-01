@@ -17,6 +17,7 @@
 #include "../cheats/veh.h"
 #include "../cheats/cheats.h"
 #include "../cheats/server.h"
+#include "../recorder/recorder.h"
 
 #include <vector>
 #include <cstdio>
@@ -489,6 +490,42 @@ static void __cdecl cmd_triggercp( char *params ) {
 		samp::chat( "{BBBBBB}As a passenger this might not work, try on foot or driving." );
 }
 
+// /.rec -- start/stop the packet recorder: everything in and out, decoded and
+// time-stamped, to fuego_packets.log in the GTA folder (to work out a minigame).
+static void __cdecl cmd_rec( char * ) {
+	traceLastFunc( "cmd_rec" );
+	char b[200] = {};
+	if ( recorder::active() ) {
+		const unsigned long long n = recorder::lines();
+		const unsigned secs = recorder::seconds();
+		recorder::stop();
+		_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Stopped after %u:%02u -- %llu lines in %s (GTA folder).",
+		           secs / 60, secs % 60, n, recorder::file_name() );
+		samp::chat( b );
+	} else if ( recorder::start() ) {
+		_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Recording to %s. {AAAAAA}/.mark <note> marks a moment, /.rec stops.",
+		           recorder::file_name() );
+		samp::chat( b );
+	} else {
+		_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Couldn't open %s -- is the GTA folder read-only?",
+		           recorder::file_name() );
+		samp::chat( b );
+	}
+}
+
+// /.mark [note] -- a numbered note in the recording at this moment ("line broke").
+static void __cdecl cmd_mark( char *params ) {
+	traceLastFunc( "cmd_mark" );
+	if ( !recorder::active() ) {
+		samp::chat( "{FF4040}[rec] {FFFFFF}Not recording -- /.rec starts it." );
+		return;
+	}
+	recorder::mark( params ? params : "" );
+	char b[96] = {};
+	_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Mark %d saved.", recorder::marks() );
+	samp::chat( b );
+}
+
 // /.gethere <id> -- drag an on-foot player to you (drop your car on them + release).
 static void __cdecl cmd_gethere( char *params ) {
 	traceLastFunc( "cmd_gethere" );
@@ -697,6 +734,8 @@ void install() {
 	add( "njkill",           cmd_njkill,           false );
 	add( "triggercp",        cmd_triggercp,        false );
 	add( "meleedmg",         cmd_meleedmg,         false );
+	add( ".rec",             cmd_rec,              false ); // packet recorder (debug)
+	add( ".mark",            cmd_mark,             false );
 	Log( "[cmd] %zu commands registered.", g_visible.size() );
 }
 

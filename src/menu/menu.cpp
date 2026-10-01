@@ -16,6 +16,7 @@
 #include "../i18n/hooks.h"    // apply_config (live-apply translator settings)
 #include "../i18n/outbound.h" // settable-hotkey outgoing-chat + dialog-input toggle (default Ctrl+Shift)
 #include "../i18n/indicator.h" // on-screen "translating..." hints
+#include "../recorder/recorder.h" // packet recorder (debug): Main tab toggle + REC pill
 
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
@@ -331,6 +332,35 @@ void draw_ui() {
 			if ( ImGui::Button( on ? "Switch to 0.3.DL" : "Switch to 0.3.7" ) )
 				compat::toggle_mode();
 			ImGui::TextWrapped( "0.3.7 servers auto-detected on join; /compat before connecting." );
+
+			// Packet recorder (debug): runtime only, never saved -- see recorder.h.
+			ImGui::SeparatorText( "Packet recorder (debug)" );
+			{
+				static bool openFailed = false;
+				bool rec = recorder::active();
+				if ( ImGui::Checkbox( "Record packets to fuego_packets.log", &rec ) ) {
+					if ( rec ) openFailed = !recorder::start();
+					else       recorder::stop();
+				}
+				ImGui::SameLine();
+				HelpMarker( "Writes everything the server sends and everything you send -- decoded, with the time "
+				            "in seconds -- to fuego_packets.log in the GTA folder: game text, textdraws (with the "
+				            "box sizes a progress bar changes), chat, dialogs, animations, objects, sounds, and "
+				            "every key you press and release with how long you held it. Use it to work out how a "
+				            "server's minigame works. Other players' traffic is only counted. Never written: what "
+				            "you type into dialogs, login/password command arguments, RCON. In game: /.rec "
+				            "starts/stops it, /.mark <note> adds a numbered note at that moment. Not saved: it's "
+				            "off at every game start." );
+				if ( recorder::active() ) {
+					const unsigned s = recorder::seconds();
+					ImGui::TextDisabled( "recording %u:%02u -- %llu lines, %d marks", s / 60, s % 60, recorder::lines(),
+					                     recorder::marks() );
+				} else if ( openFailed ) {
+					ImGui::TextColored( ImVec4( 1.0f, 0.35f, 0.35f, 1.0f ), "Couldn't open fuego_packets.log." );
+				} else {
+					ImGui::TextDisabled( "In game: /.rec starts/stops, /.mark <note> marks a moment." );
+				}
+			}
 			ImGui::EndTabItem();
 		}
 		// ---------------- Display ----------------
@@ -826,8 +856,10 @@ void on_frame( IDirect3DDevice9 *dev ) {
 	}
 
 	visuals::draw(); // ESP + other on-screen cheats (background draw list)
-	if ( !render::overlay_hidden() && !fx::g_set.cheat_panic )
+	if ( !render::overlay_hidden() && !fx::g_set.cheat_panic ) {
 		i18n::indicator::draw(); // "will be translated" / "translating dialog..." hints
+		recorder::draw_overlay(); // the REC pill while the packet recorder runs
+	}
 
 	// Use SA:MP's cursor (shown by toggle_cursor) as the single visible cursor;
 	// don't also draw ImGui's software one.

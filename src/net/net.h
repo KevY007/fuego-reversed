@@ -35,6 +35,19 @@ void on_send_rpc( SendRpcFn );
 void on_send_packet( SendPacketFn );
 void on_recv_packet( RecvPacketFn );
 
+// Read-only taps on what actually goes out on the wire: the game's RPCs/packets
+// once every send handler above has passed them (as rewritten), plus everything
+// our own code sends straight through g_RakClient (injected = true). For the
+// packet recorder; a tap must never modify or keep the data. Set once during
+// bring-up, before install().
+using WireRpcFn    = void ( * )( int id, BitStream *, bool injected );
+using WirePacketFn = void ( * )( const unsigned char *data, int bits, bool injected ); // data[0] = packet id
+void set_wire_taps( WireRpcFn, WirePacketFn );
+
+// Called by the two send paths (HookedRakClientInterface, RakClient).
+void wire_rpc( int id, BitStream *bs, bool injected );
+void wire_packet( const unsigned char *data, int bits, bool injected );
+
 // Install the RakClient interface hook (idempotent; installs once SA:MP's
 // interface pointer is live). Returns installed().
 bool install();

@@ -61,6 +61,21 @@ void on_send_rpc( SendRpcFn fn )       { if ( fn ) sendRpcHandlers().push_back( 
 void on_send_packet( SendPacketFn fn ) { if ( fn ) sendPacketHandlers().push_back( fn ); }
 void on_recv_packet( RecvPacketFn fn ) { if ( fn ) recvPacketHandlers().push_back( fn ); }
 
+namespace {
+WireRpcFn    g_wireRpc    = nullptr;
+WirePacketFn g_wirePacket = nullptr;
+}
+
+void set_wire_taps( WireRpcFn r, WirePacketFn p ) { g_wireRpc = r; g_wirePacket = p; }
+
+void wire_rpc( int id, BitStream *bs, bool injected ) {
+	if ( g_wireRpc && bs ) g_wireRpc( id, bs, injected );
+}
+
+void wire_packet( const unsigned char *data, int bits, bool injected ) {
+	if ( g_wirePacket && data && bits > 0 ) g_wirePacket( data, bits, injected );
+}
+
 bool installed() { return g_installed; }
 
 bool install() {

@@ -22,6 +22,7 @@
 */
 
 #include "RakClient.h"
+#include "net.h" // wire taps: what our own code sends shows up in the packet recorder too
 
 RakClient *g_RakClient = NULL;
 
@@ -35,6 +36,7 @@ bool RakClient::RPC( int rpcId, BitStream *bitStream, PacketPriority priority, P
 	if ( !pRakClient )
 		return false;
 
+	net::wire_rpc( rpcId, bitStream, true );
 	return pRakClient->RPC( &rpcId, bitStream, priority, reliability, orderingChannel, shiftTimestamp );
 }
 
@@ -43,6 +45,8 @@ bool RakClient::Send( BitStream *bitStream, PacketPriority priority, PacketRelia
 	if ( !pRakClient )
 		return false;
 
+	if ( bitStream )
+		net::wire_packet( bitStream->GetData(), bitStream->GetNumberOfBitsUsed(), true );
 	return pRakClient->Send( bitStream, priority, reliability, orderingChannel );
 }
 

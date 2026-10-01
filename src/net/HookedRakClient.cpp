@@ -32,6 +32,7 @@ bool HookedRakClientInterface::RPC(int* uniqueID, BitStream *parameters, PacketP
 	{
 		if (!OnSendRPC(*uniqueID, parameters, priority, reliability, orderingChannel, shiftTimestamp))
 			return false;
+		net::wire_rpc(*uniqueID, parameters, false); // what actually goes out (packet recorder)
 	}
 	return g_RakClient->GetInterface()->RPC(uniqueID, parameters, priority, reliability, orderingChannel, shiftTimestamp);
 }
@@ -43,6 +44,7 @@ bool HookedRakClientInterface::Send(BitStream * bitStream, PacketPriority priori
 	{
 		if (!OnSendPacket(bitStream, priority, reliability, orderingChannel))
 			return false;
+		net::wire_packet(bitStream->GetData(), bitStream->GetNumberOfBitsUsed(), false);
 	}
 	return g_RakClient->GetInterface()->Send(bitStream, priority, reliability, orderingChannel);
 }
@@ -100,6 +102,7 @@ bool HookedRakClientInterface::Send(const char *data, const int length, PacketPr
 {
 	traceLastFunc("HookedRakClientInterface::Send");
 
+	net::wire_packet(reinterpret_cast<const unsigned char *>(data), length * 8, false);
 	return g_RakClient->GetInterface()->Send(data, length, priority, reliability, orderingChannel);
 }
 

@@ -27,6 +27,7 @@
 #include "../i18n/hooks.h"
 #include "../i18n/outbound.h"
 #include "../i18n/surfaces.h"
+#include "../recorder/recorder.h"
 
 #include <windows.h>
 
@@ -104,6 +105,10 @@ void bring_up_subsystems() {
 	i18n::outbound::install(); // register the outgoing-chat seam BEFORE net::install() below
 	i18n::surfaces::install(); // register the DialogResponse handler (list remap + input translation; same, pre net::install)
 	i18n::hooks::apply_config();
+
+	// Packet recorder (debug, idle until /.rec): its wire taps + per-frame summary,
+	// registered before net::install() / render::install() like everything above.
+	recorder::install();
 
 	// --- networking / RakNet hook (accurate) ---
 	// Poll until SA:MP's RakClient interface is live, then swap in our hook.

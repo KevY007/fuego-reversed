@@ -160,8 +160,8 @@ void from_text(const std::string& text) {
                     }
                 }
             }
-            // unknown keys are silently ignored -- like the retired marker_style, and
-            // debug_capture / debug_lab, which are runtime-only now (off at every start)
+            // unknown keys are silently ignored -- like the retired marker_style,
+            // debug_capture and debug_lab (the packet recorder, /.rec, replaced them)
         } catch (...) {
             // a malformed integer value leaves that field at its default
         }

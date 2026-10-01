@@ -50,6 +50,7 @@ bool OnSendPacket( BitStream *bs, PacketPriority p, PacketReliability r, char ch
 }
 
 bool OnReceivePacket( Packet *pkt ) {
+	if ( pkt ) net::wire_recv( pkt->data, (int) pkt->bitSize ); // the recorder sees it before anyone can swallow it
 	for ( auto fn : recvPacketHandlers() )
 		if ( !fn( pkt ) ) return false; // a handler swallowed it
 	return true;
@@ -64,9 +65,15 @@ void on_recv_packet( RecvPacketFn fn ) { if ( fn ) recvPacketHandlers().push_bac
 namespace {
 WireRpcFn    g_wireRpc    = nullptr;
 WirePacketFn g_wirePacket = nullptr;
+WireRecvFn   g_wireRecv   = nullptr;
 }
 
 void set_wire_taps( WireRpcFn r, WirePacketFn p ) { g_wireRpc = r; g_wirePacket = p; }
+void set_recv_tap( WireRecvFn r ) { g_wireRecv = r; }
+
+void wire_recv( const unsigned char *data, int bits ) {
+	if ( g_wireRecv && data && bits > 0 ) g_wireRecv( data, bits );
+}
 
 void wire_rpc( int id, BitStream *bs, bool injected ) {
 	if ( g_wireRpc && bs ) g_wireRpc( id, bs, injected );

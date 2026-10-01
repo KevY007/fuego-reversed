@@ -23,6 +23,15 @@ void on_frame( FrameFn );
 void on_reset( ResetFn );
 void on_wndproc( WndProcFn );
 
+// The 2D UI pass: called once per frame AFTER SA:MP has drawn its own UI (chat,
+// dialogs, nametags), inside a scene, just before the frame is shown -- so whatever is
+// drawn here is on top of SA:MP's chat. on_frame (GTA's EndScene) is BEFORE SA:MP's UI:
+// world overlays (ESP, tags) stay there, under the chat, as SA:MP's own nametags are.
+// Only when present_hooked(); otherwise draw everything in on_frame.
+using PresentFn = void ( * )( IDirect3DDevice9 *dev );
+void on_present( PresentFn );
+bool present_hooked();
+
 // Install the EndScene/Reset hook. Returns true on success.
 bool install();
 bool installed();

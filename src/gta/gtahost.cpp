@@ -623,6 +623,22 @@ int local_weapon_type() {
 	return p ? (int) p->GetActiveWeapon().m_Type : -1;
 }
 
+bool local_weapons( int types[13], int ammo[13] ) {
+	CPlayerPed *p = find_player_ped();
+	if ( !p ) return false;
+	for ( int s = 0; s < 13; s++ ) {
+		CWeapon &w = p->GetWeaponInSlot( (size_t) s );
+		types[s] = (int) w.m_Type;
+		ammo[s]  = (int) w.m_TotalAmmo;
+	}
+	return true;
+}
+
+int local_interior() {
+	CPlayerPed *p = find_player_ped();
+	return p ? (int) p->GetAreaCode() : -1;
+}
+
 // Fuego cheat_handle_noreload: the moment the active weapon enters RELOADING, flip it
 // straight back to READY. Ammo counts are never touched (the HUD stays honest and the
 // server's ammo checks see normal numbers).

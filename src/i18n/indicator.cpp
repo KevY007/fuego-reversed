@@ -65,7 +65,7 @@ void toast_outgoing(bool on) {
 
 void draw() {
     const auto& s = config::get();
-    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ImDrawList* dl = ImGui::GetForegroundDrawList(); // the HUD layer: over SA:MP's chat
     float y = ImGui::GetIO().DisplaySize.y * 0.06f;
     if (g_toastOn) {
         const uint32_t t = GetTickCount() - g_toastStart;

@@ -46,7 +46,8 @@ void draw() {
 	_snprintf( buf, sizeof( buf ) - 1, "%s <-", g_text );
 	buf[sizeof( buf ) - 1] = '\0';
 	const float x = ImGui::GetIO().DisplaySize.x - visuals::draw_length( visuals::Font::Main, buf ) - 3.0f;
-	visuals::print_shadow( visuals::Font::Main, x, 1.0f, ( alpha << 24 ) | 0x00FFFFFF, buf );
+	visuals::print_shadow( visuals::Font::Main, x, 1.0f, ( alpha << 24 ) | 0x00FFFFFF, buf,
+	                       ImGui::GetForegroundDrawList() ); // HUD: over SA:MP's chat
 }
 
 } // namespace status

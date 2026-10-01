@@ -3,7 +3,6 @@
 #include "engine.h"
 #include "config.h"
 #include "outbound.h"
-#include "lab.h"
 #include "names.h"
 #include "chatbuf.h"
 #include "surfaces.h"
@@ -12,6 +11,7 @@
 #include "../samp/addresses.h"
 #include "../hook/CDetour.h"
 #include "../render/render.h"
+#include "../recorder/recorder.h" // the packet recorder: every chat-box line, before translation
 #include "../core/logger.h"
 
 #include <atomic>
@@ -163,6 +163,8 @@ void apply_result( const i18n::engine::Result &r ) {
 // and a translated line is never itself resubmitted for translation.
 void __fastcall hooked_add_entry( void *self, void * /*edx*/, int type, const char *msg,
                                    const char *prefix, uint32_t textColor, uint32_t prefixColor ) {
+	recorder::on_chat_line( type, msg, prefix ); // no-op unless recording; never throws
+
 	bool doTranslate = false;
 	try {
 		if ( i18n::config::get().inbound_chat && msg && msg[0] &&
@@ -228,7 +230,6 @@ void pump_tick( IDirect3DDevice9 * ) {
 		i18n::outbound::tick( now ); // swallowed chat past its deadline goes out as typed
 		i18n::names::tick( now );    // live player names -> masked, never translated
 		i18n::surfaces::tick( now ); // release held dialogs that are due
-		i18n::lab::on_frame();       // debug lab (read-only logging)
 
 		// Why texts were NOT translated (a lost placeholder, a provider timeout, ...),
 		// about once a second -- so a line that stayed in the original says why.

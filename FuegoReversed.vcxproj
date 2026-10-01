@@ -135,9 +135,6 @@
     <ClCompile Include="src\i18n\outbound.cpp">
       <ObjectFileName>$(IntDir)i18n_outbound.obj</ObjectFileName>
     </ClCompile>
-    <ClCompile Include="src\i18n\capture.cpp">
-      <ObjectFileName>$(IntDir)i18n_capture.obj</ObjectFileName>
-    </ClCompile>
     <ClCompile Include="src\i18n\huffman.cpp">
       <ObjectFileName>$(IntDir)i18n_huffman.obj</ObjectFileName>
     </ClCompile>
@@ -149,9 +146,6 @@
     </ClCompile>
     <ClCompile Include="src\i18n\hudtext.cpp">
       <ObjectFileName>$(IntDir)i18n_hudtext.obj</ObjectFileName>
-    </ClCompile>
-    <ClCompile Include="src\i18n\lab.cpp">
-      <ObjectFileName>$(IntDir)i18n_lab.obj</ObjectFileName>
     </ClCompile>
     <ClCompile Include="src\i18n\names.cpp">
       <ObjectFileName>$(IntDir)i18n_names.obj</ObjectFileName>

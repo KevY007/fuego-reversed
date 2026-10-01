@@ -20,6 +20,11 @@ constexpr uint32_t KILL_INFO      = 0x2ACA18; // stKillInfo*
 constexpr uint32_t MISC_INFO      = 0x2ACA3C;
 constexpr uint32_t SCOREBOARD     = 0x2AC9DC;
 constexpr uint32_t DIALOG_INFO    = 0x2AC9E0; // CDialog*
+// The REAL IDirect3DDevice9*. SA:MP puts its own 4-byte wrapper device (vtable at
+// samp.dll+0x11FA10) into GTA's device pointer (0xC97C28) and forwards every call to
+// this one; the wrapper's Present draws SA:MP's chat / nametags / dialogs, then calls
+// THIS device's Present (samp.dll 0.3.DL: 0x100751B0 .. 0x10075711).
+constexpr uint32_t D3D_DEVICE     = 0x2AC9D0; // IDirect3DDevice9*
 
 // --- functions (offset from samp.dll base) ---
 constexpr uint32_t FUNC_ADD_TO_CHAT_WND = 0x67650; // CChat::AddEntry (__thiscall)

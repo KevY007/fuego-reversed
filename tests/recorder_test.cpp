@@ -147,7 +147,10 @@ int main() {
         pw.raw(pbody.data(), pbody.size());
         Lines p = in(t, 2600, 61, pw);
         expect(p, "style=3(password)", "password dialog shown");
-        check(!has(p, "Enter your password") && has(p, "body hidden"), "a password dialog's body is never written");
+        expect(p, "body=\"Enter your password\"", "a password dialog is written in full (nothing hidden by default)");
+        Timeline h; h.reset(0); rec::Options o; o.hideSecrets = true; h.set_options(o);
+        Lines hp = in(h, 2600, 61, pw);
+        check(!has(hp, "Enter your password") && has(hp, "body hidden"), "hide-secrets mode: its body isn't written");
     }
     {   // 4. Textdraws: a progress bar is a box re-shown with a new size.
         Lines a = in(t, 3000, 134, textdraw(2049, 500.0f, "_"));
@@ -207,49 +210,87 @@ int main() {
         W hp; hp.put<float>(85.0f);
         expect(in(t, 5300, 14, hp), "IN  Health 85.0", "health set");
     }
-    {   // 7. Our commands; login-type arguments and dialog input never written.
+    {   // 7. Our commands and dialog replies: everything written by default -- the full
+        //    command, what was typed (passwords too), the row picked in a list.
         W c; c.s32("/fish");
         expect(out_rpc(t, 6000, 50, c), "OUT cmd \"/fish\"", "command");
         W lg; lg.s32("/login hunter2");
-        Lines l = out_rpc(t, 6100, 50, lg);
-        check(has(l, "\"/login\"") && !has(l, "hunter2"), "login arguments hidden");
-        W lg2; lg2.s32("/CHANGEPASS old new");
-        check(!has(out_rpc(t, 6100, 50, lg2), "old"), "any case of a password command hidden");
-        W dr; dr.put<int16_t>(12).put<uint8_t>(1).put<int16_t>(3).s8("secret");
+        expect(out_rpc(t, 6100, 50, lg), "OUT cmd \"/login hunter2\"", "a login command, in full");
+        W dr; dr.put<int16_t>(12).put<uint8_t>(1).put<int16_t>(1).s8("Trout\tx1");
         Lines r = out_rpc(t, 6200, 62, dr);
-        expect(r, "OUT DialogResponse id=12 button=1(left) list=3 input=<6 chars hidden>", "dialog response");
-        check(!has(r, "secret"), "dialog input never written");
+        expect(r, "OUT DialogResponse id=12 button=1(left) list=1", "dialog response");
+        expect(r, "row \"Trout\\tx1\"", "the row picked in the list, from the dialog's body");
+        expect(r, "input=\"Trout\\tx1\"", "what came back as input");
+        W pr; pr.put<int16_t>(1).put<uint8_t>(1).put<int16_t>(-1).s8("hunter2");
+        expect(out_rpc(t, 6210, 62, pr), "input=\"hunter2\"", "a password dialog reply, in full");
         W ch; ch.s8("anyone selling bait?");
         expect(out_rpc(t, 6300, 101, ch), "OUT chat \"anyone selling bait?\"", "chat");
-        W rc; rc.s32("login pass");
-        check(!has(out_rpc(t, 6400, 103, rc), "pass"), "client-check answer hidden");
+        W cc; cc.put<uint8_t>(2).put<uint32_t>(0x00401000u).put<uint8_t>(0x7F);
+        expect(out_rpc(t, 6400, 103, cc), "OUT ClientCheck type=2 address=00401000 answer=7F", "anti-cheat answer decoded");
+        W cj; cj.put<int32_t>(4057).put<uint8_t>(1).s8("KevY007").put<uint32_t>(0x1234u).s8("ABCDEF0123").s8("0.3.7-R5");
+        expect(out_rpc(t, 6410, 25, cj), "OUT ClientJoin version=4057 mod=1 name=\"KevY007\"", "the join packet decoded");
+        // A cut-off command is shown as far as it goes.
+        W cut; cut.put<uint32_t>(40); cut.raw("/login hunter2", 14);
+        expect(out_rpc(t, 6510, 50, cut), "cut off?", "a cut-off command is marked");
+    }
+    {   // 7h. Hide-secrets mode (a log to share): login-type arguments, typed dialog input,
+        //     RCON, the join packet and anti-cheat answers stay out -- never even hex-dumped.
+        Timeline h;
+        h.reset(0);
+        rec::Options o; o.hideSecrets = true; h.set_options(o);
+        W dl; dl.put<int16_t>(12).put<uint8_t>(2).s8("Fish shop").s8("Sell").s8("Close");
+        const std::vector<uint8_t> body = i18n::huffman::encode_string("Bass\tx3\nTrout\tx1");
+        dl.raw(body.data(), body.size());
+        Lines ignore1 = in(h, 10, 61, dl);
+        W pw; pw.put<int16_t>(1).put<uint8_t>(3).s8("Login").s8("OK").s8("Quit");
+        const std::vector<uint8_t> pbody = i18n::huffman::encode_string("Enter your password");
+        pw.raw(pbody.data(), pbody.size());
+        Lines ignore2 = in(h, 20, 61, pw);
 
-        // Any login/password-like command keeps its arguments out, whatever it's called.
+        W lg; lg.s32("/login hunter2");
+        Lines l = out_rpc(h, 6100, 50, lg);
+        check(has(l, "\"/login\"") && !has(l, "hunter2"), "login arguments hidden");
+        W lg2; lg2.s32("/CHANGEPASS old new");
+        check(!has(out_rpc(h, 6100, 50, lg2), "old"), "any case of a password command hidden");
+        W dr; dr.put<int16_t>(12).put<uint8_t>(1).put<int16_t>(3).s8("secret");
+        Lines r = out_rpc(h, 6200, 62, dr);
+        expect(r, "OUT DialogResponse id=12 button=1(left) list=3 input=<6 chars hidden>", "dialog response");
+        check(!has(r, "secret"), "dialog input not written");
+        W rc; rc.s32("login pass");
+        check(!has(out_rpc(h, 6400, 103, rc), "pass"), "client-check answer hidden");
         const char* logins[] = { "/alogin hunter2", "/l hunter2", "/AdminLogin hunter2", "/rcon login hunter2",
                                  "/pw hunter2", "/setpin hunter2", "/2fa hunter2", "/pw:hunter2", "/login\thunter2" };
         for (const char* cmd : logins) {
             W w; w.s32(cmd);
-            Lines out = out_rpc(t, 6500, 50, w);
+            Lines out = out_rpc(h, 6500, 50, w);
             check(has(out, "<arguments hidden>") && !has(out, "hunter2"), cmd);
         }
-        // A cut-off command (its length says more than came) is never hex-dumped.
         W cut; cut.put<uint32_t>(40); cut.raw("/login hunter2", 14);
-        Lines cutOut = out_rpc(t, 6510, 50, cut);
+        Lines cutOut = out_rpc(h, 6510, 50, cut);
         check(has(cutOut, "not shown") && !has(cutOut, "68 75 6E") && !has(cutOut, "hunter2"),
               "a cut-off command is not dumped");
         W cutChat; cutChat.put<uint8_t>(30).raw("my pass is", 10);
-        check(!has(out_rpc(t, 6520, 101, cutChat), "70 61 73"), "a cut-off chat line is not dumped");
-
-        // The typed length only for dialogs where nothing secret is typed.
+        check(!has(out_rpc(h, 6520, 101, cutChat), "70 61 73"), "a cut-off chat line is not dumped");
         W pr; pr.put<int16_t>(1).put<uint8_t>(1).put<int16_t>(-1).s8("hunter2");
-        Lines prOut = out_rpc(t, 6600, 62, pr);
+        Lines prOut = out_rpc(h, 6600, 62, pr);
         check(has(prOut, "input=<hidden>") && !has(prOut, "7 chars"), "password dialog: not even the length");
         W ur; ur.put<int16_t>(77).put<uint8_t>(1).put<int16_t>(-1).s8("abc");
-        check(has(out_rpc(t, 6610, 62, ur), "input=<hidden>"), "a dialog never seen: no length either");
+        check(has(out_rpc(h, 6610, 62, ur), "input=<hidden>"), "a dialog never seen: no length either");
+        uint8_t rcon[1 + 4 + 12] = { 201, 12, 0, 0, 0 };
+        std::memcpy(rcon + 5, "login secret", 12);
+        Lines rco;
+        h.outgoing_packet(6700, rcon, sizeof rcon * 8, false, rco);
+        check(has(rco, "RCON") && !has(rco, "secret"), "RCON hidden");
+        W cj; cj.put<int32_t>(4057).put<uint8_t>(1).s8("KevY007").put<uint32_t>(0x1234u).s8("ABCDEF0123").s8("0.3.7-R5");
+        check(!has(out_rpc(h, 6710, 25, cj), "ABCDEF"), "the join packet's auth key hidden");
+        rec::Options both; both.hideSecrets = true; both.everything = true; h.set_options(both);
+        W lg3; lg3.s32("/login hunter2");
+        Lines l3 = out_rpc(h, 6800, 50, lg3);
+        check(has(l3, "\"/login\"") && !has(l3, "raw") && !has(l3, "68 75 6E"), "everything + hide-secrets: no raw bytes of what was typed");
     }
-    {   // 7b. Other players' chat / cars: counted only; ours written.
+    {   // 7b. Everyone's chat is written; other players' cars only counted; ours written.
         W pc; pc.put<uint16_t>(9).s8("hi all");
-        check(in(t, 6700, 101, pc).empty(), "another player's chat isn't written");
+        expect(in(t, 6700, 101, pc), "IN  PlayerChat player 9 \"hi all\"", "another player's chat is written (it's in the chat box)");
         W mine; mine.put<uint16_t>(7).s8("selling fish");
         expect(in(t, 6710, 101, mine), "IN  PlayerChat me \"selling fish\"", "our own chat line as the server relays it");
         W ev; ev.put<uint16_t>(9).put<uint16_t>(33).put<uint8_t>(0);
@@ -442,9 +483,13 @@ int main() {
         bool decay = true;
         for (int d = 1999; d > 1900; --d) { stats[1] = d; decay = decay && packet(v, 3520, 205, stats, sizeof stats).empty(); }
         check(decay, "the drunk level wearing off by itself (every frame) isn't written");
-        const uint8_t wp[6] = { 0, 0, 2, 15, 1, 0 };
-        expect(packet(v, 3600, 204, wp, sizeof wp), "OUT weapons", "weapon slots");
+        // As the client sends it: the player / actor aimed at (none), then slot, weapon, ammo.
+        const uint8_t wp[] = { 0xFF, 0xFF, 0xFF, 0xFF, 2, 24, 70, 0, 0, 0, 1, 0 };
+        Lines ws = packet(v, 3600, 204, wp, sizeof wp);
+        expect(ws, "OUT weapons target=none [slot 2: 24(desert eagle) x70, slot 0: 0(fists) x1]", "weapon slots decoded");
         check(packet(v, 3700, 204, wp, sizeof wp).empty(), "unchanged weapon slots not written");
+        const uint8_t aimAt[] = { 9, 0, 0xFF, 0xFF, 2, 24, 69, 0 };
+        expect(packet(v, 3800, 204, aimAt, sizeof aimAt), "target=player 9 [slot 2: 24(desert eagle) x69]", "the player aimed at");
     }
     {   // 13. Actors (an NPC buyer) near us; far ones counted.
         Timeline a;
@@ -513,6 +558,256 @@ int main() {
         check(ok, "20000 random payloads: at most one line each, no crash");
     }
 
+    {   // 17. Other players (detail "others"): their RPCs and their syncs, written on change.
+        Timeline o;
+        o.reset(0);
+        o.set_local_id(7);
+        rec::Options opt; opt.others = true; o.set_options(opt);
+        W an; an.put<uint16_t>(9).s8("PED").s8("WALK_civi").put<float>(4.1f).bit(true).bit(true).bit(true).bit(false).put<uint32_t>(0);
+        expect(in(o, 10, 86, an), "IN  Anim player 9 \"PED\" \"WALK_civi\"", "another player's animation is written");
+        W pc; pc.put<uint16_t>(9).s8("hi all");
+        expect(in(o, 20, 101, pc), "IN  PlayerChat player 9 \"hi all\"", "another player's chat is written");
+        W wpa; wpa.put<uint16_t>(9);
+        expect(in(o, 30, 32, wpa), "IN  WorldPlayerAdd", "streaming traffic is written too");
+
+        // A player's on-foot sync as the server relays it: id, [lr], [ud], keys, position,
+        // compressed rotation, health/armour, weapon, special action.
+        auto relay = [](uint16_t pid, uint16_t keys, float x, uint8_t weapon) {
+            W w;
+            w.put<uint8_t>(207).put<uint16_t>(pid).bit(false).bit(true).put<uint16_t>(0xFF80).put<uint16_t>(keys);
+            w.put<float>(x).put<float>(2.0f).put<float>(3.0f);
+            w.bit(false).bit(false).bit(false).bit(false).put<uint16_t>(0).put<uint16_t>(0).put<uint16_t>(0);
+            w.put<uint8_t>(0x99).put<uint8_t>(weapon).put<uint8_t>(0);
+            return w;
+        };
+        auto sync_in = [&](Timeline& tl, uint32_t now, const W& w) { Lines l; tl.incoming_packet(now, w.b.data(), w.bits, l); return l; };
+        Lines s1 = sync_in(o, 100, relay(9, 4, 1.0f, 24));
+        expect(s1, "IN  sync player 9 foot (start) | keys=FIRE(attack) ud=W", "a player's first sync");
+        expect(s1, "wpn=24(desert eagle)", "with the weapon");
+        expect(s1, "pos=(1.0,2.0,3.0)", "and the position");
+        check(sync_in(o, 130, relay(9, 4, 1.5f, 24)).empty(), "only moved: not written");
+        expect(sync_in(o, 160, relay(9, 4 | 128, 1.5f, 24)), "IN  sync player 9 foot +HANDBRAKE(aim)", "a key change is written");
+        // Their car: the vehicle named, key presses with how long they were held.
+        auto car_in = [](uint16_t pid, uint16_t vid, uint16_t keys) {
+            W w;
+            w.put<uint8_t>(200).put<uint16_t>(pid).put<uint16_t>(vid).put<uint16_t>(0).put<uint16_t>(0).put<uint16_t>(keys);
+            w.bit(false).bit(false).bit(false).bit(false).put<uint16_t>(0).put<uint16_t>(0).put<uint16_t>(0);
+            w.put<float>(5.0f).put<float>(6.0f).put<float>(7.0f);
+            return w;
+        };
+        expect(sync_in(o, 200, car_in(9, 33, 0)), "IN  sync player 9 car (in vehicle 33) | keys=none", "their car");
+        expect(sync_in(o, 300, car_in(9, 33, 8)), "IN  sync player 9 car +SPRINT |", "accelerating");
+        expect(sync_in(o, 500, car_in(9, 33, 0)), "-SPRINT held 200ms", "released, with the held time");
+        check(sync_in(o, 530, car_in(9, 33, 0)).empty(), "unchanged: not written");
+        W bs; bs.put<uint8_t>(206).put<uint16_t>(9);
+        samp::stBulletData bd{};
+        bd.byteType = 1; bd.sTargetID = 7; bd.byteWeaponID = 24;
+        bs.raw(&bd, sizeof bd);
+        expect(sync_in(o, 600, bs), "IN  sync player 9 bullet hit=1(player) target=7 (me) wpn=24(desert eagle)", "a shot at us");
+        uint8_t cut[2] = { 207, 9 };
+        Lines lc; o.incoming_packet(700, cut, 16, lc);
+        check(lc.size() == 1, "a cut-off relayed sync: one line, no crash");
+
+        Timeline n; // normal detail: other players' syncs only counted
+        n.reset(0);
+        n.set_local_id(7);
+        check(sync_in(n, 100, relay(9, 4, 1.0f, 24)).empty(), "normal detail: another player's sync isn't written");
+        uint8_t lost[1] = { 33 };
+        Lines l2; n.incoming_packet(200, lost, 8, l2);
+        expect(l2, "IN  CONNECTION_LOST", "connection events always written");
+    }
+    {   // 18. Everything: every packet, unchanged ones too, each with its raw bytes.
+        Timeline e;
+        e.reset(0);
+        rec::Options opt; opt.everything = true; e.set_options(opt);
+        auto f0 = foot(0);
+        Lines a = packet(e, 0, 207, &f0, sizeof f0);
+        Lines b = packet(e, 30, 207, &f0, sizeof f0);
+        expect(b, "OUT foot (no change)", "an unchanged sync is written");
+        expect(b, "| raw CF 00 00", "with its raw bytes");
+        Lines c = in(e, 40, 134, textdraw(10, 300.0f, "Hi"));
+        Lines d = in(e, 50, 134, textdraw(10, 300.0f, "Hi"));
+        expect(d, "(same as last show)", "an unchanged re-show is written");
+    }
+    {   // 19. The chat box (local lines), real key / mouse input, our state.
+        Timeline k;
+        k.reset(0);
+        Lines cl; k.chat_line(5, 8, "{FF6347}[rec] {FFFFFF}Recording.", cl);
+        expect(cl, "CHATBOX debug \"{FF6347}[rec] {FFFFFF}Recording.\"", "a local chat-box line");
+
+        Lines i1; k.input(100, 'W', true, i1);
+        expect(i1, "KEY  W down", "a key press");
+        Lines i2; k.input(150, 'W', true, i2);
+        check(i2.empty(), "a held key's repeats aren't written");
+        Lines i3; k.input(330, 'W', false, i3);
+        expect(i3, "KEY  W up (held 230ms)", "the release, with how long it was held");
+        Lines i4; k.input(400, 0x01, true, i4);
+        expect(i4, "KEY  LMB down", "a mouse button");
+        check(rec::vk_name(0x20) == "SPACE" && rec::vk_name(0x71) == "F2", "key names");
+
+        rec::LocalState st;
+        st.gameState = 14; st.id = 7; st.spawned = true; st.health = 100; st.armor = 50; st.money = 1234;
+        st.pos[0] = 10; st.pos[1] = 20; st.pos[2] = 3; st.weapon = 24; st.weapons[2] = 24; st.ammo[2] = 70;
+        Lines s1; k.state(1000, st, s1);
+        expect(s1, "STATE connected id=7 spawned", "a full snapshot at the start");
+        expect(s1, "hp=100 ar=50 money=1234", "with health, armour, money");
+        expect(s1, "weapons=[24(desert eagle) x70]", "and the weapons");
+        Lines s2; k.state(1100, st, s2);
+        check(s2.empty(), "nothing changed: nothing written");
+        st.interior = 3; st.dialogOpen = true;
+        Lines s3; k.state(1200, st, s3);
+        expect(s3, "STATE interior 0->3", "a change is written");
+        expect(s3, "dialog open", "with each thing that changed");
+        st.pos[0] = 500;
+        Lines s4; k.state(1300, st, s4);
+        expect(s4, "STATE teleported", "a position jump is written");
+        st.pos[0] = 501;
+        Lines s5; k.state(1400, st, s5);
+        check(s5.empty(), "a small move isn't");
+        Lines s6; k.state(1000 + rec::kStateEveryMs, st, s6);
+        expect(s6, "STATE connected", "a full snapshot again every 30 s");
+    }
+    {   // 20. Server-assigned ids are named: players (pool lookup, joins, renames, the
+        //     roster), vehicles (pool lookup, streamed-in models).
+        Timeline nm;
+        nm.reset(0);
+        nm.set_local_id(7);
+        nm.set_name_lookups([](int id) { return id == 3 ? std::string("Panzer_") : std::string(); },
+                            [](int id) { return id == 412 ? 412 : -1; });
+        W pc; pc.put<uint16_t>(3).s8("yo");
+        expect(in(nm, 10, 101, pc), "IN  PlayerChat player 3 (Panzer_) \"yo\"", "a player id with the name from the pool");
+        W sj; sj.put<uint16_t>(12).put<uint32_t>(0xFF0000FFu).put<uint8_t>(0).s8("New_Guy");
+        expect(in(nm, 20, 137, sj), "IN  ServerJoin player 12 \"New_Guy\"", "a join is written (normal detail)");
+        W pc12; pc12.put<uint16_t>(12).s8("hello");
+        expect(in(nm, 30, 101, pc12), "player 12 (New_Guy)", "the joined player's name known from then on");
+        W rn; rn.put<uint16_t>(12).s8("Renamed").put<uint8_t>(1);
+        expect(in(nm, 40, 11, rn), "IN  SetPlayerName player 12 -> \"Renamed\"", "a name change");
+        expect(in(nm, 50, 101, pc12), "player 12 (Renamed)", "the new name used");
+        W kd; kd.put<uint16_t>(3).put<uint16_t>(12).put<uint8_t>(24);
+        expect(in(nm, 60, 55, kd), "IN  Kill player 3 (Panzer_) killed player 12 (Renamed) with 24(desert eagle)", "the kill feed, named");
+        W sq; sq.put<uint16_t>(12).put<uint8_t>(1);
+        expect(in(nm, 70, 138, sq), "IN  ServerQuit player 12 (Renamed) (quit)", "a quit, with the name");
+
+        W ev; ev.put<uint16_t>(7).put<uint16_t>(412).put<uint8_t>(0);
+        expect(in(nm, 80, 26, ev), "IN  PlayerEnterVehicle me vehicle 412 (Voodoo)", "a vehicle named by its model");
+        W va; va.put<uint16_t>(500).put<int32_t>(411).put<float>(1.0f).put<float>(2.0f).put<float>(3.0f);
+        check(in(nm, 90, 164, va).empty(), "a vehicle streaming in: counted only...");
+        samp::stInCarData c{};
+        c.sVehicleID = 500;
+        expect(packet(nm, 100, 200, &c, sizeof c), "OUT car (in vehicle 500 (Infernus))", "... but its model is learned");
+        check(rec::vehicle_model_name(400) == std::string("Landstalker") && rec::vehicle_model_name(611) == std::string("Utility Trailer") &&
+              rec::vehicle_model_name(399) == nullptr, "vehicle model names 400..611");
+
+        W vh; vh.put<uint16_t>(500).put<float>(650.0f);
+        expect(in(nm, 110, 147, vh), "IN  SetVehicleHealth vehicle 500 (Infernus) 650.0", "streaming RPCs about our car are written");
+        W vo; vo.put<uint16_t>(33).put<float>(650.0f);
+        check(in(nm, 120, 147, vo).empty(), "the same for another car: counted");
+        W tm; tm.put<uint16_t>(7).put<uint8_t>(2);
+        expect(in(nm, 130, 69, tm), "IN  SetPlayerTeam me 2", "... and about us");
+
+        Lines ro;
+        nm.roster(140, { {0, "Alpha"}, {7, "KevY007"}, {12, "Renamed"} }, ro);
+        expect(ro, "PLAYERS 3: 0 Alpha, 7 KevY007 (me), 12 Renamed", "the roster");
+        samp::stBulletData bl{};
+        bl.byteType = 1; bl.sTargetID = 0; bl.byteWeaponID = 24;
+        expect(packet(nm, 150, 206, &bl, sizeof bl), "target=0 (Alpha) wpn=24", "a bullet's target named (from the roster)");
+        W bad; bad.put<uint16_t>(40).put<uint32_t>(0).put<uint8_t>(0).s8("Evil\nName");
+        Lines ignoreBad = in(nm, 160, 137, bad);
+        W pc40; pc40.put<uint16_t>(40).s8("x");
+        expect(in(nm, 170, 101, pc40), "player 40 (Evil?Name)", "a name stays on one line");
+        std::vector<std::pair<int, std::string>> many;
+        for (int i = 0; i < 90; ++i) many.push_back({ i, "P" + std::to_string(i) });
+        Lines ro2;
+        nm.roster(180, many, ro2);
+        check(ro2.size() == 3 && has(ro2, "PLAYERS 90 (3/3): 80 P80"), "a big roster over several lines");
+    }
+    {   // 21. A tablist dialog with headers (the header isn't a row); focus; the wheel.
+        Timeline d;
+        d.reset(0);
+        W dl; dl.put<int16_t>(30).put<uint8_t>(5).s8("Shop").s8("Buy").s8("Close");
+        const std::vector<uint8_t> body = i18n::huffman::encode_string("Item\tPrice\nBait\t$5\nRod\t$50");
+        dl.raw(body.data(), body.size());
+        expect(in(d, 10, 61, dl), "style=5(tablist+headers)", "a tablist with headers shown");
+        W dr; dr.put<int16_t>(30).put<uint8_t>(1).put<int16_t>(1).s8("Rod");
+        expect(out_rpc(d, 20, 62, dr), "list=1 row \"Rod\\t$50\" input=\"Rod\"", "row 1 is the line after the header");
+        W dr9; dr9.put<int16_t>(30).put<uint8_t>(1).put<int16_t>(9).s8("");
+        check(!has(out_rpc(d, 25, 62, dr9), "row"), "no row past the end");
+
+        Lines f;
+        d.input(30, 'W', true, f);
+        d.focus(40, false, f);
+        expect(f, "FOCUS lost (alt-tab / minimized) -- released W", "losing the focus releases held keys");
+        Lines f2; d.focus(50, false, f2);
+        check(f2.empty(), "focus: changes only");
+        Lines f3; d.input(60, 'W', false, f3);
+        check(f3.empty(), "a release whose press wasn't written isn't either");
+        Lines f4; d.focus(70, true, f4);
+        expect(f4, "FOCUS back in the game", "focus back");
+        Lines wh; d.wheel(80, -2, wh);
+        expect(wh, "KEY  WHEEL down x2", "the mouse wheel");
+    }
+    {   // 22. RCON answers hidden in a log to share; a player streaming out starts fresh;
+        //     other players' car syncs read to the weapon byte; spectating; a hitch isn't a teleport.
+        Timeline h;
+        h.reset(0);
+        rec::Options ho; ho.hideSecrets = true; h.set_options(ho);
+        uint8_t rr[1 + 4 + 14] = { 202, 14, 0, 0, 0 };
+        std::memcpy(rr + 5, "pass is s3cret", 14);
+        Lines hr; h.incoming_packet(10, rr, sizeof rr * 8, hr);
+        check(has(hr, "RCON_RESPONSE (hidden)") && !has(hr, "s3cret"), "hide secrets: an RCON answer isn't written");
+        Timeline n;
+        n.reset(0);
+        Lines nr; n.incoming_packet(10, rr, sizeof rr * 8, nr);
+        expect(nr, "IN  RCON_RESPONSE \"pass is s3cret\"", "normal: the RCON answer is written");
+
+        Timeline o;
+        o.reset(0);
+        o.set_local_id(7);
+        rec::Options oo; oo.others = true; o.set_options(oo);
+        auto foot_in = [](uint16_t pid, uint16_t keys) {
+            W w;
+            w.put<uint8_t>(207).put<uint16_t>(pid).bit(false).bit(false).put<uint16_t>(keys);
+            w.put<float>(1.0f).put<float>(2.0f).put<float>(3.0f);
+            w.bit(false).bit(false).bit(false).bit(false).put<uint16_t>(0).put<uint16_t>(0).put<uint16_t>(0);
+            w.put<uint8_t>(0xFF).put<uint8_t>(0).put<uint8_t>(0);
+            return w;
+        };
+        auto sync_in = [&](Timeline& tl, uint32_t now, const W& w) { Lines l; tl.incoming_packet(now, w.b.data(), w.bits, l); return l; };
+        Lines f1 = sync_in(o, 100, foot_in(9, 8));
+        W so; so.put<uint16_t>(9);
+        Lines out1 = in(o, 200, 163, so); // streamed out while holding SPRINT
+        Lines f2 = sync_in(o, 300000, foot_in(9, 0));
+        expect(f2, "IN  sync player 9 foot (start)", "streamed back in: starts fresh");
+        check(!has(f2, "held"), "no key 'held' across the stream-out");
+
+        auto car_full = [](uint16_t pid, uint16_t keys, float speed, uint8_t weaponByte) {
+            W w;
+            w.put<uint8_t>(200).put<uint16_t>(pid).put<uint16_t>(33).put<uint16_t>(0).put<uint16_t>(0).put<uint16_t>(keys);
+            w.bit(false).bit(false).bit(false).bit(false).put<uint16_t>(0).put<uint16_t>(0).put<uint16_t>(0);
+            w.put<float>(5.0f).put<float>(6.0f).put<float>(7.0f);
+            w.put<float>(speed);
+            if (speed != 0.0f) w.put<uint16_t>(40000).put<uint16_t>(30000).put<uint16_t>(32767);
+            w.put<uint16_t>(1000).put<uint8_t>(0xFF).put<uint8_t>(weaponByte);
+            return w;
+        };
+        expect(sync_in(o, 400000, car_full(12, 0, 0.0f, 29)), "wpn=29(mp5) carhp=1000", "their car sync read to the weapon (standing)");
+        expect(sync_in(o, 400100, car_full(12, 0, 1.5f, 29 | (1 << 6))), "IN  sync player 12 car +YES(Y)", "moving: the speed's axes skipped, KEY_YES read");
+
+        W sp; sp.put<uint32_t>(1);
+        expect(in(o, 500000, 124, sp), "IN  Spectating on", "the server making us spectate");
+
+        Timeline k;
+        k.reset(0);
+        rec::LocalState st;
+        st.gameState = 14; st.id = 7; st.spawned = true;
+        Lines s0; k.state(1000, st, s0);
+        st.pos[0] = 200;
+        Lines s1; k.state(3000, st, s1); // a 2 s hitch while flying fast: 200 m
+        check(!has(s1, "teleported"), "a long frame isn't a teleport");
+        st.pos[0] = 1200;
+        Lines s2; k.state(3016, st, s2);
+        expect(s2, "STATE teleported", "a real jump still is");
+    }
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

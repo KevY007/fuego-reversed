@@ -44,9 +44,16 @@ using WireRpcFn    = void ( * )( int id, BitStream *, bool injected );
 using WirePacketFn = void ( * )( const unsigned char *data, int bits, bool injected ); // data[0] = packet id
 void set_wire_taps( WireRpcFn, WirePacketFn );
 
-// Called by the two send paths (HookedRakClientInterface, RakClient).
+// The same for what arrives: every packet the server sends that isn't an RPC
+// (connection events, other players' syncs, ...), before any receive handler
+// above can swallow it. Read-only, like the send taps.
+using WireRecvFn = void ( * )( const unsigned char *data, int bits ); // data[0] = packet id
+void set_recv_tap( WireRecvFn );
+
+// Called by the two send paths (HookedRakClientInterface, RakClient) / the receive path.
 void wire_rpc( int id, BitStream *bs, bool injected );
 void wire_packet( const unsigned char *data, int bits, bool injected );
+void wire_recv( const unsigned char *data, int bits );
 
 // Install the RakClient interface hook (idempotent; installs once SA:MP's
 // interface pointer is live). Returns installed().

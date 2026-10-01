@@ -12,6 +12,8 @@
 
 #include <cstdint>
 
+struct ImDrawList;
+
 namespace visuals {
 
 // Add the overlay fonts to the ImGui atlas. Called once by the menu at ImGui init,
@@ -30,7 +32,9 @@ enum class Font : int {
 
 // CD3DFont::PrintShadow: outlined text + a (+1,+1) shadow in the colour's alpha.
 // argb is a D3DCOLOR; {RRGGBB} / {AARRGGBB} tags in the text switch colour like SA:MP.
-void  print_shadow( Font f, float x, float y, uint32_t argb, const char *text );
+// dl: where to draw -- default the world layer (under SA:MP's chat, like its nametags);
+// pass ImGui::GetForegroundDrawList() for HUD text (on top).
+void  print_shadow( Font f, float x, float y, uint32_t argb, const char *text, ImDrawList *dl = nullptr );
 float draw_length( Font f, const char *text ); // CD3DFont::DrawLength (tags excluded)
 float draw_height( Font f );                   // CD3DFont::DrawHeight
 

@@ -14,9 +14,7 @@
 #include "../cheats/cheats.h"
 #include "../cheats/checkpoints.h" // where the server's checkpoints are (/triggercp)
 #include "../cheats/server.h"
-#include "../i18n/capture.h"   // debug: log incoming dialog/label/textdraw/gametext RPCs
 #include "../i18n/surfaces.h"  // translate incoming dialogs / 3D labels in place
-#include "../i18n/lab.h"       // debug lab: verify in-place chat/dialog replacement
 #include "../recorder/recorder.h" // packet recorder (debug): the server's RPCs, as sent
 #include "../fishing/autofish.h"  // Mike's CnR auto fish: what the server says while fishing
 #include "../hook/CDetour.h"
@@ -138,19 +136,16 @@ bool Rewrite_SetSpawnInfo( RPCParameters *rpc ) {
 // (always) and, while spoofing, the skin rewrites. Then SA:MP's original handler.
 void HandleRPCPacketFunc( unsigned char id, RPCParameters *rpc, void ( *callback )( RPCParameters * ) ) {
 	// Packet recorder (no-op unless recording): the server's bytes exactly as they came,
-	// before anything below holds, translates or rewrites them. Read-only.
+	// before anything below holds, translates or rewrites them. Read-only. Until this
+	// returns, the chat lines SA:MP adds for a chat RPC aren't written twice.
 	recorder::on_incoming_rpc( id, rpc );
+	struct RecorderDispatchEnd {
+		~RecorderDispatchEnd() { recorder::rpc_dispatch_end(); }
+	} recorderDispatchEnd;
 
 	// Mike's CnR auto fish: reads the server's own words (chat, our animations, the
 	// reel stats textdraw) before the translator below could rewrite them. Read-only.
 	autofish::on_incoming_rpc( id, rpc );
-
-	// Read-only capture for building the dialog/label/textdraw/gametext surfaces
-	// (no-op unless config.debug_capture is on; never modifies the packet).
-	i18n::capture::on_incoming_rpc( id, rpc );
-
-	// Debug lab (read-only): decode + log ShowDialog (61). Never modifies the packet.
-	i18n::lab::on_incoming_rpc( id, rpc );
 
 	// Translate incoming dialogs / 3D labels / HUD text. A ShowDialog that still needs
 	// translating is HELD (swallowed here) and released later, translated and in order,

@@ -56,9 +56,8 @@ namespace {
 // Ground-truth captures: real SA:MP server bytes (Mike's Cops & Robbers).
 // Each is the exact CSTRING blob for a dialog szInfo or 3D label text --
 // i.e. exactly what decode_string() takes -- starting at bit 0, byte
-// aligned. See src/i18n/capture.cpp (i18n::capture::on_incoming_rpc) for
-// how these were extracted from live ShowDialog (RPC 61) / Create3DTextLabel
-// (RPC 36) packets.
+// aligned. They were extracted from live ShowDialog (RPC 61) /
+// Create3DTextLabel (RPC 36) packets (today: /.rec, the packet recorder).
 // ---------------------------------------------------------------------
 
 constexpr const char* kDialogLogIn =

@@ -56,6 +56,8 @@ Desktop.ini
 #  the packet recorder's output (/.rec): a whole play session, with server/player data
 /fuego_packets.log
 /fuego_packets.old.log
+/fuego_packets_share.log
+/fuego_packets_share.old.log
 /fuego_reversed_memory.txt
 /fuego_reversed_memory.txt.v1.bak
 /fuego_i18n.cfg

@@ -341,7 +341,7 @@ void draw_overlay() {
 			std::lock_guard<std::mutex> lk( g_mtx );
 			std::snprintf( text, sizeof text, "AUTO FISH   %s   |   %s", g_status, g_stats );
 		}
-		ImDrawList *dl = ImGui::GetBackgroundDrawList();
+		ImDrawList *dl = ImGui::GetForegroundDrawList(); // the HUD layer: over SA:MP's chat
 		const ImVec2 sz = ImGui::CalcTextSize( text );
 		const float x = ( ImGui::GetIO().DisplaySize.x - sz.x ) * 0.5f;
 		const float y = ImGui::GetIO().DisplaySize.y * 0.036f;

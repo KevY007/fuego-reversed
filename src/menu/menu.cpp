@@ -24,6 +24,7 @@
 #include "imgui_impl_win32.h"
 
 #include <d3d9.h>
+#include <cstdio>
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -36,6 +37,33 @@ namespace {
 
 bool g_init = false;
 bool g_open = false;
+
+// The frame's ImGui draw data split in two layers (see on_frame / on_present): the
+// world overlays, drawn at GTA's EndScene, and the menu + HUD, drawn after SA:MP's UI.
+ImDrawData g_worldLayer, g_uiLayer;
+bool       g_uiPending = false;
+// Frames whose UI layer never got its Present (the device SA:MP shows the frames with
+// isn't the one we hooked): after a second of that, everything is drawn at EndScene
+// again -- under the chat, but never gone.
+int        g_missedPresents = 0;
+bool       g_presentFallback = false;
+
+void split_layers( const ImDrawData *dd, const ImDrawList *world ) {
+	g_worldLayer = *dd; // display size/pos, scale, texture list
+	g_uiLayer    = *dd;
+	g_worldLayer.CmdLists.resize( 0 );
+	g_uiLayer.CmdLists.resize( 0 );
+	g_worldLayer.TotalVtxCount = g_worldLayer.TotalIdxCount = 0;
+	g_uiLayer.TotalVtxCount = g_uiLayer.TotalIdxCount = 0;
+	for ( ImDrawList *l : dd->CmdLists ) {
+		ImDrawData &to = ( l == world ) ? g_worldLayer : g_uiLayer;
+		to.CmdLists.push_back( l );
+		to.TotalVtxCount += l->VtxBuffer.Size;
+		to.TotalIdxCount += l->IdxBuffer.Size;
+	}
+	g_worldLayer.CmdListsCount = g_worldLayer.CmdLists.Size;
+	g_uiLayer.CmdListsCount    = g_uiLayer.CmdLists.Size;
+}
 
 // --- translator model dropdown: async fetch of the endpoint's model list -----
 // list_models() is a blocking WinHTTP call, so it runs on a detached worker;
@@ -365,27 +393,54 @@ void draw_ui() {
 			{
 				static bool openFailed = false;
 				bool rec = recorder::active();
-				if ( ImGui::Checkbox( "Record packets to fuego_packets.log", &rec ) ) {
+				char recLabel[96];
+				std::snprintf( recLabel, sizeof recLabel, "Record to %s###recorder", recorder::file_name() );
+				if ( ImGui::Checkbox( recLabel, &rec ) ) {
 					if ( rec ) openFailed = !recorder::start();
 					else       recorder::stop();
 				}
 				ImGui::SameLine();
-				HelpMarker( "Writes everything the server sends and everything you send -- decoded, with the time "
-				            "in seconds -- to fuego_packets.log in the GTA folder: game text, textdraws (with the "
-				            "box sizes a progress bar changes), chat, dialogs, animations, objects, sounds, and "
-				            "every key you press and release with how long you held it. Use it to work out how a "
-				            "server's minigame works. Other players' traffic is only counted. Never written: what "
-				            "you type into dialogs, login/password command arguments, RCON. In game: /.rec "
-				            "starts/stops it, /.mark <note> adds a numbered note at that moment. Not saved: it's "
-				            "off at every game start." );
+				HelpMarker( "A packet tracer + state recorder for any server: writes everything the server sends "
+				            "and everything you send -- decoded, with the time in seconds -- to fuego_packets.log "
+				            "in the GTA folder: game text, textdraws (with the box sizes a progress bar changes), "
+				            "chat, every chat-box line, dialogs with what you typed or picked, commands, "
+				            "animations, objects, sounds, connection events; every key and mouse button you "
+				            "press and release with how long you held it (not what you type in chat or this "
+				            "menu); your state (position, health, money, weapons, vehicle, interior, menus) as "
+				            "it changes. Players are named next to their ids, vehicles by model. In game: "
+				            "/.rec starts/stops it (/.rec others or /.rec all for more detail), /.mark <note> "
+				            "adds a numbered note at that moment. Not saved: it's off at every game start." );
+				int detail = recorder::detail();
+				ImGui::SetNextItemWidth( 210.0f );
+				if ( ImGui::Combo( "Detail", &detail, "Normal\0+ other players\0Everything (raw bytes)\0" ) )
+					recorder::set_detail( detail );
+				ImGui::SameLine();
+				HelpMarker( "Normal: you, the server, everyone's chat, joins, quits and kills; other players' own "
+				            "traffic, streaming and far-away objects are only counted.\n"
+				            "+ other players: also what other players do -- their animations, cars, chat bubbles, "
+				            "and their syncs whenever their keys / weapon / vehicle change.\n"
+				            "Everything: every packet in and out, unchanged ones too, each with its raw bytes. "
+				            "Big files fast -- for short recordings.\n"
+				            "Applies at once, also while recording." );
+				bool hide = recorder::hide_secrets();
+				if ( ImGui::Checkbox( "Hide passwords (for sharing)", &hide ) )
+					openFailed = !recorder::set_hide_secrets( hide ); // false: the other file couldn't be opened
+				ImGui::SameLine();
+				HelpMarker( "Off (default): everything you type is written as is -- dialog passwords, /login "
+				            "arguments, RCON, the join packet's auth key, anti-cheat answers.\n"
+				            "On: those are left out (a password dialog's reply isn't even its length, RCON answers "
+				            "neither), keys pressed while a dialog is open aren't written, and the recording goes "
+				            "to fuego_packets_share.log -- a file of its own that never holds a secret (switching "
+				            "this while recording carries on in the other file). Turn it on before recording a "
+				            "log you'll give to someone." );
 				if ( recorder::active() ) {
 					const unsigned s = recorder::seconds();
 					ImGui::TextDisabled( "recording %u:%02u -- %llu lines, %d marks", s / 60, s % 60, recorder::lines(),
 					                     recorder::marks() );
 				} else if ( openFailed ) {
-					ImGui::TextColored( ImVec4( 1.0f, 0.35f, 0.35f, 1.0f ), "Couldn't open fuego_packets.log." );
+					ImGui::TextColored( ImVec4( 1.0f, 0.35f, 0.35f, 1.0f ), "Couldn't open %s.", recorder::file_name() );
 				} else {
-					ImGui::TextDisabled( "In game: /.rec starts/stops, /.mark <note> marks a moment." );
+					ImGui::TextDisabled( "In game: /.rec [normal|others|all] starts/stops, /.mark <note> marks a moment." );
 				}
 			}
 			ImGui::EndTabItem();
@@ -740,21 +795,6 @@ void draw_ui() {
 				            "is held for translation." );
 			}
 
-			if ( ImGui::CollapsingHeader( "Debug" ) ) {
-				ImGui::Checkbox( "Log dialog/label/textdraw/gametext packets", &s.debug_capture );
-				ImGui::SameLine();
-				HelpMarker( "Read-only. Enable, join a server, trigger a dialog/3D label/textdraw/gametext, "
-				            "then share fuego_reversed.log. Never modifies packets. Writes a LOT -- not saved, "
-				            "so it's off again at the next game start. (For everything in and out, decoded, "
-				            "use the packet recorder in the Main tab.)" );
-
-				ImGui::Checkbox( "Lab: log chat/dialog internals", &s.debug_lab );
-				ImGui::SameLine();
-				HelpMarker( "Read-only. Logs the newest chat line and each decoded ShowDialog "
-				            "(id/style/title/buttons/body -- never a password dialog's body) to "
-				            "fuego_reversed.log. Applies immediately; not saved -- off at the next game start." );
-			}
-
 			ImGui::PopItemWidth();
 			ImGui::EndTabItem();
 		}
@@ -902,11 +942,40 @@ void on_frame( IDirect3DDevice9 *dev ) {
 
 	ImGui::EndFrame();
 	ImGui::Render();
-	ImGui_ImplDX9_RenderDrawData( ImGui::GetDrawData() );
+	ImDrawData *dd = ImGui::GetDrawData();
+	if ( g_uiPending ) { // the last frame's UI layer is still waiting
+		if ( ++g_missedPresents >= 60 && !g_presentFallback ) {
+			g_presentFallback = true;
+			Log( "[menu] SA:MP's Present never came -- menu/HUD drawn at EndScene again (under the chat)." );
+		}
+	} else {
+		g_missedPresents = 0;
+	}
+	if ( !render::present_hooked() || g_presentFallback ) { // no later pass: everything here, as it always was
+		g_uiPending = false;
+		ImGui_ImplDX9_RenderDrawData( dd );
+		return;
+	}
+	// Two layers: the background list (ESP, nametags, tags -- world overlays) is drawn
+	// NOW, under SA:MP's UI like its own nametags; the menu windows + the foreground list
+	// (status pills, hints, watermark) wait for on_present, after SA:MP's chat. (The
+	// viewport must be named: after Render() there's no current window to take it from.)
+	split_layers( dd, ImGui::GetBackgroundDrawList( ImGui::GetMainViewport() ) );
+	if ( g_worldLayer.CmdListsCount > 0 ) ImGui_ImplDX9_RenderDrawData( &g_worldLayer );
+	g_uiPending = true;
+}
+
+// The 2D UI layer, after SA:MP has drawn its chat / dialogs (render::on_present).
+void on_present( IDirect3DDevice9 * ) {
+	if ( !g_init || !g_uiPending ) return;
+	g_uiPending = false;
+	if ( g_uiLayer.CmdListsCount > 0 ) ImGui_ImplDX9_RenderDrawData( &g_uiLayer );
 }
 
 void on_reset( IDirect3DDevice9 *, bool preReset ) {
 	if ( !g_init ) return;
+	g_uiPending = false; // that frame's layer is gone with the device's resources
+	g_missedPresents = 0;
 	if ( preReset ) ImGui_ImplDX9_InvalidateDeviceObjects();
 	else            ImGui_ImplDX9_CreateDeviceObjects();
 }
@@ -946,6 +1015,7 @@ void set_open( bool on ) { g_open = on; }
 
 void install() {
 	render::on_frame( on_frame );
+	render::on_present( on_present ); // the menu/HUD layer, over SA:MP's chat
 	render::on_reset( on_reset );
 	render::on_wndproc( on_wndproc );
 	Log( "[menu] registered (F2 to toggle)." );

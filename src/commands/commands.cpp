@@ -21,9 +21,11 @@
 #include "../fishing/autofish.h"
 
 #include <vector>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 
 namespace {
 std::vector<const char *> g_visible; // names shown by /fuego_cmds
@@ -491,12 +493,52 @@ static void __cdecl cmd_triggercp( char *params ) {
 		samp::chat( "{BBBBBB}As a passenger this might not work, try on foot or driving." );
 }
 
-// /.rec -- start/stop the packet recorder: everything in and out, decoded and
-// time-stamped, to fuego_packets.log in the GTA folder (to work out a minigame).
-static void __cdecl cmd_rec( char * ) {
+// /.rec [normal|others|all|hide] -- start/stop the packet tracer: everything in and out,
+// decoded and time-stamped, with the chat box, our keys and our state, to
+// fuego_packets.log in the GTA folder. A detail level starts it at that level (or
+// switches to it while recording); "hide" toggles leaving passwords out (to share).
+static void __cdecl cmd_rec( char *params ) {
 	traceLastFunc( "cmd_rec" );
-	char b[200] = {};
-	if ( recorder::active() ) {
+	char b[220] = {};
+	std::string arg = params ? params : "";
+	while ( !arg.empty() && arg.front() == ' ' ) arg.erase( 0, 1 );
+	while ( !arg.empty() && arg.back() == ' ' ) arg.pop_back();
+	for ( char &c : arg ) c = (char) tolower( (unsigned char) c );
+
+	if ( arg == "hide" || arg == "share" ) {
+		const bool wasRecording = recorder::active();
+		const bool ok = recorder::set_hide_secrets( !recorder::hide_secrets() );
+		if ( !ok ) {
+			_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Couldn't open %s -- recording stopped.", recorder::file_name() );
+			samp::chat( b );
+			return;
+		}
+		_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}%s -- %s %s.",
+		           recorder::hide_secrets() ? "Passwords, login arguments, RCON and the auth key are left out now"
+		                                    : "Everything typed is written again, passwords too",
+		           wasRecording ? "recording continues in" : "the next recording goes to", recorder::file_name() );
+		samp::chat( b );
+		return;
+	}
+	if ( !arg.empty() ) {
+		int d = -1;
+		if ( arg == "normal" ) d = recorder::kNormal;
+		else if ( arg == "others" || arg == "other" || arg == "players" ) d = recorder::kOthers;
+		else if ( arg == "all" || arg == "everything" || arg == "raw" ) d = recorder::kEverything;
+		if ( d < 0 ) {
+			samp::chat( "{FF4040}[rec] {FFFFFF}/.rec starts/stops; /.rec normal | others | all sets the detail; "
+			            "/.rec hide leaves passwords out." );
+			return;
+		}
+		recorder::set_detail( d );
+		static const char *kNames[] = { "normal", "+ other players", "everything (raw bytes, big files)" };
+		if ( recorder::active() ) {
+			_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Detail: %s.", kNames[d] );
+			samp::chat( b );
+			return;
+		}
+	}
+	if ( recorder::active() && arg.empty() ) {
 		const unsigned long long n = recorder::lines();
 		const unsigned secs = recorder::seconds();
 		recorder::stop();
@@ -504,8 +546,9 @@ static void __cdecl cmd_rec( char * ) {
 		           secs / 60, secs % 60, n, recorder::file_name() );
 		samp::chat( b );
 	} else if ( recorder::start() ) {
-		_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Recording to %s. {AAAAAA}/.mark <note> marks a moment, /.rec stops.",
-		           recorder::file_name() );
+		static const char *kShort[] = { "", " (+ other players)", " (everything, raw bytes)" };
+		_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Recording to %s%s%s. {AAAAAA}/.mark <note> marks a moment, /.rec stops.",
+		           recorder::file_name(), kShort[recorder::detail()], recorder::hide_secrets() ? ", passwords left out" : "" );
 		samp::chat( b );
 	} else {
 		_snprintf( b, sizeof( b ) - 1, "{FF4040}[rec] {FFFFFF}Couldn't open %s -- is the GTA folder read-only?",

@@ -1063,9 +1063,9 @@ void init_fonts() {
 	g_small = load_font( smallPath, g_smallK );
 }
 
-void print_shadow( Font f, float x, float y, uint32_t argb, const char *text ) {
+void print_shadow( Font f, float x, float y, uint32_t argb, const char *text, ImDrawList *dl ) {
 	if ( !text || !*text ) return;
-	ImDrawList *dl = bg();
+	if ( !dl ) dl = bg();
 	print_pass( dl, f, x + 1.0f, y + 1.0f, argb & 0xFF000000, text, true ); // render_text_shadows = true (shipped)
 	print_pass( dl, f, x, y, argb, text, false );
 }
@@ -1118,7 +1118,7 @@ void draw() {
 	const bool paused = input::gta_menu_active();
 
 	if ( set.show_active_list )
-		draw_active_list( dl );
+		draw_active_list( ImGui::GetForegroundDrawList() ); // HUD: over SA:MP's chat
 
 	float ourPos[3];
 	const bool haveOur = game::local_tag_origin( ourPos );

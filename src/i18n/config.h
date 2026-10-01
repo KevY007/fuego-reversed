@@ -96,17 +96,6 @@ struct Settings {
     // "translating dialog..."). Default ON.
     bool show_translate_indicators = true;
 
-    // Debug: log raw bytes (+ decoded plain fields) of incoming dialog/label/
-    // textdraw/gametext RPCs to fuego_reversed.log, so their exact wire format
-    // can be verified against a real server before those surfaces are built.
-    // Read-only; never modifies packets. RUNTIME ONLY: never saved or loaded, so
-    // it's off at every game start (left on, it filled the log with megabytes).
-    bool debug_capture = false;
-
-    // Debug lab (developer, read-only): log the newest chat entry + decoded
-    // ShowDialog fields to fuego_reversed.log. Runtime only, like debug_capture.
-    bool debug_lab = false;
-
     // Translate incoming DIALOGS, 3D text labels and SIGNS (object material text:
     // RPC 61/36/84 -- Huffman CSTRING bodies). A dialog not fully in the translation
     // memory is HELD until it is translated, then shown in arrival order with the

@@ -77,6 +77,10 @@ bool pickup_pos( int idx, float out[3], int &modelOut ); // active pickup -> pos
 
 // --- local-player weapon / movement cheats --------------------------------
 int  local_weapon_type();      // active weapon id (0..54), -1 if no ped
+// Our weapon slots straight from the game ped (type + total ammo per slot), and the
+// interior (area code) we're in. false / -1 if there's no ped.
+bool local_weapons( int types[13], int ammo[13] );
+int  local_interior();
 void no_reload_tick();         // no-reload: RELOADING -> READY on the active weapon (Fuego)
 int  player_weapon( int sampId ); // a remote player's active weapon id, -1 if none
 int  player_weapon_slots( int sampId, int out[13] ); // all carried weapons (Show Players Guns)

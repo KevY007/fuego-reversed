@@ -243,10 +243,11 @@ enum PacketEnumeration
 	ID_TRAILER_SYNC,
 	ID_PASSENGER_SYNC,
 	ID_SPECTATOR_SYNC,
-	ID_RCON_COMMAND,
-	ID_RCON_RESPONCE,
-	ID_WEAPONS_UPDATE,
-	ID_STATS_UPDATE,
+	// SA:MP's numbers for these sit between the syncs above (not after them).
+	ID_RCON_COMMAND = 201,
+	ID_RCON_RESPONCE = 202,
+	ID_WEAPONS_UPDATE = 204,
+	ID_STATS_UPDATE = 205,
 };
 
 /// These enumerations are used to describe when packets are delivered.

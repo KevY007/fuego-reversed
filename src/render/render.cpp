@@ -1,5 +1,7 @@
 #include "render.h"
 #include "../core/logger.h"
+#include "../samp/samp.h"      // samp::base / detect
+#include "../samp/addresses.h" // samp::addr::D3D_DEVICE (the real device SA:MP forwards to)
 
 #include <d3d9.h>
 #include <atomic>
@@ -8,16 +10,21 @@
 namespace {
 using namespace render;
 
-std::vector<FrameFn>   &frameCbs() { static std::vector<FrameFn> v; return v; }
-std::vector<ResetFn>   &resetCbs() { static std::vector<ResetFn> v; return v; }
-std::vector<WndProcFn> &wndCbs()   { static std::vector<WndProcFn> v; return v; }
+std::vector<FrameFn>   &frameCbs()   { static std::vector<FrameFn> v; return v; }
+std::vector<ResetFn>   &resetCbs()   { static std::vector<ResetFn> v; return v; }
+std::vector<WndProcFn> &wndCbs()     { static std::vector<WndProcFn> v; return v; }
+std::vector<PresentFn> &presentCbs() { static std::vector<PresentFn> v; return v; }
 
 typedef HRESULT( __stdcall *EndScene_t )( IDirect3DDevice9 * );
 typedef HRESULT( __stdcall *Reset_t )( IDirect3DDevice9 *, D3DPRESENT_PARAMETERS * );
+typedef HRESULT( __stdcall *Present_t )( IDirect3DDevice9 *, const RECT *, const RECT *, HWND, const RGNDATA * );
 
 EndScene_t g_origEndScene = nullptr;
 Reset_t    g_origReset    = nullptr;
-void     **g_vtable       = nullptr;
+Present_t  g_origPresent  = nullptr;
+void     **g_vtable       = nullptr; // the device GTA calls: SA:MP's wrapper (see samp::addr::D3D_DEVICE)
+void     **g_realVtable   = nullptr; // the real device's: its Present comes after SA:MP's UI
+IDirect3DDevice9 *const *g_realDeviceSlot = nullptr; // where SA:MP keeps that device (samp.dll data)
 bool       g_installed    = false;
 
 IDirect3DDevice9 *g_device = nullptr;
@@ -186,6 +193,27 @@ HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
 	return hr;
 }
 
+// The real device's Present: SA:MP's wrapper calls it once SA:MP's chat / dialogs /
+// nametags are drawn, so this is the one point after SA:MP's UI and before the frame
+// is shown. The 2D UI pass runs here in a scene of its own (Present is never called
+// inside a scene). BeginScene/EndScene go to the REAL device, which isn't hooked -- no
+// way back into hkEndScene (that's what froze an earlier post-chat pass).
+HRESULT __stdcall hkPresent( IDirect3DDevice9 *dev, const RECT *src, const RECT *dst, HWND wnd, const RGNDATA *dirty ) {
+	static bool s_inside = false;
+	// d3d9.dll's vtable is shared by every device in the process: only the one SA:MP
+	// forwards the game's frames to gets the UI pass (an overlay's own device doesn't).
+	const bool ours = g_realDeviceSlot && dev == *g_realDeviceSlot;
+	if ( ours && !s_inside && !presentCbs().empty() ) {
+		s_inside = true;
+		if ( SUCCEEDED( dev->BeginScene() ) ) {
+			for ( auto fn : presentCbs() ) fn( dev );
+			dev->EndScene();
+		}
+		s_inside = false;
+	}
+	return g_origPresent( dev, src, dst, wnd, dirty );
+}
+
 HRESULT __stdcall hkReset( IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp ) {
 	// Force the highest refresh for exclusive fullscreen (GTA hardcodes lowest >=60).
 	// We only edit the params GTA passes to its own Reset, so RenderWare's normal
@@ -234,12 +262,40 @@ HRESULT __stdcall hkReset( IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp ) {
 	return hr;
 }
 
-void patch_vtable_entry( int index, void *fn, void **outOrig ) {
+void patch_vtable_entry( void **vtable, int index, void *fn, void **outOrig ) {
 	DWORD old;
-	VirtualProtect( &g_vtable[index], sizeof( void * ), PAGE_READWRITE, &old );
-	if ( outOrig ) *outOrig = g_vtable[index];
-	g_vtable[index] = fn;
-	VirtualProtect( &g_vtable[index], sizeof( void * ), old, &old );
+	VirtualProtect( &vtable[index], sizeof( void * ), PAGE_READWRITE, &old );
+	if ( outOrig ) *outOrig = vtable[index];
+	vtable[index] = fn;
+	VirtualProtect( &vtable[index], sizeof( void * ), old, &old );
+}
+
+// Is `p` inside the loaded d3d9.dll's image (the system one, or a wrapper like ReShade's)?
+bool in_d3d9_module( const void *p ) {
+	HMODULE m = GetModuleHandleA( "d3d9.dll" );
+	if ( !m || !p ) return false;
+	const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>( m );
+	if ( dos->e_magic != IMAGE_DOS_SIGNATURE ) return false;
+	const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>( reinterpret_cast<const BYTE *>( m ) + dos->e_lfanew );
+	const uintptr_t lo = reinterpret_cast<uintptr_t>( m ), hi = lo + nt->OptionalHeader.SizeOfImage;
+	return reinterpret_cast<uintptr_t>( p ) >= lo && reinterpret_cast<uintptr_t>( p ) < hi;
+}
+
+// Hook the REAL device's Present (see hkPresent). Only when everything checks out --
+// the device SA:MP forwards to exists, isn't the wrapper GTA calls, and its vtable is
+// d3d9.dll's -- otherwise the 2D UI is drawn at EndScene as before.
+bool hook_real_present( IDirect3DDevice9 *gameDev ) {
+	const uint32_t base = samp::base();
+	if ( !base || !samp::detected() ) return false;
+	IDirect3DDevice9 **slot = reinterpret_cast<IDirect3DDevice9 **>( base + samp::addr::D3D_DEVICE );
+	IDirect3DDevice9 *real = *slot;
+	if ( !real || real == gameDev ) return false;
+	void **vt = *reinterpret_cast<void ***>( real );
+	if ( !vt || vt == g_vtable || !in_d3d9_module( vt ) ) return false;
+	g_realDeviceSlot = slot;
+	patch_vtable_entry( vt, 17, (void *) hkPresent, (void **) &g_origPresent ); // IDirect3DDevice9::Present
+	g_realVtable = vt;
+	return true;
 }
 
 // GTA:SA's live D3D9 device: RenderWare's _RwD3DDevice at 0xC97C28 (confirmed in
@@ -262,6 +318,8 @@ namespace render {
 void on_frame( FrameFn fn )     { if ( fn ) frameCbs().push_back( fn ); }
 void on_reset( ResetFn fn )     { if ( fn ) resetCbs().push_back( fn ); }
 void on_wndproc( WndProcFn fn ) { if ( fn ) wndCbs().push_back( fn ); }
+void on_present( PresentFn fn ) { if ( fn ) presentCbs().push_back( fn ); }
+bool present_hooked()           { return g_realVtable != nullptr; }
 
 bool installed() { return g_installed; }
 IDirect3DDevice9 *device() { return g_device; }
@@ -285,10 +343,14 @@ bool install() {
 	if ( !g_vtable ) { Log( "[render] GTA D3D9 device not ready yet (0xC97C28 null)." ); return false; }
 	g_device = game_device();          // real device -> device() valid immediately
 	ensure_window( g_device );         // subclass the game window now
-	patch_vtable_entry( 42, (void *) hkEndScene, (void **) &g_origEndScene ); // IDirect3DDevice9::EndScene
-	patch_vtable_entry( 16, (void *) hkReset,    (void **) &g_origReset );    // IDirect3DDevice9::Reset
+	patch_vtable_entry( g_vtable, 42, (void *) hkEndScene, (void **) &g_origEndScene ); // IDirect3DDevice9::EndScene
+	patch_vtable_entry( g_vtable, 16, (void *) hkReset,    (void **) &g_origReset );    // IDirect3DDevice9::Reset
 	g_installed = true;
 	Log( "[render] EndScene/Reset hook installed on game device (0x%p).", g_device );
+	if ( hook_real_present( g_device ) )
+		Log( "[render] menu/HUD drawn after SA:MP's UI (real device Present hooked) -- over the chat." );
+	else
+		Log( "[render] real device not found: menu/HUD drawn at EndScene (under SA:MP's chat)." );
 	return true;
 }
 

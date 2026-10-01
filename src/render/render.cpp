@@ -28,7 +28,6 @@ Present_t  g_origPresent  = nullptr;
 void     **g_vtable       = nullptr; // the device GTA calls: SA:MP's wrapper (see samp::addr::D3D_DEVICE)
 void     **g_realVtable   = nullptr; // the real device's: its Present comes after SA:MP's UI
 IDirect3DDevice9 *const *g_realDeviceSlot = nullptr; // where SA:MP keeps that device (samp.dll data)
-unsigned   g_presentCalls = 0;       // UI passes run in hkPresent (to notice a lost hook)
 bool       g_installed    = false;
 
 IDirect3DDevice9 *g_device = nullptr;
@@ -178,7 +177,7 @@ void ensure_window( IDirect3DDevice9 *dev ) {
 	if ( g_refreshPending && g_msgApplyRefresh ) PostMessage( g_window, g_msgApplyRefresh, 0, 0 );
 }
 
-void present_keepalive(); // (below: needs hook_real_present)
+void present_tick(); // (below: needs hook_real_present)
 
 HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
 	// Re-entrancy guard (render thread only, so a plain static is enough). EndScene is
@@ -193,7 +192,7 @@ HRESULT __stdcall hkEndScene( IDirect3DDevice9 *dev ) {
 	if ( !g_device ) { g_device = dev; Log( "[render] device captured (0x%p).", dev ); }
 	ensure_window( dev );
 	for ( auto fn : frameCbs() ) fn( dev );
-	present_keepalive();
+	present_tick();
 	HRESULT hr = g_origEndScene( dev );
 
 	s_inside = false;
@@ -212,7 +211,6 @@ HRESULT __stdcall hkPresent( IDirect3DDevice9 *dev, const RECT *src, const RECT 
 	const bool ours = g_realDeviceSlot && dev == *g_realDeviceSlot;
 	if ( ours && !s_inside && !presentCbs().empty() ) {
 		s_inside = true;
-		++g_presentCalls;
 		if ( SUCCEEDED( dev->BeginScene() ) ) {
 			for ( auto fn : presentCbs() ) fn( dev );
 			dev->EndScene();
@@ -345,32 +343,37 @@ bool hook_real_present( IDirect3DDevice9 *gameDev, char *why, size_t whySize ) {
 	return true;
 }
 
-// Once a second from hkEndScene: hook Present if that failed at install (SA:MP not done
-// yet), and hook it again if an overlay put a new vtable on the device since (no UI pass
-// ran in a second, and Present isn't ours any more). Never re-patches a Present that
-// still calls ours -- so never two of ours in one chain.
-void present_keepalive() {
-	static unsigned frames = 0, tries = 0, rehooks = 0, lastCalls = 0;
-	if ( ++frames % 60 ) return;
+// Called every frame from hkEndScene. Two jobs:
+//  * before we've ever hooked Present: try it on a slow cadence (SA:MP's device may not
+//    be ready at install), for up to ~10 minutes.
+//  * once hooked: if an overlay (RivaTuner/ReShade, ...) or anything else has put the
+//    real Present back in slot 17, re-apply our hook RIGHT NOW -- at EndScene, before
+//    this frame's Present runs -- so the menu keeps landing over the chat every frame
+//    instead of flickering while a once-a-second keepalive catches up. The fast path
+//    (slot 17 already ours) is a single pointer compare, so per-frame is cheap.
+void present_tick() {
 	char why[200] = {};
-	if ( !g_realVtable ) {
-		if ( tries >= 600 ) return; // ~10 minutes of trying: it isn't coming
+	if ( !g_realVtable ) { // not hooked yet: slow retry
+		static unsigned frames = 0, tries = 0;
+		if ( ++frames % 60 ) return;
+		if ( tries >= 600 ) return; // ~10 minutes: it isn't coming, stay at EndScene
 		if ( hook_real_present( g_device, why, sizeof why ) )
 			Log( "[render] menu/HUD now drawn after SA:MP's UI -- over the chat (%s).", why );
 		else if ( ++tries == 600 )
 			Log( "[render] gave up hooking Present (%s): menu/HUD stay at EndScene.", why );
 		return;
 	}
-	if ( g_presentCalls != lastCalls ) { lastCalls = g_presentCalls; return; }
-	if ( !g_realDeviceSlot || !*g_realDeviceSlot || rehooks >= 20 ) return;
+	if ( !g_realDeviceSlot || !*g_realDeviceSlot ) return;
 	void **vt = *reinterpret_cast<void ***>( *g_realDeviceSlot );
-	if ( vt && vt[17] != (void *) hkPresent ) {
-		++rehooks;
-		g_realVtable = nullptr;
-		if ( hook_real_present( g_device, why, sizeof why ) )
-			Log( "[render] Present hooked again (the device's vtable changed: %s).", why );
-		else
-			Log( "[render] Present hook lost (%s): menu/HUD at EndScene.", why );
+	if ( !vt || vt[17] == (void *) hkPresent ) return; // still ours (the usual case): nothing to do
+	// Someone restored the vtable. Re-hook (hook_real_present rejects our own / samp.dll
+	// in slot 17, so g_origPresent is always the real chain below us, never ourselves).
+	g_realVtable = nullptr;
+	static unsigned relog = 0;
+	if ( hook_real_present( g_device, why, sizeof why ) ) {
+		if ( relog++ < 3 ) Log( "[render] re-applied the Present hook after the device vtable was restored (%s).", why );
+	} else if ( relog++ < 3 ) {
+		Log( "[render] Present hook lost and not restorable (%s): menu/HUD at EndScene.", why );
 	}
 }
 

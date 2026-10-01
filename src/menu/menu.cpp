@@ -42,11 +42,12 @@ bool g_open = false;
 // world overlays, drawn at GTA's EndScene, and the menu + HUD, drawn after SA:MP's UI.
 ImDrawData g_worldLayer, g_uiLayer;
 bool       g_uiPending = false;
-// Frames whose UI layer never got its Present (the device SA:MP shows the frames with
-// isn't the one we hooked): after a second of that, everything is drawn at EndScene
-// again -- under the chat, but never gone.
-int        g_missedPresents = 0;
-bool       g_presentFallback = false;
+// Frames since the UI layer was last presented (on_present). While Present is firing
+// normally this stays 0-1 and the UI goes over the chat; if Present stops (never hooked,
+// or an overlay keeps stealing it), it climbs and we draw the whole UI at EndScene
+// instead -- under the chat, but always visible, and the switch is silent (no flicker
+// between modes, no log spam).
+int        g_framesSincePresent = 1000;
 
 void split_layers( const ImDrawData *dd, const ImDrawList *world ) {
 	g_worldLayer = *dd; // display size/pos, scale, texture list
@@ -190,6 +191,13 @@ void HelpMarker( const char* desc ) {
 	}
 }
 
+// A category header inside a tab, with extra breathing room above it so the sections
+// of hacks are clearly separated (plain ImGui::SeparatorText packs them too tightly).
+void Section( const char* label ) {
+	ImGui::Dummy( ImVec2( 0.0f, ImGui::GetFontSize() * 0.55f ) );
+	ImGui::SeparatorText( label );
+}
+
 // Wrapped grey text (a hint or an error that can be long).
 void HintWrapped( const char* fmt, const char* arg ) {
 	ImGui::PushStyleColor( ImGuiCol_Text, ImGui::GetStyleColorVec4( ImGuiCol_TextDisabled ) );
@@ -270,7 +278,7 @@ void draw_ui() {
 			ImGui::SliderInt( "Dual Shot Delay", &g_set.dual_shot_delay, 0, 3000 ); ImGui::SameLine();
 			HelpMarker( "Milliseconds between the two Dual Shot bullets." );
 
-			ImGui::SeparatorText( "Silent Aim" );
+			Section( "Silent Aim" );
 			ImGui::Checkbox( "Silent Aimbot", &g_set.silent_aim ); ImGui::SameLine();
 			HelpMarker( "Redirects your bullets to a locked target (picked by the FOV + filters below), registering "
 			            "a hit without your crosshair being on them." );
@@ -304,7 +312,7 @@ void draw_ui() {
 			HelpMarker( "Aims a little ahead of a moving target (along their current speed) so fast runners still "
 			            "get hit. No effect on a standing target." );
 
-			ImGui::SeparatorText( "Killer" );
+			Section( "Killer" );
 			ImGui::Checkbox( "Auto Killer", &g_set.killer_enabled ); ImGui::SameLine();
 			HelpMarker( "Automatically attacks every connected, streamed-in player in turn (damage bullets + a "
 			            "GiveDamage report each)." );
@@ -320,13 +328,13 @@ void draw_ui() {
 		}
 		// ---------------- Misc ----------------
 		if ( ImGui::BeginTabItem( "Misc" ) ) {
-			ImGui::SeparatorText( "Invisibility" );
+			Section( "Invisibility" );
 			ImGui::Checkbox( "Invisibility", &g_set.invisibility ); ImGui::SameLine();
 			HelpMarker( "Hides you from other players by changing the position your client broadcasts." );
 			ImGui::Checkbox( "Smart Invisibility", &g_set.smart_invis ); ImGui::SameLine();
 			HelpMarker( "Invisible only while you're NOT clicking: on foot you're sent as a spectator, in a car the "
 			            "car is sent as empty -- so you pop back into view the instant you shoot." );
-			ImGui::SeparatorText( "Slappers" );
+			Section( "Slappers" );
 			ImGui::Checkbox( "Aim Slapper", &g_set.aim_slapper ); ImGui::SameLine();
 			HelpMarker( "Flings the player you're aiming at (rewrites their sync with an upward speed)." );
 			ImGui::SliderInt( "Aim Slapper Power", &g_set.aim_slapper_power, 0, 100 ); ImGui::SameLine();
@@ -335,37 +343,7 @@ void draw_ui() {
 			HelpMarker( "Flings any player who gets close to you." );
 			ImGui::Checkbox( "Near Slapper Friend Filter", &g_set.near_slapper_friend_filter ); ImGui::SameLine();
 			HelpMarker( "Don't slap players on your friends list." );
-			ImGui::SeparatorText( "Visuals" );
-			ImGui::Checkbox( "Chams", &g_set.chams ); ImGui::SameLine();
-			ImGui::Checkbox( "Wireframe", &g_set.chams_wireframe ); ImGui::SameLine();
-			HelpMarker( "Chams: draws players as a solid colour visible through walls. Wireframe draws them as an "
-			            "outline instead." );
-			ImGui::Checkbox( "Nametag", &g_set.nametags ); ImGui::SameLine();
-			HelpMarker( "Draws a name above each player ([M] = server-hidden, [F] = friend, AFK shown too)." );
-			ImGui::Checkbox( "Nametag Type (SA-MP)", &g_set.nametags_samp ); ImGui::SameLine();
-			HelpMarker( "Use SA:MP's own nametag look instead of the custom one." );
-			ImGui::Checkbox( "Locked Vehicle ESP", &g_set.locked_vehicle_esp ); ImGui::SameLine();
-			HelpMarker( "Marks locked vehicles in the world (behind-wall ones are hidden)." );
-			ImGui::Checkbox( "Weapon Finder", &g_set.weapon_finder ); ImGui::SameLine();
-			HelpMarker( "Marks weapon pickups lying in the world." );
-			ImGui::Checkbox( "Show Players Guns", &g_set.show_players_guns ); ImGui::SameLine();
-			HelpMarker( "Lists the weapons each nearby player is carrying, by their tag." );
-			ImGui::SliderFloat( "Nametag Distance", &g_set.player_tags_dist, 20.0f, 500.0f, "%.0f" ); ImGui::SameLine();
-			HelpMarker( "How far away player name tags still show." );
-			ImGui::SliderFloat( "Vehicle Tag Distance", &g_set.vehicle_tags_dist, 20.0f, 300.0f, "%.0f" ); ImGui::SameLine();
-			HelpMarker( "How far away vehicle tags still show." );
-			ImGui::Checkbox( "Player ESP (box)", &g_set.player_esp ); ImGui::SameLine();
-			HelpMarker( "Draws a box around players, with the details you tick below." );
-			if ( g_set.player_esp ) { ImGui::Indent();
-				ImGui::Checkbox( "Box", &g_set.esp_box ); ImGui::SameLine(); ImGui::Checkbox( "Name", &g_set.esp_name ); ImGui::SameLine();
-				ImGui::Checkbox( "HP", &g_set.esp_health ); ImGui::SameLine(); ImGui::Checkbox( "Dist", &g_set.esp_distance ); ImGui::Unindent(); }
-			ImGui::Separator();
-			ImGui::Checkbox( "Onfoot Break Dance", &g_set.break_dance ); ImGui::SameLine();
-			HelpMarker( "Makes your character break-dance on foot." );
-			ImGui::Checkbox( "Auto Unscrambler LSRP", &g_set.auto_unscramble ); ImGui::SameLine();
-			HelpMarker( "Auto-answers LS-RP's word-unscramble events from your wordlist (/wordlist_add, "
-			            "/autouns_delay)." );
-			ImGui::SeparatorText( "Health" );
+			Section( "Health" );
 			ImGui::Checkbox( "Health Hack", &g_set.health_hack ); ImGui::SameLine();
 			HelpMarker( "Makes you invulnerable by answering the server's anti-cheat actor-flags check with the "
 			            "invulnerable flags set." );
@@ -375,7 +353,7 @@ void draw_ui() {
 			HelpMarker( "Blocks only SOME incoming damage (by the chance below) so godmode looks less obvious." );
 			ImGui::SliderInt( "Smart HH Proc Chance", &g_set.smart_hh_proc, 0, 100 ); ImGui::SameLine();
 			HelpMarker( "Percent of incoming damage Smart Health Hack blocks." );
-			ImGui::SeparatorText( "Fake Lag" );
+			Section( "Fake Lag" );
 			ImGui::Checkbox( "Fake Movement Lag", &g_set.fake_lag ); ImGui::SameLine();
 			HelpMarker( "Holds your position syncs back and releases them in bursts, so you look laggy and hard to "
 			            "hit to other players." );
@@ -385,7 +363,7 @@ void draw_ui() {
 			HelpMarker( "How long (ms) syncs are held back." );
 			ImGui::Checkbox( "Teleportish Movement", &g_set.fake_lag_teleportish ); ImGui::SameLine();
 			HelpMarker( "Makes the held-back movement land as teleports rather than smooth catch-up." );
-			ImGui::SeparatorText( "Skin Trolls" );
+			Section( "Skin Trolls" );
 			ImGui::Checkbox( "Moonwalker", &g_set.moonwalk ); ImGui::SameLine();
 			HelpMarker( "You face backwards while moving (moonwalk), for other players." );
 			ImGui::Checkbox( "Upside Down", &g_set.upside_down ); ImGui::SameLine();
@@ -394,9 +372,15 @@ void draw_ui() {
 			HelpMarker( "Puts your ped into an unusual special-action state for other clients." );
 			ImGui::Checkbox( "Twister Mode", &g_set.twister_mode ); ImGui::SameLine();
 			HelpMarker( "Spins your character on the spot for everyone to see." );
+			ImGui::Checkbox( "Onfoot Break Dance", &g_set.break_dance ); ImGui::SameLine();
+			HelpMarker( "Makes your character break-dance on foot." );
+			Section( "LS-RP" );
+			ImGui::Checkbox( "Auto Unscrambler", &g_set.auto_unscramble ); ImGui::SameLine();
+			HelpMarker( "Auto-answers LS-RP's word-unscramble events from your wordlist (/wordlist_add, "
+			            "/autouns_delay)." );
 
 			// Mike's CnR auto fish: runtime only (never saved), no hotkey -- see autofish.h.
-			ImGui::SeparatorText( "Mike's CnR" );
+			Section( "Mike's CnR" );
 			{
 				bool fishOn = autofish::enabled();
 				if ( ImGui::Checkbox( "Mike's CnR auto fish", &fishOn ) )
@@ -422,14 +406,14 @@ void draw_ui() {
 			}
 			ImGui::EndTabItem();
 		}
-		// ---------------- Vehicle ----------------
+// ---------------- Vehicle ----------------
 		if ( ImGui::BeginTabItem( "Vehicle" ) ) {
-			ImGui::SeparatorText( "iTroll (hold I while driving)" );
+			Section( "iTroll (hold I while driving)" );
 			ImGui::TextDisabled( "1)Ground 2)SpeedAway 3)BurnDown 4)BurnUp 5)Spin 6)Ocean 7)SlowSpeed" );
 			ImGui::SliderInt( "iTroll Mode", &g_set.itroll_mode, 0, 7 ); ImGui::SameLine();
 			HelpMarker( "While driving, hold I to apply the chosen troll to the nearest other occupied car "
 			            "(0 = off)." );
-			ImGui::SeparatorText( "Generic" );
+			Section( "Generic" );
 			ImGui::Checkbox( "Car Shooter", &g_set.car_shooter ); ImGui::SameLine();
 			HelpMarker( "Hold fire to launch streamed vehicles toward where you aim." );
 			ImGui::Checkbox( "Car Remover", &g_set.remove_cars ); ImGui::SameLine();
@@ -442,14 +426,14 @@ void draw_ui() {
 			HelpMarker( "Blows up nearby vehicles without the blast being tied to you." );
 			ImGui::Checkbox( "Unoccupied Car Remover", &g_set.unoccupied_remover ); ImGui::SameLine();
 			HelpMarker( "Removes empty (driverless) vehicles around you." );
-			ImGui::SeparatorText( "Actions (on your current vehicle)" );
+			Section( "Actions (on your current vehicle)" );
 			// Repair is a menu button, NOT a hotkey -- an instant full repair is server-
 			// detectable, so it must be a deliberate click, never an accidental keypress.
 			if ( ImGui::Button( "Repair Vehicle" ) )        game::repair_local_vehicle(); ImGui::SameLine();
 			HelpMarker( "Patches up the car you're driving (and anything it tows): +50 health each click, and a "
 			            "full visual fix once it's near max -- click a few times for a wreck. A button, not a "
 			            "hotkey: an instant repair is easy for a server to spot, so it's a deliberate click." );
-			ImGui::SeparatorText( "Actions (click a vehicle to pick it)" );
+			Section( "Actions (click a vehicle to pick it)" );
 			ImGui::TextDisabled( "Each closes the menu, then you click the target vehicle." );
 			if ( ImGui::Button( "Unlock Vehicle" ) )        { veh::start_pick( 1 ); g_open = false; }
 			if ( ImGui::Button( "Damage Vehicle Doors" ) )  { veh::start_pick( 2 ); g_open = false; }
@@ -470,14 +454,14 @@ void draw_ui() {
 		}
 		// ---------------- Client (safety, join mode, display) ----------------
 		if ( ImGui::BeginTabItem( "Client" ) ) {
-			ImGui::SeparatorText( "Safety" );
+			Section( "Safety" );
 			ImGui::Checkbox( "Disable Unsafe/Big Hacks", &g_set.no_big_hacks ); ImGui::SameLine();
 			HelpMarker( "A master safety switch: while on, the riskiest, most obvious cheats are forced off every "
 			            "frame so you can't turn them on by accident." );
 			ImGui::Checkbox( "PANIC (hide everything)", &g_set.cheat_panic ); ImGui::SameLine();
 			HelpMarker( "Instantly stops touching any network traffic and drops godmode -- as if the mod were off. "
 			            "Also closes the menu. Untick to resume." );
-			ImGui::SeparatorText( "0.3.7 Compat" );
+			Section( "0.3.7 Compat" );
 			bool on = compat::in_037_mode();
 			ImGui::Text( "Join mode: %s", on ? "0.3.7 (spoofed)" : "0.3.DL" );
 			if ( ImGui::Button( on ? "Switch to 0.3.DL" : "Switch to 0.3.7" ) )
@@ -485,7 +469,7 @@ void draw_ui() {
 			ImGui::SameLine();
 			HelpMarker( "Which SA:MP version you join as. 0.3.7 servers are auto-detected on join; use /compat (or "
 			            "this button) before connecting to force it." );
-			ImGui::SeparatorText( "Display" );
+			Section( "Display" );
 			ImGui::Checkbox( "Uncap FPS (frame limiter off)", &g_set.uncap_fps ); ImGui::SameLine();
 			HelpMarker( "Turns off GTA's built-in frame limiter." );
 			ImGui::Checkbox( "Borderless window (fill screen)", &g_set.borderless ); ImGui::SameLine();
@@ -499,20 +483,45 @@ void draw_ui() {
 			            "once as the display resets. Only matters in exclusive fullscreen." );
 			ImGui::EndTabItem();
 		}
-		// ---------------- UI (the mod's own on-screen overlay) ----------------
-		if ( ImGui::BeginTabItem( "UI" ) ) {
-			ImGui::SeparatorText( "Overlay" );
+		// ---------------- Visuals (ESP + the mod's own overlay) ----------------
+		if ( ImGui::BeginTabItem( "Visuals" ) ) {
+			Section( "Players" );
+			ImGui::Checkbox( "Chams", &g_set.chams ); ImGui::SameLine();
+			ImGui::Checkbox( "Wireframe", &g_set.chams_wireframe ); ImGui::SameLine();
+			HelpMarker( "Chams: draws players as a solid colour visible through walls. Wireframe draws them as an "
+			            "outline instead." );
+			ImGui::Checkbox( "Nametag", &g_set.nametags ); ImGui::SameLine();
+			HelpMarker( "Draws a name above each player ([M] = server-hidden, [F] = friend, AFK shown too)." );
+			ImGui::Checkbox( "Nametag Type (SA-MP)", &g_set.nametags_samp ); ImGui::SameLine();
+			HelpMarker( "Use SA:MP's own nametag look instead of the custom one." );
+			ImGui::Checkbox( "Show Players Guns", &g_set.show_players_guns ); ImGui::SameLine();
+			HelpMarker( "Lists the weapons each nearby player is carrying, by their tag." );
+			ImGui::SliderFloat( "Nametag Distance", &g_set.player_tags_dist, 20.0f, 500.0f, "%.0f" ); ImGui::SameLine();
+			HelpMarker( "How far away player name tags still show." );
+			ImGui::Checkbox( "Player ESP (box)", &g_set.player_esp ); ImGui::SameLine();
+			HelpMarker( "Draws a box around players, with the details you tick below." );
+			if ( g_set.player_esp ) { ImGui::Indent();
+				ImGui::Checkbox( "Box", &g_set.esp_box ); ImGui::SameLine(); ImGui::Checkbox( "Name", &g_set.esp_name ); ImGui::SameLine();
+				ImGui::Checkbox( "HP", &g_set.esp_health ); ImGui::SameLine(); ImGui::Checkbox( "Dist", &g_set.esp_distance ); ImGui::Unindent(); }
+			Section( "World" );
+			ImGui::Checkbox( "Locked Vehicle ESP", &g_set.locked_vehicle_esp ); ImGui::SameLine();
+			HelpMarker( "Marks locked vehicles in the world (behind-wall ones are hidden)." );
+			ImGui::SliderFloat( "Vehicle Tag Distance", &g_set.vehicle_tags_dist, 20.0f, 300.0f, "%.0f" ); ImGui::SameLine();
+			HelpMarker( "How far away vehicle tags still show." );
+			ImGui::Checkbox( "Weapon Finder", &g_set.weapon_finder ); ImGui::SameLine();
+			HelpMarker( "Marks weapon pickups lying in the world." );
+			Section( "Overlay (the mod's own HUD)" );
 			ImGui::Checkbox( "Cheat state text (top-right)", &g_set.status_text ); ImGui::SameLine();
 			HelpMarker( "Shows a short status line, top-right, for what a cheat just did." );
 			ImGui::Checkbox( "Active-cheat watermark", &g_set.show_active_list ); ImGui::SameLine();
 			HelpMarker( "Lists the cheats you currently have on, bottom-right." );
-			ImGui::TextDisabled( "Menu and these overlays draw above SA:MP's chat; ESP/nametags stay in the world." );
+			ImGui::TextDisabled( "The menu + this overlay draw above SA:MP's chat; ESP/nametags stay in the world." );
 			ImGui::EndTabItem();
 		}
-		// ---------------- Debug (packet recorder / tracer) ----------------
+// ---------------- Debug (packet recorder / tracer) ----------------
 		if ( ImGui::BeginTabItem( "Debug" ) ) {
 			// Packet recorder: runtime only, never saved -- see recorder.h.
-			ImGui::SeparatorText( "Packet recorder / tracer" );
+			Section( "Packet recorder / tracer" );
 			{
 				static bool openFailed = false;
 				bool rec = recorder::active();
@@ -603,7 +612,7 @@ void draw_ui() {
 			ImGui::PushItemWidth( fieldW < halfW ? fieldW : halfW );
 
 			// ---- What the server shows me ----
-			ImGui::SeparatorText( "Translate for me" );
+			Section( "Translate for me" );
 			if ( ImGui::Checkbox( "Chat", &s.inbound_chat ) )
 				i18n::hooks::apply_config(); // live: (re)start the engine if needed
 			ImGui::SameLine();
@@ -641,7 +650,7 @@ void draw_ui() {
 			            "can't draw; harmless for Latin languages." );
 
 			// ---- What I send ----
-			ImGui::SeparatorText( "Translate what I send" );
+			Section( "Translate what I send" );
 			if ( ImGui::Checkbox( "My chat + dialog replies", &s.outbound_enabled ) )
 				i18n::hooks::apply_config(); // apply live
 			ImGui::SameLine();
@@ -688,7 +697,7 @@ void draw_ui() {
 			}
 
 			// ---- The AI that translates ----
-			ImGui::SeparatorText( "AI provider" );
+			Section( "AI provider" );
 			{
 				const auto &presets = i18n::config::provider_presets();
 				const char *cur = "(unknown)";
@@ -1049,15 +1058,12 @@ void on_frame( IDirect3DDevice9 *dev ) {
 	ImGui::EndFrame();
 	ImGui::Render();
 	ImDrawData *dd = ImGui::GetDrawData();
-	if ( g_uiPending ) { // the last frame's UI layer is still waiting
-		if ( ++g_missedPresents >= 60 && !g_presentFallback ) {
-			g_presentFallback = true;
-			Log( "[menu] SA:MP's Present never came -- menu/HUD drawn at EndScene again (under the chat)." );
-		}
-	} else {
-		g_missedPresents = 0;
-	}
-	if ( !render::present_hooked() || g_presentFallback ) { // no later pass: everything here, as it always was
+	if ( g_framesSincePresent < 1000 ) ++g_framesSincePresent;
+	// Draw over the chat only while Present is actually firing (on_present ran in the last
+	// frame or two). If it isn't -- never hooked, or an overlay keeps stealing it -- draw
+	// the whole UI here at EndScene instead (under the chat, but always visible). The two
+	// frames of slack keep an occasional skipped Present from flipping modes / flickering.
+	if ( !render::present_hooked() || g_framesSincePresent > 2 ) {
 		g_uiPending = false;
 		ImGui_ImplDX9_RenderDrawData( dd );
 		return;
@@ -1074,12 +1080,7 @@ void on_frame( IDirect3DDevice9 *dev ) {
 // The 2D UI layer, after SA:MP has drawn its chat / dialogs (render::on_present).
 void on_present( IDirect3DDevice9 * ) {
 	if ( !g_init ) return;
-	if ( g_presentFallback ) { // Present came back (render hooked it again): over the chat from the next frame
-		g_presentFallback = false;
-		g_missedPresents = 0;
-		Log( "[menu] SA:MP's Present is back -- menu/HUD over the chat again." );
-		return;
-	}
+	g_framesSincePresent = 0; // Present is alive: on_frame defers the UI layer to here
 	if ( !g_uiPending ) return;
 	g_uiPending = false;
 	if ( g_uiLayer.CmdListsCount > 0 ) ImGui_ImplDX9_RenderDrawData( &g_uiLayer );
@@ -1088,7 +1089,6 @@ void on_present( IDirect3DDevice9 * ) {
 void on_reset( IDirect3DDevice9 *, bool preReset ) {
 	if ( !g_init ) return;
 	g_uiPending = false; // that frame's layer is gone with the device's resources
-	g_missedPresents = 0;
 	if ( preReset ) ImGui_ImplDX9_InvalidateDeviceObjects();
 	else            ImGui_ImplDX9_CreateDeviceObjects();
 }
